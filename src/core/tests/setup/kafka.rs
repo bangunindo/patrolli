@@ -313,6 +313,14 @@ impl Broker {
                             .all(|p| p.leader() >= 0 && p.error().is_none()),
                         "partition leader unavailable"
                     );
+                    // Metadata names a leader once the controller elects it, which can be
+                    // before that broker serves the partition: until then ListOffsets (and so
+                    // `consume_all`'s watermarks) answers NotLeaderForPartition.
+                    for partition in entry.partitions() {
+                        probe
+                            .fetch_watermarks(&topic, partition.id(), Duration::from_secs(2))
+                            .with_context(|| format!("partition {} not served", partition.id()))?;
+                    }
                 }
                 Ok::<_, anyhow::Error>(())
             })

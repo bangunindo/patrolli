@@ -2133,6 +2133,9 @@ mod tests {
             redelivered.push(msg.len());
             reopened.ack(token);
         }
+        // Two bridge senders race each other, so neither pass comes in
+        // send order.
+        unacked.sort();
         redelivered.sort();
         assert_eq!(redelivered, unacked);
         // Nothing acked comes back.
