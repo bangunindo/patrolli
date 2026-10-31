@@ -1,0 +1,5517 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "Prometheus data source scraping the Patrolli /metrics endpoint.",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "9.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
+    },
+    {
+      "type": "panel",
+      "id": "stat",
+      "name": "Stat",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "timeseries",
+      "name": "Time series",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "state-timeline",
+      "name": "State timeline",
+      "version": ""
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Patrolli internal Prometheus metrics. Rates account for counter resets; range totals use increase(). Select the Prometheus data source during import, then filter by job and instance. Configure the data source scrape interval to match Prometheus. Missing or unused components show No data; cluster forwarding is exported only in cluster mode.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "title": "Rate interval and scrape configuration",
+      "type": "link",
+      "url": "https://grafana.com/docs/grafana/latest/datasources/prometheus/template-variables/#use-__rate_interval",
+      "targetBlank": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Overview",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Sink records sent / s",
+      "description": "Successfully sent sink records across the selected targets.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(patrolli_sink_records_sent_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "Sent",
+          "refId": "A",
+          "range": false,
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Sink records sent · selected range",
+      "description": "Estimated increase over the dashboard time range, accounting for counter resets.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(patrolli_sink_records_sent_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__range]))",
+          "legendFormat": "Sent",
+          "refId": "A",
+          "range": false,
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Channel messages dropped · selected range",
+      "description": "Estimated channel drops over the dashboard time range. Missing series remain No data.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(patrolli_channel_messages_dropped_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__range]))",
+          "legendFormat": "Dropped",
+          "refId": "A",
+          "range": false,
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Oldest metrics snapshot",
+      "description": "Maximum age of the latest internal snapshot across selected targets and components.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "max (patrolli_internal_metrics_snapshot_age_seconds{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "legendFormat": "Age",
+          "refId": "A",
+          "range": false,
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Record throughput by stage",
+      "description": "Stage counts can differ because records may be filtered, expanded, routed, or forwarded. Do not sum these stages as unique ingestion.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(patrolli_listener_records_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "Listener produced",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(patrolli_processor_records_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "Processor received",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(patrolli_sink_records_sent_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "Sink sent",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Errors by component",
+      "description": "Separate error counters; they use different units of work and may describe the same event at multiple stages. Sink retries count failed attempts, not lost records. Processor records unrouted are lost with nothing downstream (no matching processor or sink), not errored.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(patrolli_listener_items_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "Listener items",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(patrolli_monitor_items_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "Monitor items",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(patrolli_processor_records_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "Processor records",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(patrolli_processor_records_unrouted_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "Processor records unrouted",
+          "refId": "F",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(patrolli_sink_records_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "Sink records",
+          "refId": "D",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(patrolli_sink_records_retried_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "Sink records retried",
+          "refId": "E",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "Channels and backpressure",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "panels": []
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Channel messages sent dropped and lost",
+      "description": "Per-channel message rates.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, channel_group, channel) (rate(patrolli_channel_messages_sent_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{channel_group}} / {{channel}} · Sent",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, channel_group, channel) (rate(patrolli_channel_messages_dropped_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{channel_group}} / {{channel}} · Dropped",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, channel_group, channel) (rate(patrolli_channel_messages_lost_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{channel_group}} / {{channel}} · Lost",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Channel batches sent dropped and lost",
+      "description": "Per-channel batch rates.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, channel_group, channel) (rate(patrolli_channel_batches_sent_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{channel_group}} / {{channel}} · Sent",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, channel_group, channel) (rate(patrolli_channel_batches_dropped_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{channel_group}} / {{channel}} · Dropped",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, channel_group, channel) (rate(patrolli_channel_batches_lost_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{channel_group}} / {{channel}} · Lost",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Memory channel capacity used",
+      "description": "Queued batches / configured batch capacity. Zero-capacity and disk channels are omitted.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "100 * (sum by (job, instance, channel_group, channel) (patrolli_channel_queue_length{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})) / ((sum by (job, instance, channel_group, channel) (patrolli_channel_queue_capacity{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})) > 0)",
+          "legendFormat": "{{job}} / {{instance}} · {{channel_group}} / {{channel}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Disk channel capacity used",
+      "description": "Disk bytes used / configured disk limit. Zero-limit and memory channels are omitted.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "100 * (sum by (job, instance, channel_group, channel) (patrolli_channel_disk_usage_bytes{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})) / ((sum by (job, instance, channel_group, channel) (patrolli_channel_disk_limit_bytes{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})) > 0)",
+          "legendFormat": "{{job}} / {{instance}} · {{channel_group}} / {{channel}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Channel send wait",
+      "description": "Cumulative wait seconds per second. Concurrent workers can produce values greater than one; this is not a latency percentile.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "suffix:s/s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, channel_group, channel) (rate(patrolli_channel_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{channel_group}} / {{channel}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Snapshot age by component",
+      "description": "Snapshot age is independent of Prometheus scrape success; rising age can indicate stalled internal metric publication.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "max by (job, instance, snapshot) (patrolli_internal_metrics_snapshot_age_seconds{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "legendFormat": "{{job}} / {{instance}} · {{snapshot}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 43,
+      "title": "Time spent and backpressure",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      },
+      "panels": []
+    },
+    {
+      "id": 44,
+      "type": "timeseries",
+      "title": "Listener time spent · stacked",
+      "description": "Rate of cumulative timing counters in seconds per second, summed over workers. Green = engine work; red = time sending output (including downstream waits); blue = waiting for input or the next batch tick. Sustained send wait can indicate downstream backpressure; receive wait usually means input starvation or idle time. All selected components are stacked together; use the legend and tooltip to identify each job, instance and component. Values can exceed 1 s/s and are not CPU utilization or a complete wall-clock budget. Total time is not stacked because it includes the phases. Compare send-wait share and channel capacity/drops to locate bottlenecks.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 39
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "suffix:s/s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Recorded time (s/s)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 65,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "C"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_engine_time_spent_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Engine",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Send wait",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_receive_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Receive wait",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 45,
+      "type": "timeseries",
+      "title": "Monitor time spent · stacked",
+      "description": "Rate of cumulative timing counters in seconds per second, summed over workers. Green = engine work; red = time sending output (including downstream waits); blue = waiting for input or the next batch tick. Sustained send wait can indicate downstream backpressure; receive wait usually means input starvation or idle time. All selected components are stacked together; use the legend and tooltip to identify each job, instance and component. Values can exceed 1 s/s and are not CPU utilization or a complete wall-clock budget. Total time is not stacked because it includes the phases. Compare send-wait share and channel capacity/drops to locate bottlenecks. Monitor engine time includes checks and batch construction; send time is recorded by a separate batch worker.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 39
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "suffix:s/s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Recorded time (s/s)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 65,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "C"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_monitor_engine_time_spent_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · monitor · Engine",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_monitor_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · monitor · Send wait",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_monitor_receive_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · monitor · Receive wait",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 46,
+      "type": "timeseries",
+      "title": "Processor time spent · stacked",
+      "description": "Rate of cumulative timing counters in seconds per second, summed over workers. Green = engine work; red = time sending output (including downstream waits); blue = waiting for input or the next batch tick. Sustained send wait can indicate downstream backpressure; receive wait usually means input starvation or idle time. All selected components are stacked together; use the legend and tooltip to identify each job, instance and component. Values can exceed 1 s/s and are not CPU utilization or a complete wall-clock budget. Total time is not stacked because it includes the phases. Compare send-wait share and channel capacity/drops to locate bottlenecks.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 47
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "suffix:s/s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Recorded time (s/s)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 65,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "C"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_processor_engine_time_spent_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · processor · Engine",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_processor_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · processor · Send wait",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_processor_receive_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · processor · Receive wait",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 47,
+      "type": "timeseries",
+      "title": "Sink time spent · stacked",
+      "description": "Rate of cumulative timing counters in seconds per second, summed over workers. Green = engine work; red = time sending output (including downstream waits); blue = waiting for input or the next batch tick. Sustained send wait can indicate downstream backpressure; receive wait usually means input starvation or idle time. All selected components are stacked together; use the legend and tooltip to identify each job, instance and component. Values can exceed 1 s/s and are not CPU utilization or a complete wall-clock budget. Total time is not stacked because it includes the phases. Compare send-wait share and channel capacity/drops to locate bottlenecks. Sink send wait includes destination I/O and flushing.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 47
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "suffix:s/s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Recorded time (s/s)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 65,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "C"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_engine_time_spent_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Engine",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Send wait",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_receive_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Receive wait",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 48,
+      "type": "timeseries",
+      "title": "Processor node time spent · stacked",
+      "description": "Rate of cumulative timing counters in seconds per second, summed over workers. Green = engine work; red = time sending output (including downstream waits); blue = waiting for input or the next batch tick. Sustained send wait can indicate downstream backpressure; receive wait usually means input starvation or idle time. All selected components are stacked together; use the legend and tooltip to identify each job, instance and component. Values can exceed 1 s/s and are not CPU utilization or a complete wall-clock budget. Total time is not stacked because it includes the phases. Compare send-wait share and channel capacity/drops to locate bottlenecks. Processor nodes expose engine and send timing only; there is no receive-wait counter. These timings are also included in the processor totals.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 55
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "suffix:s/s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Recorded time (s/s)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 65,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, node_id) (rate(patrolli_processor_node_engine_time_spent_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · node {{node_id}} · Engine",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, node_id) (rate(patrolli_processor_node_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · node {{node_id}} · Send wait",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 49,
+      "type": "timeseries",
+      "title": "Send-wait share by component",
+      "description": "Send-wait rate / (engine + send-wait + receive-wait rates), calculated separately for each job, instance and component. Processor nodes use engine + send wait because they have no receive-wait counter. A high share identifies components spending most recorded time sending downstream; compare channel capacity, drops and throughput to confirm backpressure. Sink send time includes destination I/O and flushing. This is a share of instrumented time, not CPU utilization or worker capacity. A zero timing denominator is omitted. Processor node and processor series overlap in scope and are not stacked.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 55
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Send wait / recorded time (%)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "100 * (sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) / (((sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_engine_time_spent_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_receive_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval])))) > 0)",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · listener",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "100 * (sum by (job, instance) (rate(patrolli_monitor_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) / (((sum by (job, instance) (rate(patrolli_monitor_engine_time_spent_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance) (rate(patrolli_monitor_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance) (rate(patrolli_monitor_receive_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval])))) > 0)",
+          "legendFormat": "{{job}} / {{instance}} · monitor",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "100 * (sum by (job, instance) (rate(patrolli_processor_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) / (((sum by (job, instance) (rate(patrolli_processor_engine_time_spent_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance) (rate(patrolli_processor_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance) (rate(patrolli_processor_receive_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval])))) > 0)",
+          "legendFormat": "{{job}} / {{instance}} · processor",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "100 * (sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) / (((sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_engine_time_spent_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_receive_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval])))) > 0)",
+          "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · sink",
+          "refId": "D",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "100 * (sum by (job, instance, node_id) (rate(patrolli_processor_node_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) / (((sum by (job, instance, node_id) (rate(patrolli_processor_node_engine_time_spent_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance, node_id) (rate(patrolli_processor_node_send_wait_time_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval])))) > 0)",
+          "legendFormat": "{{job}} / {{instance}} · node {{node_id}}",
+          "refId": "E",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "row",
+      "title": "Listeners and monitors",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 63
+      },
+      "panels": []
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Listener item outcomes",
+      "description": "Listener item counters by listener and target.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 64
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_items_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Received",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_items_succeeded_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Succeeded",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_items_dropped_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Dropped",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_items_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Errored",
+          "refId": "D",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Listener byte outcomes",
+      "description": "Bytes received and processed by each listener.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 64
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "Bps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_bytes_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Received",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_bytes_succeeded_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Succeeded",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_bytes_dropped_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Dropped",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_bytes_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Errored",
+          "refId": "D",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Listener record delivery",
+      "description": "Record delivery counters may overlap and should be interpreted separately.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 72
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_sent_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Sent",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_forwarded_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Forwarded",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_forward_failed_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Forward failed",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_annotate_failed_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Annotation failed",
+          "refId": "D",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_dropped_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Dropped",
+          "refId": "E",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Errored",
+          "refId": "F",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Monitor item outcomes",
+      "description": "Monitor item counters across polling work.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 72
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_monitor_items_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · Processed",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_monitor_items_dropped_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · Dropped",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_monitor_items_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · Errored",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_monitor_items_retry_dropped_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · Retry dropped",
+          "refId": "D",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Processors and sinks",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 80
+      },
+      "panels": []
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Processor record outcomes",
+      "description": "Processor-wide rates. Unrouted: dropped because nothing was downstream (a processor id no longer configured, no processor id and no input-less sink, or a processor with no next step). Counted per drop, so output fanned out to two dead ends counts twice, as Sent counts once per sink.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 81
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_processor_records_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · Processed",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_processor_records_sent_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · Sent",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_processor_records_filtered_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · Filtered",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_processor_records_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · Errored",
+          "refId": "D",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_processor_records_unrouted_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · Unrouted",
+          "refId": "E",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Sink record outcomes",
+      "description": "Sink rates by target and sink identity.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 81
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Received",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_sent_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Sent",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_filtered_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Filtered",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Errored",
+          "refId": "D",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Processor node outcomes",
+      "description": "Per-node rates; the same record can pass through multiple nodes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 89
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, node_id) (rate(patrolli_processor_node_records_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{node_id}} · Processed",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, node_id) (rate(patrolli_processor_node_records_filtered_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{node_id}} · Filtered",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, node_id) (rate(patrolli_processor_node_records_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{node_id}} · Errored",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Processor edge throughput",
+      "description": "Records sent across each processor edge.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 89
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, source_id, target_id, target_kind) (rate(patrolli_processor_edge_records_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{source_id}} → {{target_kind}} {{target_id}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Engine work",
+      "description": "Engine seconds per second, summed over workers. Values can exceed one; this is neither CPU utilization nor per-record latency.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 97
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "suffix:s/s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_engine_time_spent_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · listener",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_monitor_engine_time_spent_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · monitor",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (rate(patrolli_processor_engine_time_spent_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · processor",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_engine_time_spent_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · sink",
+          "refId": "D",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Workers",
+      "description": "Current worker counts.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 97
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, listener_id, listener_name) (patrolli_listener_workers{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · listener",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (patrolli_monitor_workers{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "legendFormat": "{{job}} / {{instance}} · monitor",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance) (patrolli_processor_workers{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "legendFormat": "{{job}} / {{instance}} · processor",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, sink_id, sink_name) (patrolli_sink_workers{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · sink",
+          "refId": "D",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 50,
+      "type": "row",
+      "title": "Sink retries and endpoints",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 105
+      },
+      "panels": []
+    },
+    {
+      "id": 51,
+      "type": "timeseries",
+      "title": "Sink records retried",
+      "description": "Records sent again after a failed attempt, counted once per attempt: a batch that needs three attempts counts twice. Errored records are the ones a sink dropped: failed to encode, rejected by the destination, or out of retries (retry.max_elapsed).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 106
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_retried_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Retried",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Errored",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 52,
+      "type": "timeseries",
+      "title": "Sink records pending retry",
+      "description": "Records the sink workers hold for their next attempt. A value that stays above zero means the destination keeps failing and the sink's input topic is backing up behind it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 106
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "max by (job, instance, sink_id, sink_name) (patrolli_sink_records_pending_retry{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}})",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 53,
+      "type": "state-timeline",
+      "title": "Sink endpoint health",
+      "description": "ClickHouse and OTAP sinks only, one row per destination endpoint. Up takes sends; Backing off means the sink is holding off that endpoint after a failed send.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 114
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Backing off",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "Up",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "alignValue": "left",
+        "mergeValues": true,
+        "rowHeight": 0.9,
+        "showValue": "never",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "min by (job, instance, sink_id, sink_name, endpoint) (patrolli_sink_endpoint_up{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · {{endpoint}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "type": "row",
+      "title": "Lookup tables",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 122
+      },
+      "panels": []
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "Lookup outcomes",
+      "description": "Per-processor series appear after the processor first uses the table.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 123
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name, node_id) (rate(patrolli_lookup_table_processor_lookups_hit_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · {{node_id}} · Hit",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name, node_id) (rate(patrolli_lookup_table_processor_lookups_missed_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · {{node_id}} · Missed",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name, node_id) (rate(patrolli_lookup_table_processor_lookups_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · {{node_id}} · Key error",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "type": "timeseries",
+      "title": "Lookup hit ratio",
+      "description": "Hits / all lookups, including misses and key errors. Idle series have no ratio.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 123
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "100 * (sum by (job, instance, table_id, table_name, node_id) (rate(patrolli_lookup_table_processor_lookups_hit_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) / ((sum by (job, instance, table_id, table_name, node_id) (rate(patrolli_lookup_table_processor_lookups_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) > 0)",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · {{node_id}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Mutable table write outcomes",
+      "description": "Mutable table writes and removals by processor.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 131
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name, node_id) (rate(patrolli_lookup_table_processor_writes_inserted_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · {{node_id}} · Inserted",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name, node_id) (rate(patrolli_lookup_table_processor_writes_updated_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · {{node_id}} · Updated",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name, node_id) (rate(patrolli_lookup_table_processor_writes_rejected_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · {{node_id}} · Rejected",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name, node_id) (rate(patrolli_lookup_table_processor_writes_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · {{node_id}} · Row error",
+          "refId": "D",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name, node_id) (rate(patrolli_lookup_table_processor_removes_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · {{node_id}} · Removed",
+          "refId": "E",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Lookup table rows",
+      "description": "Current rows and mutable table caps. Immutable tables do not export a row cap.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 131
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name) (patrolli_lookup_table_rows{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · rows",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name) (patrolli_lookup_table_max_rows{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · row cap",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Lookup table loads and failures",
+      "description": "Immutable table load rates. A failed load can leave an older generation available.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 139
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name) (rate(patrolli_lookup_table_loads_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · Installed",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name) (rate(patrolli_lookup_table_load_failures_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · Failed",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "Lookup source rows skipped",
+      "description": "Cumulative skipped-row counters by rejection reason, across all loads. Uses counters rather than current-generation gauges.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 139
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name, reason) (rate(patrolli_lookup_table_rows_skipped_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · {{reason}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "Mutable table rejections and expiration",
+      "description": "Lifecycle counters for mutable tables. Released strings are pool entries, not rows.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 147
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name) (rate(patrolli_lookup_table_rows_rejected_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · Row-cap rejected",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name) (rate(patrolli_lookup_table_rows_expired_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · TTL expired",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, instance, table_id, table_name) (rate(patrolli_lookup_table_strings_released_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}}) · Strings released",
+          "refId": "C",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "type": "timeseries",
+      "title": "Latest lookup load failed",
+      "description": "Immutable tables only. 1 means the most recent attempt failed; 0 means it did not.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 147
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "max by (job, instance, table_id, table_name) (patrolli_lookup_table_load_error{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "legendFormat": "{{job}} / {{instance}} · {{table_name}} ({{table_id}})",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "type": "row",
+      "title": "Cluster forwarding (cluster mode only)",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 155
+      },
+      "panels": [
+        {
+          "id": 37,
+          "type": "timeseries",
+          "title": "Forwarder record outcomes",
+          "description": "Exported only in cluster mode.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 156
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "mappings": [],
+              "min": 0,
+              "unit": "ops",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 8,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (job, instance) (rate(patrolli_forwarder_records_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{job}} / {{instance}} · Processed",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (job, instance) (rate(patrolli_forwarder_records_sent_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{job}} / {{instance}} · Sent",
+              "refId": "B",
+              "range": true,
+              "instant": false
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (job, instance) (rate(patrolli_forwarder_records_dropped_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{job}} / {{instance}} · Dropped",
+              "refId": "C",
+              "range": true,
+              "instant": false
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (job, instance) (rate(patrolli_forwarder_records_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{job}} / {{instance}} · Errored",
+              "refId": "D",
+              "range": true,
+              "instant": false
+            }
+          ]
+        },
+        {
+          "id": 38,
+          "type": "timeseries",
+          "title": "Forwarder peer record outcomes",
+          "description": "Record rates by forwarder peer. Exported only in cluster mode.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 156
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "mappings": [],
+              "min": 0,
+              "unit": "ops",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 8,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (job, instance, peer_id) (rate(patrolli_forwarder_peer_records_sent_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{job}} / {{instance}} · {{peer_id}} · Sent",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (job, instance, peer_id) (rate(patrolli_forwarder_peer_records_dropped_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{job}} / {{instance}} · {{peer_id}} · Dropped",
+              "refId": "B",
+              "range": true,
+              "instant": false
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (job, instance, peer_id) (rate(patrolli_forwarder_peer_records_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{job}} / {{instance}} · {{peer_id}} · Errored",
+              "refId": "C",
+              "range": true,
+              "instant": false
+            }
+          ]
+        },
+        {
+          "id": 39,
+          "type": "timeseries",
+          "title": "Forwarder peer byte outcomes",
+          "description": "Byte rates by forwarder peer. Exported only in cluster mode.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 164
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "mappings": [],
+              "min": 0,
+              "unit": "Bps",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 8,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (job, instance, peer_id) (rate(patrolli_forwarder_peer_bytes_sent_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{job}} / {{instance}} · {{peer_id}} · Sent",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (job, instance, peer_id) (rate(patrolli_forwarder_peer_bytes_dropped_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{job}} / {{instance}} · {{peer_id}} · Dropped",
+              "refId": "B",
+              "range": true,
+              "instant": false
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (job, instance, peer_id) (rate(patrolli_forwarder_peer_bytes_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{job}} / {{instance}} · {{peer_id}} · Errored",
+              "refId": "C",
+              "range": true,
+              "instant": false
+            }
+          ]
+        },
+        {
+          "id": 40,
+          "type": "timeseries",
+          "title": "Forwarder peer connections",
+          "description": "Current live connections; this metric is a gauge.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 164
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "mappings": [],
+              "min": 0,
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 8,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (job, instance, peer_id) (patrolli_forwarder_peer_connections{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+              "legendFormat": "{{job}} / {{instance}} · {{peer_id}}",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            }
+          ]
+        },
+        {
+          "id": 41,
+          "type": "timeseries",
+          "title": "Forwarder server records",
+          "description": "Incoming cluster forwarding server record counters.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 172
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "mappings": [],
+              "min": 0,
+              "unit": "ops",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 8,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (job, instance) (rate(patrolli_forwarder_server_records_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{job}} / {{instance}} · Processed",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (job, instance) (rate(patrolli_forwarder_server_records_sent_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{job}} / {{instance}} · Sent",
+              "refId": "B",
+              "range": true,
+              "instant": false
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (job, instance) (rate(patrolli_forwarder_server_records_errored_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{job}} / {{instance}} · Errored",
+              "refId": "C",
+              "range": true,
+              "instant": false
+            }
+          ]
+        },
+        {
+          "id": 42,
+          "type": "timeseries",
+          "title": "Forwarder server bytes",
+          "description": "Bytes processed by the cluster forwarding server.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 172
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "mappings": [],
+              "min": 0,
+              "unit": "Bps",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 8,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (job, instance) (rate(patrolli_forwarder_server_bytes_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{job}} / {{instance}}",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": [
+    "patrolli",
+    "prometheus"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "job",
+        "label": "Job",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(patrolli_internal_metrics_snapshot_age_seconds, job)",
+        "query": {
+          "query": "label_values(patrolli_internal_metrics_snapshot_age_seconds, job)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "hide": 0,
+        "skipUrlSync": false,
+        "regex": ""
+      },
+      {
+        "name": "instance",
+        "label": "Instance",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(patrolli_internal_metrics_snapshot_age_seconds{job=~\"${job:regex}\"}, instance)",
+        "query": {
+          "query": "label_values(patrolli_internal_metrics_snapshot_age_seconds{job=~\"${job:regex}\"}, instance)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "hide": 0,
+        "skipUrlSync": false,
+        "regex": ""
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "1h",
+      "6h",
+      "12h",
+      "24h",
+      "2d",
+      "7d",
+      "30d"
+    ]
+  },
+  "timezone": "browser",
+  "title": "Patrolli — Internal Metrics",
+  "uid": "patrolli-internal",
+  "version": 1,
+  "weekStart": ""
+}

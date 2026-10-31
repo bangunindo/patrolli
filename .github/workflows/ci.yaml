@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+name: CI
+
+# Lint and test on PRs and pushes to main. PRs skip the core or web jobs when
+# they don't touch them; pushes to main run everything, which also refreshes
+# the cargo cache that PRs and release tags restore from. Require only the
+# `ci-ok` check in branch protection: skipped jobs never report their own.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      core: ${{ steps.filter.outputs.core }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
+            echo "core=true" >> "$GITHUB_OUTPUT"
+            echo "web=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[].filename')"
+          echo "$files"
+          match() { grep -qE "$1" <<< "$files" && echo true || echo false; }
+          echo "core=$(match '^(src/core/|\.github/)')" >> "$GITHUB_OUTPUT"
+          echo "web=$(match '^(src/web/|\.github/)')" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: changes
+    uses: ./.github/workflows/test.yaml
+    with:
+      core: ${{ needs.changes.outputs.core == 'true' }}
+      web: ${{ needs.changes.outputs.web == 'true' }}
+
+  ci-ok:
+    needs: [changes, test]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          for result in $RESULTS; do
+            if [[ "$result" != success && "$result" != skipped ]]; then exit 1; fi
+          done

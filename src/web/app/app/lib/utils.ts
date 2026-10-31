@@ -1,0 +1,10 @@
+// SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+//
+// SPDX-License-Identifier: AGPL-3.0-only
+
+import { type ClassValue, clsx } from 'clsx'
+import { twMerge } from 'tailwind-merge'
+
+export function cn(...inputs: ClassValue[]) {
+	return twMerge(clsx(inputs))
+}

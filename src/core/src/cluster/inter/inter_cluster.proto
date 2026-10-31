@@ -1,0 +1,218 @@
+// SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+//
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package patrolli.cluster.inter.v1;
+
+enum SignalType {
+  SIGNAL_TYPE_UNSPECIFIED = 0;
+  SIGNAL_TYPE_LOGS = 1;
+  SIGNAL_TYPE_METRICS = 2;
+  SIGNAL_TYPE_TRACES = 3;
+}
+
+// Identity a node presents on connect. The peer can reject on version skew or
+// unknown node_id before any data flows.
+message NodeIdentity {
+  bytes node_id = 1;
+  string node_name = 2;
+  // Build/protocol version, for compatibility checks during rolling upgrades.
+  string version = 3;
+}
+
+message PayloadBatch {
+  SignalType signal = 1;
+  bytes otap_payload = 2;
+}
+
+message ForwardAck {
+  ForwardStatus status = 1;
+  string message = 2;
+}
+
+enum ForwardStatus {
+  FORWARD_STATUS_UNSPECIFIED = 0;
+  FORWARD_STATUS_OK = 1;
+  FORWARD_STATUS_ERROR = 2;
+}
+
+message CaptureRequest {
+  bytes processor_id = 1;
+  uint64 max_count = 2 ;
+}
+
+// message is already json-encoded
+message CaptureMessage {
+  bytes message_in = 1;
+  optional bytes message_out = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Item self-monitoring
+//
+// Per-item health lives only in the owning node's memory; it is never persisted
+// to Postgres. A monitor item has exactly one owner (`hosts.monitored_by`), so
+// the API resolves the node and asks it directly.
+// ---------------------------------------------------------------------------
+
+// Coarse health, precomputed by the owning node so callers don't re-derive it
+// from timestamps and cron schedules. Values match `cache::item::ItemState`.
+enum ItemState {
+  ITEM_STATE_UNSPECIFIED = 0;
+  // Known to the cache but has never run a check or matched a record.
+  ITEM_STATE_NEVER_RAN = 1;
+  ITEM_STATE_OK = 2;
+  // Last check succeeded but produced zero records — the "green but empty"
+  // case that a plain ok/failed flag can't express.
+  ITEM_STATE_OK_EMPTY = 3;
+  // Failing with retries left before the check is abandoned.
+  ITEM_STATE_RETRYING = 4;
+  ITEM_STATE_FAILING = 5;
+  // Past due by more than its schedule allows: the scheduler or the whole node
+  // is wedged, which is not the same thing as the target failing.
+  ITEM_STATE_STALE = 6;
+}
+
+// Why a check failed, grouped so that each value implies a different fix.
+// Values match `cache::item::FailureKind` one-for-one.
+enum FailureKind {
+  FAILURE_KIND_UNSPECIFIED = 0;
+  // Deadline passed with no answer.
+  FAILURE_KIND_TIMEOUT = 1;
+  // Couldn't get the request to the target at all.
+  FAILURE_KIND_UNREACHABLE = 2;
+  // Target rejected our credentials.
+  FAILURE_KIND_AUTH = 3;
+  // Target answered "not available to you".
+  FAILURE_KIND_NOT_SUPPORTED = 4;
+  // Target answered with an error of its own.
+  FAILURE_KIND_TARGET_ERROR = 5;
+  // Target answered with bytes we can't decode.
+  FAILURE_KIND_MALFORMED = 6;
+  // patrolli-side config is wrong or incomplete. Never retried.
+  FAILURE_KIND_CONFIG = 7;
+  // Collected, but couldn't be handed downstream.
+  FAILURE_KIND_DROPPED = 8;
+  // Forwarding to the owning node failed.
+  FAILURE_KIND_CLUSTER = 9;
+  // A patrolli bug.
+  FAILURE_KIND_INTERNAL = 10;
+}
+
+message ItemFailure {
+  int64 at_unix_ms = 1;
+  FailureKind kind = 2;
+  // Truncated by the producer; safe to show verbatim. Never carries
+  // credentials.
+  string reason = 3;
+  // Structured specifics — failing OIDs, HTTP status, channel name. Already
+  // JSON-encoded, same convention as CaptureMessage. Empty when absent.
+  bytes detail_json = 4;
+}
+
+message ItemStats {
+  bytes item_id = 1;
+  // Which node produced this snapshot. Required to merge listener items, which
+  // accumulate stats on every node that receives their traffic.
+  bytes node_id = 2;
+
+  ItemState state = 3;
+
+  // Counters since the response's `stats_since_unix_ms`. Zero is meaningful.
+  uint64 total_checks = 4;
+  uint64 total_failures = 5;
+  uint64 total_records = 6;
+  uint64 total_dropped = 7;
+  uint32 consecutive_failures = 8;
+  uint32 retries = 9;
+
+  // Absent rather than zero when the event hasn't happened yet, so a caller
+  // can tell "never succeeded" from "succeeded at the epoch".
+  optional int64 last_attempt_unix_ms = 10;
+  optional int64 last_success_unix_ms = 11;
+  optional int64 last_nonempty_unix_ms = 12;
+  optional int64 next_check_unix_ms = 13;
+
+  // Absent until the first check completes. For last_record_count zero is
+  // meaningful: the check ran and returned nothing.
+  optional uint32 last_duration_ms = 14;
+  optional uint32 last_lag_ms = 15;
+  optional uint32 last_record_count = 16;
+
+  // Absent while the item has never failed.
+  ItemFailure last_failure = 17;
+  // Newest first, capped by the producing node. Omitted entirely when the
+  // request sets `exclude_recent_failures`.
+  repeated ItemFailure recent_failures = 18;
+
+  // The trailing 24 hours as 288 five-minute buckets, ending at
+  // `activity_window_end_unix_ms`. 36 bytes each, LSB-first — bucket i is bit
+  // (i % 8) of byte (i / 8).
+  //
+  // Two planes rather than one bit per bucket, because a single bit cannot tell
+  // "failed" from "wasn't due":
+  //
+  //   ok fail  meaning
+  //    0   0   no result — young item, not due, or gone silent
+  //    1   0   healthy
+  //    0   1   failing
+  //    1   1   flapped inside the five minutes
+  //
+  // A bucket set in neither plane is NOT a failure. It is most buckets for
+  // anything on a schedule slower than five minutes. Both empty when the item
+  // has reported nothing in the last 24 h.
+  //
+  // Buckets are addressed by absolute 5-minute tick modulo 288, so positions are
+  // stable and timezone-free: 288 x 5 min is exactly 24 h and the epoch is
+  // UTC-midnight aligned, making bucket 0 always 00:00-00:05 UTC. Every node
+  // agrees on what a bit position means. Rotate by a local UTC offset to render
+  // local labels; that is lossless, because a full trailing day is present.
+  bytes activity_ok = 19;
+  bytes activity_fail = 20;
+  // Start of the newest bucket in the window — the 5-minute boundary at or
+  // before the moment the producer read its counters. The window is the 288
+  // buckets ending here, so bucket i is the most recent tick t <= this with
+  // t % 288 == i.
+  int64 activity_window_end_unix_ms = 21;
+}
+
+message ItemStatsRequest {
+  // The items to report. Empty = none: the response carries no stats. There is
+  // deliberately no "every item" form — a node can hold millions of items, and a
+  // whole-map sweep is too expensive to be one missing argument away.
+  repeated bytes item_ids = 1;
+  // Empty = no filter. Applied on each node to the requested items, so a caller
+  // asking "which of these are broken" doesn't pay to ship the healthy ones.
+  repeated ItemState states = 2;
+  // Drop `recent_failures` from the response — a table view only needs the
+  // latest one, and the ring is the bulk of the payload.
+  bool exclude_recent_failures = 3;
+}
+
+// Chunked: a large id list can outgrow one message, so the server splits the
+// result across messages rather than building one that trips
+// MAX_GRPC_MESSAGE_SIZE.
+message ItemStatsResponse {
+  repeated ItemStats stats = 1;
+  bytes node_id = 2;
+  // When this node's counters started — process start, or the point a
+  // persisted snapshot was restored from. Everything before it is unknowable,
+  // so the UI must say "since 09:14" rather than implying all-time history.
+  int64 stats_since_unix_ms = 3;
+  // Requested ids this node holds no stats for. Set on the final chunk only,
+  // so the caller can distinguish "not owned here" from "owned but silent".
+  repeated bytes unknown_item_ids = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Service
+// ---------------------------------------------------------------------------
+
+service InterClusterService {
+  rpc Hello(NodeIdentity) returns (NodeIdentity);
+  rpc ForwardPayloads(stream PayloadBatch) returns (stream ForwardAck);
+  rpc ProcessorCapture(CaptureRequest) returns (stream CaptureMessage);
+  rpc GetItemStats(ItemStatsRequest) returns (stream ItemStatsResponse);
+}
