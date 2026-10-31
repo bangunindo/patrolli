@@ -1,0 +1,234 @@
+<!--
+SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+
+SPDX-License-Identifier: AGPL-3.0-only
+-->
+
+<script setup lang="ts">
+import processorsApi from '@/app/api/processors.api'
+import type { IProcessor, IProcessorListParams } from '@@/shared/types/processor.type'
+import { computed, onUnmounted, reactive, ref, watch } from 'vue'
+import AppInputSelectTable from '@/components/app/input/AppInputSelectTable.vue'
+
+const props = withDefaults(
+	defineProps<{
+		headers?: any[]
+		required?: boolean
+		multiple?: boolean
+		label?: string
+		showLabel?: boolean
+		clusterUrl?: string
+		error?: string | string[]
+		rules?: string[]
+	}>(),
+	{
+		required: false,
+		multiple: true,
+		error: '',
+		rules: () => [],
+		headers: () => {
+			return [
+				{
+					key: 'name',
+					title: 'Name'
+				},
+				{
+					key: 'adm_status',
+					title: 'Status'
+				}
+			]
+		}
+	}
+)
+
+const emits = defineEmits<{
+	close: []
+	'update:error': [value: string]
+}>()
+
+const modelValue = defineModel<string[] | string>()
+const processors = ref<IProcessor[]>([])
+const loading = ref<boolean>(true)
+
+const clusterURLs = computed(() => (props.clusterUrl ? [props.clusterUrl] : undefined))
+
+const pagination = reactive({
+	rows: 10,
+	currentPage: 1,
+	totalRecords: 0,
+	reachEnd: false,
+	search: false
+})
+
+const filter = reactive<IProcessorListParams>({
+	name: undefined,
+	order_by: undefined,
+	order_dir: undefined,
+	limit: pagination.rows,
+	offset: (pagination.currentPage - 1) * pagination.rows
+})
+const errors = ref<string | null>(null)
+
+const loadMore = async (payload) => {
+	pagination.currentPage = payload.page ?? payload.currentPage
+	filter.offset = payload.offset ?? 0
+
+	if (payload.refetch) {
+		await fetchSelectionData()
+		return
+	}
+
+	await fetchData()
+}
+
+const onSearch = async (search) => {
+	pagination.search = true
+	pagination.currentPage = 1
+	pagination.reachEnd = false
+
+	filter.offset = 0
+	filter.name = search
+
+	processors.value = []
+
+	await fetchData()
+	pagination.search = false
+}
+
+const fetchSelectionData = async () => {
+	const selectedIds = Array.isArray(modelValue.value)
+		? modelValue.value
+		: modelValue.value
+			? [modelValue.value]
+			: []
+
+	const response = await processorsApi.get({ processor_ids: selectedIds }, clusterURLs.value)
+	if (response?.success && response.data?.processors) {
+		processors.value = [...response.data.processors].noDuplicateObject('processor_id')
+	}
+}
+
+const fetchData = async () => {
+	loading.value = true
+	errors.value = null
+
+	try {
+		if (pagination.reachEnd) return
+
+		const resp = processorsApi.get(filter, clusterURLs.value)
+		const promises: Promise<any>[] = [resp]
+
+		if (!pagination.search) {
+			const selectedIds = Array.isArray(modelValue.value)
+				? modelValue.value
+				: modelValue.value
+					? [modelValue.value]
+					: []
+
+			if (processors.value.length === 0 && selectedIds.length > 0) {
+				const selectedResp = processorsApi.get(
+					{ processor_ids: selectedIds },
+					clusterURLs.value
+				)
+				promises.push(selectedResp)
+			}
+		}
+
+		const responsePromises = await Promise.all(promises)
+
+		const [response, selectedResp] = responsePromises
+
+		if (response?.success) {
+			if (selectedResp?.success && selectedResp.data?.processors) {
+				processors.value = [...selectedResp.data.processors]
+			}
+
+			processors.value = [
+				...processors.value,
+				...(response.data?.processors || [])
+			].noDuplicateObject('processor_id')
+
+			if (!pagination.search && pagination.currentPage == 1) {
+				pagination.totalRecords = response.data?.total || 0
+			}
+
+			if (processors.value.length >= pagination.totalRecords) {
+				pagination.reachEnd = true
+			}
+		}
+	} catch (err: any) {
+		errors.value = err.message || 'Failed to fetch items'
+	} finally {
+		pagination.search = false
+		loading.value = false
+	}
+}
+
+const showData = computed<any[]>(() => {
+	return processors.value as any[]
+})
+
+watch(
+	() => props.clusterUrl,
+	async () => {
+		pagination.currentPage = 1
+		pagination.reachEnd = false
+		pagination.totalRecords = 0
+		filter.offset = 0
+		processors.value = []
+		await fetchData()
+	}
+)
+
+watch(
+	() => modelValue.value,
+	async (newVal) => {
+		if (!newVal) return
+		const selectedIds = Array.isArray(newVal) ? newVal : [newVal]
+		const existingIds = new Set(processors.value.map((p) => p.processor_id))
+		const missingIds = selectedIds.filter((id) => id && !existingIds.has(id))
+		if (missingIds.length > 0) {
+			const res = await processorsApi.get({ processor_ids: missingIds }, clusterURLs.value)
+			if (res?.success && res.data?.processors) {
+				processors.value = [...res.data.processors, ...processors.value].noDuplicateObject(
+					'processor_id'
+				)
+			}
+		}
+	}
+)
+
+onUnmounted(() => {
+	pagination.currentPage = 1
+	pagination.reachEnd = false
+	pagination.totalRecords = 0
+	filter.offset = 0
+
+	modelValue.value = props.multiple ? [] : undefined
+})
+</script>
+
+<template>
+	<div>
+		<AppInputSelectTable
+			v-model="modelValue"
+			class="min-w-[250px] flex-1 flex-grow"
+			:label="props.label || 'Processor'"
+			value-key="processor_id"
+			checkbox-key="name"
+			:show-label="props.showLabel"
+			:data="showData"
+			:pagination="pagination"
+			:loading="loading"
+			:header-table="props.headers"
+			:required="props.required"
+			:multiple="props.multiple"
+			:error="props.error"
+			:rules="props.rules"
+			@infinite="loadMore"
+			@search="onSearch"
+			@close="emits('close')"
+			@update:error="emits('update:error', $event)"
+		/>
+	</div>
+</template>

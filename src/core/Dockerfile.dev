@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+FROM rust:1.99.1 AS build_stage
+RUN apt-get update && apt-get install -y \
+    cmake \
+    libclang-dev \
+    libcurl4-openssl-dev \
+    libsasl2-dev \
+    protobuf-compiler \
+    libunwind-dev
+COPY . /patrolli_code/
+WORKDIR /patrolli_code
+
+# Use BuildKit cache mounts to persist dependencies and build artifacts
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/patrolli_code/target \
+    cargo build --release --bin patrolli && \
+    cp target/release/patrolli /usr/local/bin/patrolli
+RUN chmod +x /usr/local/bin/patrolli
+
+FROM ubuntu:26.04
+ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+RUN apt-get update && \
+    apt-get install -y \
+    libsasl2-dev \
+    snmp-mibs-downloader \
+    ca-certificates \
+    libunwind8
+COPY --from=build_stage /usr/local/bin/patrolli /patrolli
+ENTRYPOINT ["/patrolli"]
+CMD ["--config", "config.yaml"]

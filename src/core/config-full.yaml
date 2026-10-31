@@ -1,0 +1,1285 @@
+# SPDX-FileCopyrightText: 2025 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# config-full.yaml
+#
+# Reference configuration for Patrolli's local mode. Every option that the YAML
+# loader recognizes appears here at least once. Most are commented out — they
+# show defaults or alternative variants. Uncomment the parts you need.
+#
+# Local mode loads everything from this file. In backend mode, only `global`
+# (and especially `global.backend`) is read from disk; the rest lives in
+# PostgreSQL and is hot-reloaded from there.
+#
+# IDs are UUIDs and must be unique within their kind. Item.processors and
+# Sink.inputs are wired by ID — change an ID and update every reference.
+
+# ──────────────────────────────────────────────────────────────────────────────
+# global — runtime-wide settings: logging, MIB paths, the processor channel,
+# persistent cache, and (optionally) the backend/cluster block.
+# ──────────────────────────────────────────────────────────────────────────────
+global:
+  # How often each subsystem refreshes its internal metrics snapshot, in
+  # milliseconds. Default 1000. The `internal_metrics` listener (on its own
+  # `interval`) and the Prometheus endpoint below both read that snapshot.
+  internal_metrics_interval: 1000
+
+  # How long a shutdown (SIGTERM / SIGINT) may take, in milliseconds. Every
+  # teardown step is cut short so the whole of it ends by then, even with a
+  # sink whose destination is down; 5 seconds past it the process exits
+  # regardless. A second signal exits at once. Default 20000, which fits
+  # Kubernetes' default 30s terminationGracePeriodSeconds.
+  shutdown_timeout: 20000
+
+  # Dedicated OpenMetrics endpoint. It is independent of the backend API and
+  # is available in either local or backend mode when this block is present.
+  # prometheus:
+  #   address: 127.0.0.1:9464
+  #   bearer_token: replace-with-a-secret
+  #   tls:
+  #     cert_path: /etc/patrolli/prometheus.crt
+  #     key_path: /etc/patrolli/prometheus.key
+  #     # Optional: requiring a client certificate signed by this CA enables mTLS.
+  #     ca_cert_path: /etc/patrolli/prometheus-client-ca.crt
+
+  logger:
+    # trace | debug | info | warn | error | off
+    level: info
+    # `stderr`, `stdout`, or an absolute file path. Default: stderr.
+    output: stderr
+    # text | json
+    format: text
+    # Sets RUST_BACKTRACE=1 for the process: affects panic backtraces and `anyhow`
+    # backtrace capture. It does NOT add backtraces to log events.
+    print_trace: false
+    # Strip ANSI color codes (useful when piping to journald/syslog).
+    disable_color: false
+    # Repeated identical events (same level, target, message and field values)
+    # are rate-limited by default, with a periodic summary of what was
+    # suppressed. Set true to emit every occurrence instead — useful when
+    # debugging a burst, at the cost of unbounded log volume from hot paths.
+    disable_throttle: false
+    # Per-module overrides — handy to silence noisy crates like async_snmp.
+    modules:
+      - name: async_snmp
+        level: warn
+      - name: tower
+        level: info
+
+  mib:
+    # Set true to skip MIB loading entirely — saves the memory the loaded model
+    # occupies, but symbolic OIDs no longer resolve and SNMP values are reported
+    # by numeric OID only.
+    disabled: false
+    # Extra directories scanned for MIB files. Loaded once at startup.
+    dirs:
+      # - /usr/share/snmp/mibs
+      # - /etc/patrolli/mibs
+    # Set true to skip the built-in system MIBs and rely solely on `dirs`.
+    disable_system_mib: false
+
+  # Where disk-backed channels (`type: disk` below) keep their data. One
+  # database per process, created at startup whether or not a disk channel is
+  # configured. A sink's backlog outlives restarts and config reloads; once
+  # the sinks are started (at startup, and in backend mode whenever the node
+  # becomes main again), the data of sinks no longer configured is deleted.
+  disk_channel:
+    data_dir: /var/lib/patrolli/channel/    # default
+    max_journal_size: 536870912          # bytes, default 512 MiB
+    cache_size: 134217728                # bytes, default 128 MiB
+
+  # The channel between Listeners/Monitors and the Processor. Same shape as a
+  # sink's `channel`; `type` is required whenever this block is present.
+  processor:
+    type: memory
+    # If true, dropped metrics are counted instead of blocking the producer
+    # when the channel is full. Use to favor latency over completeness.
+    non_blocking: false
+    # 0 = unbuffered, only sent if the receiver is ready. Otherwise the number of slots.
+    channel_buffer_size: 0
+    # A disk channel spills to global.disk_channel.data_dir instead:
+    # type: disk
+    # non_blocking: false
+    # max_memtable_size: 67108864    # bytes held in memory before flushing, default 64 MiB
+    # max_disk_size: 1073741824      # bytes of queued payloads (as stored, after
+    #                                # compression), default 1 GiB; 0 = unbounded.
+    #                                # Files can run past it until compaction drops
+    #                                # what was already delivered.
+    # worker_count: 0                # 0 → available_parallelism()
+    # compression: zstd              # none | lz4 | zstd (default zstd)
+    # transport_optimized: false     # store payloads in the OTAP transport encoding
+    #                                # (sorted, delta-encoded ids) before compressing:
+    #                                # smaller on disk, most of all for metrics, for a
+    #                                # costlier encode and decode. Attribute order is
+    #                                # not kept. Default false.
+    # channel_buffer_size: 10        # in-memory slots before the consumer, default 10.
+    #                                # A payload that finds a free slot skips the disk.
+
+  # Switches Patrolli into backend (cluster) mode. When present, listeners /
+  # hosts / endpoints / items / processors / sinks below are ignored — those
+  # come from the database.
+  # backend:
+  #   db_url: "postgresql://patrolli:patrolli@127.0.0.1:5432/patrolli"
+  #   db_tls:
+  #     insecure_skip_verify: false
+  #     ca_cert_path: /etc/patrolli/db-ca.crt
+  #   db_pool_size: 20
+  #   watcher_interval: 5            # seconds between config-change polls
+  #   # The REST API. Omit this whole block on the nodes that should not serve
+  #   # it: one node per cluster is enough. `enabled` defaults to true when the
+  #   # block is present, so it only has to be written to turn the API off while
+  #   # keeping the settings below.
+  #   api:
+  #     enabled: true
+  #     addr: 0.0.0.0:8080
+  #     tls:
+  #       cert_path: /etc/patrolli/api.crt
+  #       key_path: /etc/patrolli/api.key
+  #     cors:
+  #       allow_origins:
+  #         - https://patrolli.example.com
+  #         - http://localhost:5173      # frontend dev server
+  #     # The HS256 signing secret is NOT read from this file. Set PATROLLI_JWT_SECRET
+  #     # (>= 32 characters) in the environment, identical on every node of the cluster
+  #     # In backend mode, with or without this api block, stored secrets are encrypted with
+  #     # keys from the environment: PATROLLI_SECRET_KEYS (<id>:<secret>, secret at least
+  #     # 16 bytes, comma separated) and PATROLLI_SECRET_ACTIVE_KEY (the id that encrypts), identical on every node
+  #     # The first user is seeded from the environment too, only while the users
+  #     # table is empty: PATROLLI_ADMIN_USER and PATROLLI_ADMIN_PASSWORD, plus
+  #     # PATROLLI_ADMIN_ALLOW_SSO (true | false, default false).
+  #     auth:
+  #       local:
+  #         jwt_issuer: patrolli-cluster-1
+  #         access_token_ttl: 900        # seconds
+  #         refresh_token_ttl: 604800    # seconds
+  #       # Optional. Omit the whole block for local username/password auth only.
+  #       # When present, ID tokens from this issuer are accepted alongside local ones,
+  #       # verified against its JWKS (fetched on first use and cached). Copy issuer
+  #       # and jwks_url from <issuer>/.well-known/openid-configuration. If issuer is
+  #       # moved to a different user directory (not just a new URL), unlink every SSO
+  #       # user (POST /api/v1/users/{user_id}/unlink-sso) so they link again.
+  #       oidc:
+  #         issuer: https://sso.example.com/realms/patrolli
+  #         jwks_url: https://sso.example.com/realms/patrolli/protocol/openid-connect/certs
+  #         # Required `aud` on incoming tokens: the OAuth client id.
+  #         audience: patrolli
+  #         # Dot path to the claim matched against the Patrolli username. Google sends
+  #         # no preferred_username, use `email` there.
+  #         username_claim_path: preferred_username
+  #         # TLS for the JWKS request. Optional
+  #         tls:
+  #           ca_cert_path: /etc/patrolli/oidc-ca.crt
+  #           # insecure_skip_verify: false
+  #   # Per-node settings. The cluster-wide balancing policy is not set here: it
+  #   # lives in the database under `configs.cluster` and the leader re-reads it
+  #   # every tick. Its one knob, `max_active_nodes`, caps how many live nodes
+  #   # carry hosts (0, the default, means all); the rest stay empty as spares.
+  #   cluster:
+  #     node_id: 019d8eec-203e-7e83-895e-6a07d6f2f58e
+  #     node_name: patrolli-node-1
+  #     heartbeat_timeout: 15        # seconds; declare a peer dead after this
+  #     heartbeat_interval: 5        # seconds between heartbeats
+  #     metadata:
+  #       # Address peers reach this node on (host:port, resolvable).
+  #       advertise_address: "10.0.0.10:4636"
+  #     # Node-to-node traffic: the private gRPC service and the forwarder that
+  #     # uses it.
+  #     inter_node:
+  #       grpc:
+  #         address: 0.0.0.0:4636    # default
+  #         # Shared token every node sends and checks. Must be identical on all
+  #         # nodes. Omit for no authentication.
+  #         bearer: "shared-cluster-secret"
+  #         # Used both to serve and to dial peers, so it needs the CA (or
+  #         # insecure_skip_verify) and a cert/key pair.
+  #         # tls:
+  #         #   insecure_skip_verify: false
+  #         #   ca_cert_path: /etc/patrolli/cluster-ca.crt
+  #         #   cert_path: /etc/patrolli/cluster.crt
+  #         #   key_path: /etc/patrolli/cluster.key
+  #       # How this node ships metrics it received for hosts owned by another
+  #       # node.
+  #       forwarder:
+  #         worker_count: 0          # 0 → available_parallelism()
+  #         batch_size: 1000
+  #         batch_timeout: 1000      # ms
+  #         compression: zstd        # none | lz4 | zstd (default zstd)
+  #         channel:                 # same shape as global.processor
+  #           type: memory
+  #           non_blocking: false
+  #           channel_buffer_size: 0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# monitor — worker pool that picks snmp / snmp_walk / prometheus_scrape /
+# dummy items off the scheduler. Listener items are not scheduled here.
+# ──────────────────────────────────────────────────────────────────────────────
+monitor:
+  worker_count: 100      # default 100
+  batch_size: 1000       # max items pulled per batch_check
+  batch_timeout: 1000    # ms; flush partial batches after this long
+
+# ──────────────────────────────────────────────────────────────────────────────
+# lookup_tables — reference data that processors can enrich telemetry from.
+#
+# Two kinds:
+#   * file-backed (source.type: file) — immutable. Loaded at startup, then
+#     re-checked every `reload_interval`; the table is only rebuilt when a
+#     source file's modification time or size actually changed, and a failed
+#     reload leaves the previously loaded data in place.
+#   * processor-fed (source.type: processor) — mutable. Written by a processor
+#     that observes telemetry and read by another. Rows age out after `ttl`,
+#     and `max_rows` is a hard cap: once reached, writes that would add a new
+#     row are rejected rather than evicting a live one.
+#
+# Two key kinds:
+#   * hash — exact match on one or more columns.
+#   * range — disjoint ranges over integers or IP addresses, optionally
+#     bucketed by `partition_columns`. The bound columns are consumed by the
+#     index and are not readable as values; every other column is.
+#
+# A row whose range overlaps one already loaded, whose key repeats another
+# row's, or whose cell will not cast is skipped and counted; the load only
+# fails outright if every row was rejected.
+#
+# Internal metrics report occupancy and counters at internal_metrics_interval.
+# File tables also expose load_error and last_success_timestamp (Unix seconds,
+# zero until a load succeeds), so a failed reload retaining old data is visible.
+# Per-processor read/write counters require the attributed read_as/write_as
+# handles, so they are attributed to the processor node that probed the table.
+# ──────────────────────────────────────────────────────────────────────────────
+# lookup_tables:
+#   # ── Range over IP addresses: the classic geoip table.
+#   - id: 019b77b3-df79-70a2-ab01-f43b2cf72400
+#     name: geoip_city
+#     source:
+#       type: file
+#       location:
+#         type: file_system
+#       # Files are concatenated and must share a schema — one v4 dump plus one
+#       # v6 dump is the usual reason for more than one path.
+#       paths:
+#         - /var/lib/patrolli/lookup/dbip-city-ipv4.csv.gz
+#         - /var/lib/patrolli/lookup/dbip-city-ipv6.csv.gz
+#       compression: gzip        # none (default) | gzip | zstd | lz4
+#       reload_interval: 3600    # seconds; how often the files are re-stat'd. Default 60.
+#       format:
+#         type: csv
+#         has_headers: false     # when false, `headers` below is required
+#         # Configured headers override the file's own header row.
+#         headers: [start, end, country, region, city, latitude, longitude]
+#         delimiter: ','         # default ','
+#         quote: '"'             # default '"'
+#         # Inside a quoted field, `""` always means one `"`. Set `escape` as
+#         # well for dumps that write `\"` instead (MySQL OUTFILE and friends).
+#         # Unset by default, i.e. doubling only.
+#         escape: '\'
+#         # Raw field values read as null instead of data. Default [''], so an
+#         # empty field is null. Use [] to make an empty field an empty string
+#         # — the only way to express one — or list sentinels as below.
+#         null_values: ['', '\N']
+#         # Columns default to `string`. Cast the ones that are not.
+#         # Valid: bool | double | integer | string | ip
+#         type_cast:
+#           latitude: double
+#           longitude: double
+#     key:
+#       type: range
+#       range_type: ip           # ip | integer (default integer)
+#       start_column: start
+#       end_column: end
+#       start_inclusive: true    # default true
+#       end_inclusive: true      # default false, i.e. [start, end)
+#
+#   # ── Range over IP prefixes, bucketed by a partition key. Ranges only have
+#   # to be disjoint within a partition, so tenants in different VRFs can reuse
+#   # the same private address space. A prefix is written as its first and last
+#   # address (10.1.0.0/16 → 10.1.0.0, 10.1.255.255).
+#   - id: 019b77b3-df79-70a2-ab01-f43b2cf72401
+#     name: vrf_subnets
+#     source:
+#       type: file
+#       location:
+#         type: file_system
+#       paths: [/var/lib/patrolli/lookup/vrf-subnets.csv]
+#       format:
+#         type: csv
+#         has_headers: true    # vrf,net_first,net_last,tenant,zone
+#     key:
+#       type: range
+#       range_type: ip
+#       partition_columns: [vrf]
+#       start_column: net_first
+#       end_column: net_last
+#       end_inclusive: true
+#
+#   # ── Exact match on a composite key.
+#   - id: 019b77b3-df79-70a2-ab01-f43b2cf72402
+#     name: host_owners
+#     source:
+#       type: file
+#       location:
+#         type: file_system
+#       paths: [/var/lib/patrolli/lookup/host-owners.csv]
+#       format:
+#         type: csv
+#         has_headers: true
+#         # Nothing is null here: a blank cell is a blank string.
+#         null_values: []
+#     key:
+#       type: hash
+#       key_columns: [tenant, hostname]
+#
+#   # ── Processor-fed: a processor writes rows, another reads them. Columns are
+#   # declared here because there is no file to infer a schema from.
+#   - id: 019b77b3-df79-70a2-ab01-f43b2cf72403
+#     name: interfaces
+#     source:
+#       type: processor
+#       ttl: 3600              # seconds a row survives untouched. 0 disables expiry. Default 3600.
+#       max_rows: 1000000      # hard cap; further new rows are rejected. Default 1000000.
+#       columns:
+#         - name: ifIndex
+#           value_type: integer
+#         - name: ifDescr
+#         - name: ifAlias
+#         - name: ifType
+#           value_type: integer
+#         - name: admin_status
+#     key:
+#       type: hash
+#       key_columns: [ifIndex]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# listeners — passive receivers. Each runs its own worker pool and feeds the
+# processor. `disable_cluster_forwarding: true` keeps locally-received
+# metrics local even if the destination host is owned by another cluster node.
+#
+# These sit next to `type`, on the listener itself, never under `config:`:
+#   worker_count   default available_parallelism(); 0 means the same
+#   batch_size     records per batch sent to the processor. Default 1000, max 65535
+#   batch_timeout  ms; a partial batch is sent after this long. Default 1000
+# `dummy` and `internal_metrics` do not batch and ignore the last two.
+#
+# Every block rejects keys it does not know, so a misplaced or misspelled key
+# fails at startup instead of being silently dropped.
+# ──────────────────────────────────────────────────────────────────────────────
+listeners:
+  # ── Dummy: generates synthetic traffic for load tests / smoke tests.
+  - type: dummy
+    id: 019b77b3-df79-70a2-ab01-f43b2cf723a0
+    name: dummy-1
+    worker_count: 1
+    disable_cluster_forwarding: false
+    config:
+      speed: 5                   # messages per second per worker
+      messages_per_batch: 100
+
+  # ── Netflow v5 / v9 / IPFIX over UDP.
+  - type: netflow
+    id: 019b77b3-df79-70a2-ab01-f43b2cf723a4
+    name: netflow-1
+    worker_count: 1
+    batch_size: 1000
+    batch_timeout: 1000          # ms
+    config:
+      listener:
+        address: 0.0.0.0:2055
+        max_packet_size: 4096    # bytes per datagram; longer ones are truncated
+        buffer_cap: 100          # datagram batches queued between the socket threads and parsing
+        # Kernel receive buffer per socket, bytes (0 → 32 MiB). Granted in full
+        # with CAP_NET_ADMIN, otherwise capped at net.core.rmem_max.
+        recv_buffer_size: 33554432
+        # Microseconds to keep polling an empty socket before sleeping (0, the
+        # default, sleeps at once; max 1000). Only worth it with a small
+        # recv_buffer_size and one socket near 1M datagrams/s: a busy socket
+        # then pins a core, CPU the parsers and sinks no longer get.
+        spin_before_block_us: 0
+        # Socket-level workers (separate from outer worker_count): one
+        # SO_REUSEPORT socket, each read by its own OS thread. The kernel hashes
+        # each exporter to one socket, so more than one only helps with many
+        # exporters; a single thread sustains roughly 1M datagrams/s.
+        worker_count: 1
+        ip_whitelist: []         # mutually exclusive with ip_blacklist
+        ip_blacklist: []
+      # Exporter sources tracked for template state, per parser shard. The
+      # parser is sharded by source IP across the available cores, so the
+      # process-wide ceiling is this times the shard count. 0 uses the default.
+      max_sources: 10000
+      prune_interval: 300        # s, how often idle sources are swept
+      prune_idle_after: 3600     # s, drop a source unseen for this long
+
+  # ── SNMP Trap (v1, v2c, v3) over UDP.
+  - type: snmp_trap
+    id: 019b77b3-df79-70a2-ab01-f43b2cf723a5
+    name: snmptrap-1
+    worker_count: 1
+    batch_size: 1000
+    batch_timeout: 1000
+    config:
+      listener:                  # same options as netflow's listener above
+        address: 0.0.0.0:162
+        max_packet_size: 4096
+        buffer_cap: 100
+        worker_count: 1
+      # Resolve numeric OIDs against loaded MIBs in the trap payload.
+      use_mib: true
+      # At least one of v1 / v2c / v3 must be present.
+      v1:
+        communities: ["public"]
+      v2c:
+        communities: ["public", "private"]
+      v3:
+        security_models:
+          - type: usm
+            config:
+              username: snmpuser
+              context_name: ""           # optional
+              authentication:
+                protocol: sha256         # md5 | sha1 | sha224 | sha256 | sha384 | sha512
+                passphrase: "auth-passphrase-min-8-bytes"
+              privacy:                   # requires authentication to also be set
+                protocol: aes128         # des | des3 | aes128 | aes192 | aes256 | aes192reeder | aes256reeder
+                passphrase: "priv-passphrase-min-8-bytes"
+
+  # ── Syslog. Accepts UDP and/or TCP and/or TLS simultaneously.
+  #    CEF (Common Event Format) is detected automatically, both inside syslog
+  #    and raw (newline-delimited, no syslog header) over TCP / TLS / UDP. Header
+  #    fields land as cef.<field> (cef.device_vendor, cef.severity, ...),
+  #    extensions as cef.ext.<key> (non-alphanumeric key chars become `_`, typed
+  #    keys like spt / cnt / rt become numbers, timestamps epoch millis), and
+  #    custom slots (csN, cnN, cfpN, ... with their labels) as
+  #    cef.ext.custom.<i>.{key,label,value}. `rt` replaces the observed time and
+  #    the CEF severity replaces the syslog one.
+  #    Cisco ISE (tag CISE_<category>) and ACS 5.x (CSCOacs_<category>) are
+  #    detected too. ISE splits an event longer than its target's maximum length
+  #    into segments sharing a msg_id; the listener puts them back together
+  #    (keyed by source address, hostname and msg_id) into one record, or gives up
+  #    after `cise.reassembly_timeout` and sends what arrived. Fields land as
+  #    cise.{category,msg_id,total_seg,segments,sequence_num,code,severity,class,text};
+  #    segments < total_seg marks an incomplete event. Attributes keep ISE's own
+  #    keys (spaces, repeats) as cise.attrs.<i>.{key,value}, in arrival order,
+  #    and Response={...} as cise.response.<i>.{key,value}. The ISE timestamp
+  #    replaces the observed time and its severity replaces the syslog one.
+  #    Cisco IOS, IOS XR, NX-OS, ASA and FTD messages are found by their
+  #    `%FACILITY[-SUBFACILITY]-SEVERITY-MNEMONIC:` tag in the first 512 bytes.
+  #    Fields land as cisco.{facility,subfacility,severity,mnemonic,text}, plus
+  #    what the device writes before the tag: cisco.seq (sequence number, else
+  #    message counter), the origin-id hostname (fills `hostname` when the
+  #    header had none), IOS XR cisco.{node,process,pid}, and the device time.
+  #    That time replaces the observed time unless the clock was unsynced (`*`
+  #    or `.` before it; cisco.clock_synced is then false) or its zone is not
+  #    UTC/GMT, an offset or an IANA name. The tag's severity replaces the
+  #    syslog one. FTD/NGIPS 430001-430005 bodies (`Key: value, ...`) also
+  #    land as cisco.attrs.<i>.{key,value}. The body starts at the tag.
+  #    A message neither RFC parses (typical of IOS: `<189>521: host: ...`)
+  #    still has its <PRI> read into facility_level/severity_level, and the
+  #    <PRI> is dropped from its body.
+  #    A recognised payload also sets `format` (cef / cise / cisco), naming the attribute
+  #    that holds its fields; `protocol` stays the header (RFC3164 / RFC5424, or
+  #    CEF for raw CEF with no syslog header).
+  - type: syslog
+    id: 019b77b3-df79-70a2-ab01-b43b2cf723a6
+    name: syslog-1
+    worker_count: 1
+    batch_size: 1000
+    batch_timeout: 1000
+    config:
+      # With no udp / tcp / tls block at all, a UDP listener on 0.0.0.0:514 with
+      # max_packet_size 65536 is used. An explicit udp block takes the UDP
+      # defaults instead, max_packet_size 4096 included.
+      listener:
+        udp:
+          address: 0.0.0.0:514
+          max_packet_size: 65536
+          buffer_cap: 100
+          recv_buffer_size: 33554432   # see netflow above
+          spin_before_block_us: 0      # see netflow above
+          worker_count: 1
+        tcp:
+          address: 0.0.0.0:514
+          ip_whitelist: []
+          ip_blacklist: []
+        tls:
+          address: 0.0.0.0:6514
+          ip_whitelist: []
+          ip_blacklist: []
+          tls:
+            insecure_skip_verify: false
+            ca_cert_path: /etc/patrolli/syslog-ca.crt    # required for client-auth
+            cert_path: /etc/patrolli/syslog.crt
+            key_path: /etc/patrolli/syslog.key
+            # key_password: "optional"
+        # Close idle TCP / TLS connections after this many seconds. Default 600.
+        idle_timeout: 600
+      # Cisco ISE / ACS parsing (see above). Each value shown is the default;
+      # a 0 also means the default.
+      cise:
+        enabled: true                  # false: ISE/ACS stay plain syslog, one record per segment
+        reassembly_timeout: 10000      # ms an event's first segment waits for the rest
+        max_pending: 16384             # events held at once; past it the oldest goes out incomplete
+        max_pending_bytes: 67108864    # bytes held at once; same
+        max_segments: 256              # events split further are not reassembled; 1 turns reassembly off
+      # CEF parsing (see above). Off, CEF records are plain syslog; raw CEF
+      # lines are still accepted over TCP / TLS.
+      cef:
+        enabled: true
+      # Cisco IOS / IOS XR / NX-OS / ASA / FTD parsing (see above). Off, they
+      # are plain syslog (the <PRI> is still recovered).
+      cisco:
+        enabled: true
+
+  # ── OpenTelemetry over gRPC: OTAP (OTel Arrow) and/or OTLP. Also what an
+  #    `open_telemetry` sink on another Patrolli node sends to.
+  - type: open_telemetry
+    id: 019b77b3-df79-70a2-ab01-f43b2cf723a7
+    name: otel-1
+    worker_count: 1
+    batch_size: 1000
+    batch_timeout: 1000
+    config:
+      mode: otap                 # otap (default) | otlp | both
+      listener:
+        address: 0.0.0.0:4317    # default
+        ip_whitelist: []
+        ip_blacklist: []
+      # Server-side TLS. Use mutual TLS by setting ca_cert_path.
+      # tls:
+      #   ca_cert_path: /etc/patrolli/otel-clients-ca.crt
+      #   cert_path: /etc/patrolli/otel.crt
+      #   key_path: /etc/patrolli/otel.key
+
+  # ── Internal logs: patrolli's own log events as log records, one per event.
+  #    Each record carries the event's fields and its enclosing spans' fields
+  #    (sink_id, listener, item_id, ...) as attributes, plus code.namespace
+  #    (the module), code.filepath and code.lineno. There is no source address,
+  #    so items attach with match_strategy `none` or `attribute_match` (e.g. on
+  #    code.namespace). Capture never blocks the code that logs: past
+  #    buffer_size, events are dropped and counted in the listener's
+  #    total_items_dropped. One worker is enough; extra workers share the same
+  #    capture. Standby cluster nodes run no listeners, so they export nothing.
+  #    This listener never exports its own module; exclude the module of the
+  #    sink its records go to as well, so that sink's errors can't feed back
+  #    into it.
+  - type: internal_logs
+    id: 019b77b3-df79-70a2-ab01-f43b2cf723a8
+    name: internal-logs-1
+    worker_count: 1
+    batch_size: 1000
+    batch_timeout: 1000
+    config:
+      # Level for `patrolli` when `include` is empty. Default info.
+      level: info
+      # Modules to export, each at its own level (like global.logger.modules).
+      # Empty exports `patrolli` at `level`.
+      include:
+        - name: patrolli
+          level: info
+        - name: patrolli::cluster
+          level: debug
+      # Modules never exported. The longest matching prefix wins, so an
+      # exclusion can carve a submodule out of an include.
+      exclude:
+        - patrolli::sink::kafka
+      # Events held between capture and this listener. Default 10000.
+      buffer_size: 10000
+
+  # ── Internal metrics: patrolli's own throughput / queue counters, every
+  #    `interval`. Every main cluster node runs its listeners, so each node
+  #    reports itself; records are told apart by the scope's patrolli.node.id.
+  #    There is no source address, so items attach with match_strategy `none`
+  #    or `attribute_match`. One worker reports whatever worker_count is; the
+  #    others stand by and take over its schedule if it is stopped.
+  - type: internal_metrics
+    id: 019b77b3-df79-70a2-ab01-f43b2cf723a9
+    name: internal-metrics-1
+    worker_count: 1
+    config:
+      # Which OTel signal to emit. Default "log".
+      #   log      one log record per report, attributes a nested document of
+      #            every subsystem. Honours report_throughput.
+      #   metrics  one OTLP metric per family (cumulative sums and gauges), with
+      #            sink_id / listener_id / channel and friends as data-point
+      #            attributes. Shares its catalogue with the Prometheus exporter
+      #            under global.prometheus, so the two agree family for family.
+      #            report_throughput is rejected here: cumulative sums leave
+      #            rate() to the storage backend.
+      signal: log
+      # Log signal only: per-second rates diffed against the previous report
+      # instead of raw cumulative values. The first report after a start only
+      # primes the baseline, and a report whose snapshots have not refreshed
+      # since the previous one is skipped.
+      report_throughput: true
+      # Milliseconds between reports. Default 60000. Snapshots refresh every
+      # global.internal_metrics_interval, so a shorter interval repeats them.
+      interval: 10000
+
+# ──────────────────────────────────────────────────────────────────────────────
+# hosts — logical devices being monitored. Endpoints and items reference
+# these by id.
+# ──────────────────────────────────────────────────────────────────────────────
+hosts:
+  - id: 019bcb00-2fee-70a2-b151-3b1c2de7d947
+    name: router-office
+    # IANA zone the host's own timestamps are in. Optional.
+    # timezone: Asia/Jakarta
+
+# ──────────────────────────────────────────────────────────────────────────────
+# endpoints — addressable services on a host: SNMP agents and HTTP targets.
+# ──────────────────────────────────────────────────────────────────────────────
+endpoints:
+  - id: 019c65dc-3e74-70a2-875c-6035bf8990f6
+    name: router-office-snmp-v2c
+    host_id: 019bcb00-2fee-70a2-b151-3b1c2de7d947
+    type: snmp_v2c                # snmp_v1 | snmp_v2c | snmp_v3 | http
+    config:
+      address: 192.168.1.1:161
+      community: public
+      max_bulk_repetitions: 25    # GETBULK repetitions per request
+      disable_bulk: false         # force GETNEXT instead of GETBULK
+
+  # - id: 019c65dc-3e74-70a2-875c-6035bf8990f7
+  #   name: router-office-snmp-v1
+  #   host_id: 019bcb00-2fee-70a2-b151-3b1c2de7d947
+  #   type: snmp_v1
+  #   config:
+  #     address: 192.168.1.1:161
+  #     community: public
+
+  # - id: 019c65dc-3e74-70a2-875c-6035bf8990f8
+  #   name: router-office-snmp-v3
+  #   host_id: 019bcb00-2fee-70a2-b151-3b1c2de7d947
+  #   type: snmp_v3
+  #   config:
+  #     address: 192.168.1.1:161
+  #     max_bulk_repetitions: 25
+  #     disable_bulk: false
+  #     security_model:
+  #       type: usm
+  #       config:
+  #         username: snmpuser
+  #         # context_name: ""
+  #         authentication:
+  #           protocol: sha256
+  #           passphrase: "auth-passphrase-min-8-bytes"
+  #         privacy:
+  #           protocol: aes128
+  #           passphrase: "priv-passphrase-min-8-bytes"
+
+  # HTTP target, scraped by prometheus_scrape items.
+  # - id: 019c65dc-3e74-70a2-875c-6035bf8990f9
+  #   name: router-office-exporter
+  #   host_id: 019bcb00-2fee-70a2-b151-3b1c2de7d947
+  #   type: http
+  #   config:
+  #     url: https://192.168.1.1:9100/metrics    # http or https
+  #     connect_timeout: 1000                    # ms, default 1000
+  #     # Either {Basic: {username, password}} or {Bearer: <token>}.
+  #     auth:
+  #       Bearer: "exporter-token"
+  #     # tls:
+  #     #   insecure_skip_verify: false
+  #     #   ca_cert_path: /etc/patrolli/exporter-ca.crt
+
+# ──────────────────────────────────────────────────────────────────────────────
+# processors — DAG of processors. `inputs` connects to upstream processor IDs
+# (so chains compose); items also fan into processors via Item.processors.
+# ──────────────────────────────────────────────────────────────────────────────
+processors:
+  # `attribute_lookup` enriches attributes from the lookup_tables above. The
+  # block stays commented because it references those example table ids; it is
+  # parsed and validated by a unit test, so it cannot drift.
+  # BEGIN attribute_lookup example
+  # - id: 019c98c8-5512-70a2-906e-7ccd03618710
+  #   name: enrich
+  #   type: attribute_lookup
+  #   config:
+  #     when:                  # optional shared guard; evaluated once for all rules
+  #       match:               # map form, not the !match tag: see the note above
+  #         table: resource    # valid for both resource and record destinations below
+  #         key: deployment.environment
+  #         key_is_regex: false
+  #         op: "="
+  #         value: {string: production}
+  #     overwrite: false       # default: preserve existing keys, including nulls
+  #     lookups:               # independent rules; all read the incoming attributes
+  #       - lookup_table: 019b77b3-df79-70a2-ab01-f43b2cf72402 # host_owners
+  #         table: resource    # destination and default input attribute table
+  #         match:
+  #           keys:            # lookup-table key column -> input attribute
+  #             tenant: {key: tenant.id}
+  #             hostname: {key: host.name}
+  #         output:            # destination attribute -> lookup-table column
+  #           owner.team: team
+  #           owner.email: email
+  #       - lookup_table: 019b77b3-df79-70a2-ab01-f43b2cf72400 # geoip_city
+  #         table: record      # log/span/metric attributes, not data-point attrs
+  #         when:              # optional rule guard; ANDed with the shared guard
+  #           match:
+  #             table: record
+  #             key: network.transport
+  #             key_is_regex: false
+  #             op: "="
+  #             value: {string: tcp}
+  #         match:
+  #           point:           # range probe; add keys above for partitioned ranges
+  #             key: nf.data.sourceIPv4Address
+  #             cast: ip       # explicit conversion; key casts: bool/integer/string/ip
+  #                            # an `ip` key column or range point always needs
+  #                            # `cast: ip` — OTAP has no IP value, so it arrives
+  #                            # as a string; the rule is rejected without it
+  #         output:            # destination attribute -> lookup-table column
+  #           "geoip.source.country": country
+  #           "geoip.source.city": city
+  #           "geoip.source.latitude": latitude
+  # END attribute_lookup example
+  # Missing inputs, failed casts, misses and null result cells leave outputs alone.
+  # Guards use the existing AttributeFilter syntax, but spelled as maps
+  # (`match:` / `and:` / `or:`, `value: {string: x}`) rather than YAML tags:
+  # everything under a processor's `config:` is buffered by the `type`/`config`
+  # tagging on the processor config, and buffered content cannot replay a YAML tag. Omitted
+  # or null means no extra restriction. They select whole records; unselected
+  # records pass through unchanged. A guard error skips
+  # enrichment for its block/rule and counts an error, without dropping telemetry.
+  # Resource/scope destinations require BOTH guards to reference only that same
+  # table, including inside AND/OR branches. Record destinations allow any table.
+  # A record rule can read a resource input using {table: resource, key: host.id}.
+  # Keys are matched byte for byte: a flattened array element is addressed by its
+  # literal index (`nf.data.0.x`), and composite keys align by parent record.
+  # Duplicate output keys within one attribute table are rejected. All writes are intended to merge once per
+  # destination table; a rule cannot read another rule's output in this processor.
+
+  # `attribute_collect` captures incoming attributes into mutable lookup tables.
+  # Commented for the same reason as the block above — it references the example
+  # table ids — and parsed by a unit test, so it cannot drift either.
+  # BEGIN attribute_collect example
+  # - id: 019c98c8-5512-70a2-906e-7ccd03618711
+  #   name: collect_interfaces
+  #   type: attribute_collect
+  #   config:
+  #     when:                  # optional shared guard; same map syntax as lookup
+  #       match:
+  #         table: resource
+  #         key: deployment.environment
+  #         key_is_regex: false
+  #         op: "="
+  #         value: {string: production}
+  #     collections:
+  #       - lookup_table: 019b77b3-df79-70a2-ab01-f43b2cf72403 # interfaces
+  #         table: record      # source table and default input location
+  #         when:              # optional rule guard, ANDed with the shared guard
+  #           match:
+  #             table: record
+  #             key: snmp.id
+  #             key_is_regex: false
+  #             op: "=~"
+  #             value: {string: "^[0-9]+$"}
+  #         pivot:             # bind columns to array elements by a naming field
+  #           array: snmp.data           # elements are snmp.data.<n>.<field>
+  #           name: oid_name             # field naming the column, e.g. IF-MIB::ifDescr.33
+  #           value: value_formatted     # field supplying the cell unless overridden
+  #           name_format:               # optional; omitted uses the raw name
+  #             type: snmp_object        # snmp_object | regex_extract
+  #             strip_instance: true     # default; false keeps "ifDescr.33"
+  #           # name_format: {type: regex_extract, pattern: '::(\w+)', group: 1}
+  #         columns:           # lookup-table column -> binding
+  #           ifIndex: {key: snmp.id, cast: integer}  # exact attribute key
+  #           ifDescr:                                # null: pivoted, object "ifDescr"
+  #           ifAlias: {cast: string}                 # pivoted; options without a key
+  #           ifType: {value: value, cast: integer}   # pivoted from the raw value field
+  #           admin_status: {name: ifAdminStatus}     # pivoted from a differently named object
+  # END attribute_collect example
+  # Only source.type: processor tables are writable. Their column types, keys,
+  # range inclusivity, TTL and capacity stay on the lookup-table definition.
+  # Bind every declared column, including keys and range bounds. Each parent
+  # supplies one complete row; repeated keys replace the row and refresh its
+  # TTL. No partial merging or processor-level overwrite option.
+  # Keys are matched byte for byte (an array element is `a.0.b`; `*` has no
+  # special meaning). Record rules may also read resource attributes with
+  # {table: resource, key: host.id}. Guards select whole records, and both
+  # guards on a resource/scope rule may reference only that same source table.
+  # `pivot` names columns by an element field instead of by position, which the
+  # SNMP walk does not keep stable: the element whose normalized name equals the
+  # column name (or the binding's `name`) supplies the cell from `pivot.value` or
+  # the binding's `value`. Duplicate names within a record resolve to the highest
+  # element index. `snmp_object` drops `MODULE::` and, by default, the instance.
+  # Missing inputs, null keys/bounds and failed casts skip the entire row.
+  # Explicit null value cells are stored as null; capacity rejections are counted
+  # separately. Telemetry passes through unchanged, even on collection errors.
+  # Casts: bool/integer/string/ip, plus double for non-key value columns. An `ip`
+  # column always needs `cast: ip`, bound or not, for the reason given above.
+
+  # `null` is a no-op — useful purely for routing (fan-in / fan-out joins).
+  - id: 019c98c8-5512-70a2-906e-7ccd03618700
+    name: passthrough
+    type: "null"
+
+  # The attribute processors below address attributes by table:
+  #   record    log / span / metric attributes
+  #   scope     instrumentation-scope attributes
+  #   resource  resource attributes
+
+  # `add_attributes` sets constant attributes. Values are typed:
+  # {type: bool | int | double | str, value: ...}.
+  - id: 019c98c8-5512-70a2-906e-7ccd03618702
+    name: add-site
+    type: add_attributes
+    config:
+      overwrite: false           # required; false keeps a key that is already set
+      kv_map:
+        resource:
+          site: {type: str, value: hq}
+          rack: {type: int, value: 12}
+
+  # `attribute_filter` keeps the records that match and drops the rest. One of
+  # `match`, `and: [...]` or `or: [...]`, nested freely.
+  #   op: = | != | =~ | !~ | < | <= | > | >=   (regex ops need a string value)
+  #   value: {string: ..} | {integer: ..} | {float: ..}
+  - id: 019c89fd-632a-70a2-b02b-c43fa9c96a3d
+    name: only-mgmt-vlan
+    type: attribute_filter
+    config:
+      match:
+        table: record
+        key: nf.data.ipNextHopIPv4Address
+        key_is_regex: false      # true matches `key` as a regex over attribute keys
+        op: "="
+        value: {string: 10.0.0.1}
+
+  # `rename_attributes` renames keys, old -> new, per table.
+  - id: 019c89fd-632a-70a2-b02b-c43fa9c96a3e
+    name: rename-host
+    type: rename_attributes
+    inputs:
+      - 019c98c8-5512-70a2-906e-7ccd03618702  # chain after add-site
+    config:
+      rename_map:
+        resource:
+          host.name: device.name
+
+  # `drop_attributes` removes keys, per table.
+  - id: 019c89fd-632a-70a2-b02b-c43fa9c96a3f
+    name: drop-noise
+    type: drop_attributes
+    inputs:
+      - 019c89fd-632a-70a2-b02b-c43fa9c96a3e
+    config:
+      keys:
+        record: [snmp.raw, nf.data.flowEndSysUpTime]
+
+  # `transform` runs a program on otel-arrow's columnar query engine. `config`
+  # holds one key naming its language; `opl` (OpenTelemetry Processing
+  # Language) is the only one so far. Experimental: OPL is pre-1.0 upstream.
+  # Guide:
+  # https://github.com/open-telemetry/otel-arrow/tree/main/rust/otap-dataflow/crates/query-engine-languages/docs/opl-user-guide
+  # A program starts with the signals it selects (logs | traces | metrics |
+  # signals, or one metric type: gauges, sums, histograms, ...), then
+  # `|`-separated operators: where, drop, set, rename, remove, apply (e.g.
+  # `apply attributes {...}`, `apply data_points {...}`), if / else if / else.
+  # Batches of other signals pass through unchanged. A syntax error fails
+  # validation with its line and column; a batch the engine fails on (e.g. an
+  # operation it cannot plan yet) is dropped and counted as errored. route_to
+  # is rejected: route with processor inputs instead.
+  - id: 019c89fd-632a-70a2-b02b-c43fa9c96a40
+    name: tag-critical
+    type: transform
+    inputs:
+      - 019c89fd-632a-70a2-b02b-c43fa9c96a3f
+    config:
+      opl: |
+        logs
+        | where severity_number >= 17 or contains(body, "error")
+        | set attributes["tier"] = "critical"
+        | remove attributes["internal.debug"]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# items — what to collect. snmp / snmp_walk / prometheus_scrape / dummy are
+# scheduled by the monitor pool; listener items pull from a listener.
+#
+#   schedule: integer seconds ("60"), cron ("0 */5 * * * *"), or "never".
+#             Default 300s.
+#   timeout:  milliseconds per check. Default 1000.
+# ──────────────────────────────────────────────────────────────────────────────
+items:
+  # ── Listener item for the internal_metrics listener above: every report
+  #    it sends goes to this item's processors.
+  - type: listener
+    id: 019b914b-7234-70a2-af38-89569b7c1b0f
+    name: patrolli-self-metrics
+    host_id: 019bcb00-2fee-70a2-b151-3b1c2de7d947
+    listener_id: 019b77b3-df79-70a2-ab01-f43b2cf723a9
+    processors:
+      - 019c98c8-5512-70a2-906e-7ccd03618702
+    config:
+      match_strategy:
+        method: none
+
+  # ── Listener item: routes metrics from a listener to a host.
+  - type: listener
+    id: 019bd3f0-f429-70a2-8602-508e4a18f8b9
+    name: netflow-from-router
+    host_id: 019bcb00-2fee-70a2-b151-3b1c2de7d947
+    listener_id: 019b77b3-df79-70a2-ab01-f43b2cf723a4
+    processors:
+      - 019c89fd-632a-70a2-b02b-c43fa9c96a3d
+    config:
+      # How an incoming packet is matched to this item. `none` is the
+      # catch-all fallback. Variants:
+      #   endpoint_source_ip — match against the endpoint's address (IP only)
+      #   source_ips         — match against an explicit IP set:
+      #                          config: [192.168.1.1, 192.168.1.2]
+      #   attribute_match    — match an attribute filter, same syntax as the
+      #                        attribute_filter processor:
+      #                          config: {match: {table: record, key: ..., ...}}
+      #   none               — accept all
+      match_strategy:
+        method: none
+
+  # ── Listener item for internal logs: every record of the internal_logs
+  #    listener above goes to this item's processors.
+  - type: listener
+    id: 019bd3f0-f429-70a2-8602-508e4a18f8c0
+    name: patrolli-logs
+    host_id: 019bcb00-2fee-70a2-b151-3b1c2de7d947
+    listener_id: 019b77b3-df79-70a2-ab01-f43b2cf723a8
+    processors:
+      - 019c89fd-632a-70a2-b02b-c43fa9c96a3d
+    config:
+      match_strategy:
+        method: none
+
+  # ── SNMP single-OID get. Multiple SNMP items against the same endpoint
+  #    are coalesced into one GET request.
+  - type: snmp
+    id: 019c65dc-6f10-70a2-ad19-b7c6eadeff90
+    name: sysUpTime
+    host_id: 019bcb00-2fee-70a2-b151-3b1c2de7d947
+    endpoint_id: 019c65dc-3e74-70a2-875c-6035bf8990f6
+    schedule: "60"
+    timeout: 5000
+    processors:
+      - 019c98c8-5512-70a2-906e-7ccd03618702
+    config:
+      oid: sysUpTime.0          # symbolic (needs MIB) or numeric (1.3.6.1.2.1.1.3.0)
+      # use_mib: true           # add oid_name and value_formatted from the MIB
+
+  # ── SNMP walk. With table_format=true, nested OID chains are joined like
+  #    a table (index-aligned).
+  - type: snmp_walk
+    id: 019c65dc-6f10-70a2-ad19-b7c6eadeff91
+    name: interfaces-table
+    host_id: 019bcb00-2fee-70a2-b151-3b1c2de7d947
+    endpoint_id: 019c65dc-3e74-70a2-875c-6035bf8990f6
+    schedule: "*/5 * * * * * *"
+    timeout: 30000
+    processors:
+      - 019c98c8-5512-70a2-906e-7ccd03618702
+    config:
+      table_format: true
+      # max_unknown_oids_per_row: 0  # discard a row when more than this many of the
+                                     # oids below (chains included) return nothing for
+                                     # it; omit to emit rows however incomplete
+      use_mib: true
+      # disable_bulk: false       # override endpoint setting; omit to inherit
+      poll_worker_count: 2        # parallel GETBULK in flight; device-dependent
+      max_results: 100000         # safety cap; aborts walk if exceeded
+      chunk_size: 100
+      request_timeout: 5000       # ms per request
+      request_retries: 2
+      oids:
+        - oid: ifIndex
+          chain:
+            - oid: IP-MIB::ipIfStatsHCOutMcastOctets.2
+              # How a chained oid is joined to its parent's rows. Only valid on
+              # a nested chain, never on a root oid.
+              #   value                 the parent's value is the index (default)
+              #   oid_position          sub-identifiers start..end (inclusive)
+              #                         of the parent's oid are the index
+              #   oid_position_reversed the same, counted from the end
+              # chain_strategy:
+              #   strategy: oid_position
+              #   config: {start: 10, end: 11}
+        - oid: ifDescr
+        - oid: ifName
+        - oid: ifAlias
+        - oid: ifType
+        - oid: ifAdminStatus
+
+  # ── Prometheus scrape of an http endpoint.
+  # - type: prometheus_scrape
+  #   id: 019c65dc-6f10-70a2-ad19-b7c6eadeff93
+  #   name: node-exporter
+  #   host_id: 019bcb00-2fee-70a2-b151-3b1c2de7d947
+  #   endpoint_id: 019c65dc-3e74-70a2-875c-6035bf8990f9
+  #   schedule: "30"
+  #   processors:
+  #     - 019c98c8-5512-70a2-906e-7ccd03618702
+  #   config:
+  #     stream: false             # hand each metric on as it is scraped, not one batch per scrape
+  #     accept_protobuf: false    # ask for the protobuf exposition format
+
+  # ── Dummy item: fixed synthetic log row, useful for plumbing tests.
+  # - type: dummy
+  #   id: 019c65dc-6f10-70a2-ad19-b7c6eadeff92
+  #   name: dummy-item
+  #   host_id: 019bcb00-2fee-70a2-b151-3b1c2de7d947
+  #   schedule: "5"
+  #   config:
+  #     count: 1                  # rows per check, default 1
+  #     payload:
+  #       row:
+  #         body: {String: hello}
+  #         # Required, may be []. Each entry is [key, value]; keys are
+  #         # {String: ..}, values one of {Bool: ..} | {Int64: ..} |
+  #         # {Double: ..} | {String: {String: ..}} | {Array: [..]} |
+  #         # {KvList: [[key, value], ..]} | Null
+  #         attrs:
+  #           - [{String: source}, {String: {String: synthetic}}]
+  #           - [{String: seq}, {Int64: 1}]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# sinks — terminal destinations. `inputs` is a list of processor IDs whose
+# output flows into this sink.
+#
+# These sit next to `type`, on the sink itself, never under `config:`:
+#   worker_count   default available_parallelism(); 0 means the same
+#   batch_size     items per batch. Default 1000. Unlike a listener's, not
+#                  capped at 65535: the sink only counts whole payloads
+#   batch_timeout  ms; a partial batch is flushed after this long. Default 1000
+#   channel        the queue in front of the sink, same shape as global.processor:
+#                    {type: memory, non_blocking, channel_buffer_size}, or
+#                    {type: disk, ...} to survive restarts. Default memory.
+#                  A disk channel here also takes `write_through: true`
+#                  (default false): every payload is written to disk before
+#                  it is accepted and stays there until the sink is done with
+#                  it (delivered, rejected, or out of `max_elapsed`), so a
+#                  crash or kill loses nothing accepted. At-least-once: what
+#                  was in flight is sent again after a restart. Costs a disk
+#                  write per payload even when the sink keeps up. A kafka
+#                  sink needs `required_acks: all` with it. Not allowed on
+#                  global.processor or the forwarder, which nothing acks.
+#   retry          how a batch the destination could not take is retried, by
+#                  the worker holding it, on every sink type. With a disk
+#                  channel, the backlog of a destination that is down waits
+#                  on disk.
+#                    initial_interval  ms before the first retry. Default 1000
+#                    max_interval      ms; longest wait between retries. Default 60000
+#                    multiplier        growth of the wait per retry, >= 1. Default 2
+#                    max_elapsed       ms a batch is retried for before it is
+#                                      dropped. 0 (default) retries forever
+# ──────────────────────────────────────────────────────────────────────────────
+sinks:
+  # ── File sink. Use path: "null" to discard (handy for benchmarks).
+  - type: file
+    id: 019b6e6e-7e75-70a2-b0ba-d88cb64a9d4a
+    name: file-1
+    worker_count: 1
+    batch_size: 1000
+    batch_timeout: 1000
+    channel:
+      type: memory
+      non_blocking: false
+      channel_buffer_size: 0
+    retry:
+      initial_interval: 1000
+      max_interval: 60000
+      multiplier: 2.0
+      max_elapsed: 0
+    inputs:
+      - 019c98c8-5512-70a2-906e-7ccd03618702
+    config:
+      # A file is appended to, a record at a time: a write that fails partway
+      # (disk full) is cut off again, so the file only ever holds whole
+      # records. `stdout`, `stderr` and `null` are also accepted.
+      path: /var/log/patrolli/metrics.log
+      # json_otlp_batch (default) | json_nested_batch | json_otlp_denormalized |
+      # json_nested_denormalized | proto_otlp
+      format: json_otlp_batch
+      throttle: 0               # 0 = no throttle
+
+  # ── Kafka sink.
+  # - type: kafka
+  #   id: 019b6e6e-7e75-70a2-b0ba-d88cb64a9d4b
+  #   name: kafka-1
+  #   # Each worker shards, serializes and produces one batch at a time, and
+  #   # waits for Kafka to acknowledge all of it before it takes the next: this
+  #   # is the sink's write concurrency.
+  #   worker_count: 1
+  #   batch_size: 1000
+  #   batch_timeout: 3000       # ms
+  #   # A batch Kafka could not take within write_timeout_seconds (brokers or
+  #   # leaders unreachable) is retried; one it refused (unknown topic, message
+  #   # too large, not authorized) is dropped.
+  #   retry:
+  #     initial_interval: 1000
+  #     max_interval: 60000
+  #     multiplier: 2.0
+  #     max_elapsed: 0
+  #   inputs:
+  #     - 019c98c8-5512-70a2-906e-7ccd03618702
+  #   config:
+  #     hosts:
+  #       - kafka-1.internal:9093
+  #       - kafka-2.internal:9093
+  #     topic: patrolli-metrics
+  #     # Required, no default. Same values as the file sink.
+  #     format: json_otlp_batch
+  #     # librdkafka clients the workers share, one per batch round-robin. Each
+  #     # has its own queue, broker threads and connections; worker_count, not
+  #     # this, sets how many batches are in flight. Default 1.
+  #     producer_count: 1
+  #     # item_id (default) | host_id | listener_id — which field becomes the Kafka key.
+  #     key_strategy: host_id
+  #     allow_empty_key: false   # if false, metrics without a key are dropped
+  #     # How long one attempt at a batch may take (message.timeout.ms); past
+  #     # it the batch is retried per `retry`. Omitted or 0, 30.
+  #     write_timeout_seconds: 30
+  #     # fnv1a | murmur2 (default) | random | consistent | fnv1a_random |
+  #     # murmur2_random | consistent_random
+  #     balancer_strategy: murmur2
+  #     # What "delivered" means: none (acks=0, written to the leader's
+  #     # socket; broker errors go unseen) | one (default, the leader has it) |
+  #     # all (every in-sync replica has it; the only durable choice).
+  #     required_acks: one
+  #     compression: lz4         # none (default) | gzip | snappy | lz4 | zstd
+  #     # Per-partition batching inside each producer.
+  #     partition_batch_size: 1000000    # bytes (batch.size), default 1000000
+  #     partition_batch_count: 10000     # messages (batch.num.messages), default 10000
+  #     # Bytes queued per producer (queue.buffering.max.kbytes), default 1048576000.
+  #     global_queue_size: 1048576000
+  #     # Largest message the producer will send, in bytes (message.max.bytes),
+  #     # measured before compression; a bigger one is dropped without being
+  #     # sent. The broker's own limit (max.message.bytes, ~1 MiB by default)
+  #     # applies to the compressed batch, so raising this lets a compressible
+  #     # message (e.g. a large json_*_batch payload) through for the broker to
+  #     # judge. 1000..1000000000; omitted or 0, 1000000 (librdkafka's default).
+  #     max_message_size: 1000000
+  #     # librdkafka statistics every 5s, logged at debug.
+  #     enable_producer_stats: false
+  #     security:
+  #       protocol: sasl_ssl     # plaintext | ssl | sasl_plaintext | sasl_ssl
+  #     # Required with sasl_plaintext / sasl_ssl, rejected otherwise.
+  #     sasl:
+  #       mechanism: sha256      # plain | sha256 | sha512
+  #       username: patrolli
+  #       password: "kafka-secret"
+  #     # Required with ssl / sasl_ssl, rejected otherwise.
+  #     ssl:
+  #       insecure_skip_verify: false
+  #       ca_cert_path: /etc/patrolli/kafka-ca.crt
+  #       # mTLS:
+  #       # cert_path: /etc/patrolli/kafka-client.crt
+  #       # key_path: /etc/patrolli/kafka-client.key
+  #       # key_password: "optional"
+
+  # ── OpenTelemetry sink: OTAP or OTLP over gRPC, to a collector or to an
+  #    `open_telemetry` listener on another Patrolli node.
+  # - type: open_telemetry
+  #   id: 019b6e6e-7e75-70a2-b0ba-d88cb64a9d4c
+  #   name: otel-forwarder
+  #   worker_count: 2
+  #   batch_size: 1000
+  #   batch_timeout: 1000
+  #   # A batch is acked once its destinations answered for it. One that no
+  #   # destination is connected for, that got no answer (connection lost, 60s
+  #   # without one), or that got a status OTLP calls retryable (UNAVAILABLE,
+  #   # DEADLINE_EXCEEDED, ABORTED, CANCELLED, OUT_OF_RANGE, DATA_LOSS, and
+  #   # RESOURCE_EXHAUSTED when the server sends RetryInfo, whose delay is then
+  #   # waited out) is retried; any other non-ok status drops it. broadcast
+  #   # retries only the destinations that failed. A worker has one batch in
+  #   # flight, so worker_count is the sink's concurrency.
+  #   retry:
+  #     initial_interval: 1000
+  #     max_interval: 60000
+  #     multiplier: 2.0
+  #     max_elapsed: 0
+  #   inputs:
+  #     - 019c98c8-5512-70a2-906e-7ccd03618702
+  #   config:
+  #     destinations:
+  #       - 10.0.0.1:4317
+  #       - 10.0.0.2:4317
+  #     mode: otap                # otap (default) | otlp
+  #     # broadcast   — send to every destination (default)
+  #     # round_robin — rotate across destinations
+  #     # failover    — stick to the first healthy destination
+  #     # sharded     — hash by `key` and pin each shard to one destination.
+  #     #               key: host_id | item_id | endpoint_id | listener_id | source_ip
+  #     distribution:
+  #       strategy: round_robin
+  #       # key: host_id          # required when strategy: sharded
+  #     connection_count: 1       # connections per destination, default 1
+  #     compression: lz4          # none | lz4 | zstd (default zstd)
+  #     write_timeout: 15000      # ms; gRPC keep-alive timeout. 0 (default) leaves it off
+  #     # tls:
+  #     #   insecure_skip_verify: false
+  #     #   ca_cert_path: /etc/patrolli/otel-ca.crt
+
+  # ── Clickhouse sink: inserts over the HTTP interface into tables laid out
+  #    like the OpenTelemetry collector's Clickhouse exporter.
+  # - type: clickhouse
+  #   id: 019b6e6e-7e75-70a2-b0ba-d88cb64a9d4d
+  #   name: clickhouse-1
+  #   worker_count: 2
+  #   batch_size: 10000
+  #   batch_timeout: 5000
+  #   # A network error, a timeout, an overloaded server (TOO_MANY_PARTS,
+  #   # MEMORY_LIMIT_EXCEEDED, TIMEOUT_EXCEEDED, a read-only replica, ...) or a
+  #   # proxy's 429/502/503/504 keeps the batch and retries it; a rejected
+  #   # insert (missing table, bad column) drops it. Same shape on every sink.
+  #   retry:
+  #     initial_interval: 1000
+  #     max_interval: 60000
+  #     multiplier: 2.0
+  #     max_elapsed: 0
+  #   inputs:
+  #     - 019c98c8-5512-70a2-906e-7ccd03618702
+  #   config:
+  #     # HTTP interface URLs (usually 8123 / 8443). More than one turns on
+  #     # client-side routing; with a proxy or Distributed table in front, list
+  #     # the single front door.
+  #     endpoints:
+  #       - http://ch-1:8123
+  #     # round_robin (default) | random | failover. No broadcast: that would
+  #     # duplicate rows, not replicate them.
+  #     distribution:
+  #       strategy: round_robin
+  #     database: default         # default "default"
+  #     username: patrolli           # optional; password requires it
+  #     password: "clickhouse-secret"
+  #     compression: lz4          # none | lz4 (default) | zstd
+  #     # Server-side async inserts. Worth it unless batch_size is already a few
+  #     # thousand rows per flush.
+  #     async_insert: false
+  #     wait_for_async_insert: false   # ignored unless async_insert
+  #     enable_schema_validation: false
+  #     write_timeout: 30000      # ms, default 30000; 0 disables it
+  #     # Inserts in flight to each endpoint at once, across all workers (one
+  #     # per table per batch). Lets worker_count go past the core count to
+  #     # hide insert latency without piling queries onto the server: extra
+  #     # workers wait with their batch ready, and the wait does not count
+  #     # toward write_timeout. 0 (default) = no limit.
+  #     max_concurrent_inserts: 8
+  #     # Extra session settings sent with every statement.
+  #     settings:
+  #       max_execution_time: "60"
+  #     # Omit to manage the schema yourself (recommended in production). When
+  #     # present, CREATE DATABASE / TABLE IF NOT EXISTS runs at startup; these
+  #     # knobs only apply at creation time.
+  #     create_schema:
+  #       cluster_name: my_cluster      # emits ON CLUSTER; omit otherwise
+  #       table_engine:
+  #         name: MergeTree             # default; e.g. ReplicatedMergeTree
+  #         params: []
+  #       ttl: 0                        # seconds, 0 (default) disables it
+  #     # Destination table per signal; these are the defaults.
+  #     tables:
+  #       logs: otel_logs
+  #       traces: otel_traces
+  #       metrics_gauge: otel_metrics_gauge
+  #       metrics_sum: otel_metrics_sum
+  #       metrics_summary: otel_metrics_summary
+  #       metrics_histogram: otel_metrics_histogram
+  #       metrics_exp_histogram: otel_metrics_exp_histogram
+  #     # tls:
+  #     #   ca_cert_path: /etc/patrolli/clickhouse-ca.crt

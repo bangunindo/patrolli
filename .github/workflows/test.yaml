@@ -1,0 +1,125 @@
+# SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+name: Test
+
+# Lint and test core and web. Called by ci.yaml (PRs, pushes to main) and
+# build.yaml (release tags); the caller owns triggers and concurrency.
+on:
+  workflow_call:
+    inputs:
+      core:
+        description: Run the src/core jobs.
+        type: boolean
+        default: true
+      web:
+        description: Run the src/web jobs.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  # Matches the build stage of src/core/Dockerfile.
+  RUST_VERSION: "1.99.1"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Runs regardless of inputs: any new file needs an SPDX header, and the
+  # dependency licenses must stay AGPL-3.0-compatible (src/core/deny.toml).
+  licenses:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: fsfe/reuse-action@676e2d560c9a403aa252096d99fcab3e1132b0f5 # v6.0.0
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: src/core/Cargo.toml
+          command: check licenses
+
+  core-lint:
+    if: inputs.core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: src/core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt,clippy
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  core-test:
+    if: inputs.core
+    strategy:
+      fail-fast: true
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: src/core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Start Postgres
+        # One server for every test: setup_db creates a database per test on it
+        # (PATROLLI_TEST_DATABASE_URL) instead of starting a container each.
+        run: |
+          docker run -d --name patrolli-test-pg -p 5432:5432 \
+            -e POSTGRES_USER=patrolli -e POSTGRES_PASSWORD=password -e POSTGRES_DB=patrolli \
+            postgres:18-alpine -c max_connections=500
+          for _ in $(seq 60); do
+            docker exec patrolli-test-pg pg_isready -U patrolli && exit 0
+            sleep 1
+          done
+          docker logs patrolli-test-pg
+          exit 1
+      - name: Build all targets
+        # Integration tests, the tests/bench_* harnesses and benches/ must
+        # compile even though most of them don't run here.
+        run: cargo test --no-run --all-targets --locked
+      - name: Run tests
+        env:
+          PATROLLI_TEST_DATABASE_URL: postgres://patrolli:password@localhost:5432/patrolli
+          RUST_BACKTRACE: "1"
+        run: cargo test --locked
+
+  web:
+    if: inputs.web
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: src/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run type-check
+        # Non-blocking until the existing vue-tsc errors are fixed.
+        continue-on-error: true
+      - run: npm test

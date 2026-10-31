@@ -1,0 +1,92 @@
+/*
+ * SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+ *
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+	* {
+		@apply border-border;
+	}
+
+	html,
+	body {
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+	}
+
+	body {
+		@apply bg-background text-foreground font-sans;
+	}
+
+	:root {
+		--background: 0 0% 100%;
+		--foreground: 210 57% 3.5%;
+
+		--card: 0 0% 100%;
+		--card-foreground: 210 57% 3.5%;
+
+		--popover: 0 0% 100%;
+		--popover-foreground: 210 57% 3.5%;
+
+		--primary: 200 98% 39%;
+		--primary-foreground: 210 40% 98%;
+
+		--secondary: 210 40% 96.1%;
+		--secondary-foreground: 222.2 47.4% 11.2%;
+
+		--muted: 210 40% 96.1%;
+		--muted-foreground: 215.4 16.3% 46.9%;
+
+		--accent: 204 94% 94%;
+		--accent-foreground: 200 98% 30%;
+
+		--destructive: 0 84.2% 60.2%;
+		--destructive-foreground: 210 40% 98%;
+
+		--border: 240 10% 93%;
+		--input: 240 10% 93%;
+		--ring: 200 98% 39%;
+
+		--radius: 0.5rem;
+	}
+
+	.dark {
+		--background: 222.2 84% 4.9%;
+		--foreground: 210 40% 98%;
+
+		--card: 222.2 84% 4.9%;
+		--card-foreground: 210 40% 98%;
+
+		--popover: 222.2 84% 4.9%;
+		--popover-foreground: 210 40% 98%;
+
+		--primary: 200 98% 39%;
+		--primary-foreground: 210 40% 98%;
+
+		--secondary: 217.2 32.6% 17.5%;
+		--secondary-foreground: 210 40% 98%;
+
+		--muted: 217.2 32.6% 17.5%;
+		--muted-foreground: 215 20.2% 65.1%;
+
+		--accent: 200 98% 20%;
+		--accent-foreground: 204 94% 94%;
+
+		--destructive: 0 62.8% 30.6%;
+		--destructive-foreground: 210 40% 98%;
+
+		--border: 217.2 32.6% 17.5%;
+		--input: 217.2 32.6% 17.5%;
+		--ring: 200 98% 39%;
+	}
+}
+
+/* Vue Flow Styles */
+@import '@vue-flow/core/dist/style.css';
+@import '@vue-flow/core/dist/theme-default.css';
+@import '@vue-flow/controls/dist/style.css';

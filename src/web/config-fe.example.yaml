@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# SSL / TLS Configuration (Direct HTTPS without reverse proxy)
+ssl:
+    enabled: true
+    cert: './certs/frontend.crt'
+    key: './certs/frontend.key'
+    reject_unauthorized: false
+
+clusters:
+    - name: 'patrolli'
+      url: 'http://patrolli:8080'
+    - name: 'patrolli1'
+      url: 'http://patrolli1:8080'
+
+auth:
+    keycloak:
+        host: 'https://kc.localtest.me:8443/realms/patrolli'
+        client_id: 'patrolli-ssr'
+        client_secret: 'change-me'
+        redirect_uri: '/auth/oidc/callback'
+        ca_cert_path: './certs/ca.crt'
+
+# CORS (Cross-Origin Resource Sharing) Configuration
+cors:
+    enabled: true
+    origin:
+        - 'https://localhost:3000'
+        - 'https://kc.localtest.me:8443'
+    credentials: true
+    max_age: 86400

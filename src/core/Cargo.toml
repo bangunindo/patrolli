@@ -1,0 +1,246 @@
+# SPDX-FileCopyrightText: 2025 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+[package]
+name = "patrolli"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+
+[dependencies]
+ahash = "0.8.12"
+anyhow = "1.0.103"
+arc-swap = "1.9.2"
+arrayvec = "0.7.8"
+arrow = "58.3.0"
+arrow-ipc = "58.3.0"
+async-recursion = "1.1.1"
+async-snmp = "0.18.1"
+async-stream = "0.3.6"
+async-trait = "0.1.89"
+aws-lc-rs = "1.18.2"
+base64 = "0.23.0"
+bytes = { version = "1.12.1", features = ["serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }
+chrono-tz = { version = "0.10.4", features = ["serde"] }
+ciborium = "0.2.2"
+clap = { version = "4.6.2", features = ["derive"] }
+clickhouse = { version = "0.15.1", features = [
+    "chrono",
+    "lz4",
+    "zstd",
+    "rustls-tls",
+    "uuid",
+] }
+clickhouse-ext-arrow = "0.1.0"
+const-hex = "1.19.1"
+cron = "0.17.0"
+csv = "1.4.0"
+datafusion-expr = "54.1.0"
+etherparse = "0.21.0"
+fjall = { version = "3.1.7", default-features = false, features = ["bytes_1"] }
+flate2 = "1.1.10"
+flume = "0.12.0"
+futures = "0.3.32"
+futures-util = "0.3.32"
+hashbrown = "0.17.1"
+http = "1.4.2"
+hyper-rustls = { version = "0.27.9", features = ["http1", "tls12"] }
+hyper-util = { version = "0.1.20", features = [
+    "client-legacy",
+    "http1",
+    "tokio",
+] }
+lz4_flex = "0.14.0"
+memchr = "2.8.0"
+mib-rs = "0.10.0"
+netflow_parser = "1.0.6"
+nix = { version = "0.31.3", features = ["net", "uio"] }
+nom = "8.0.0"
+num-bigint = "0.5.1"
+otel-arrow-dfe-pdata = "0.61.0"
+otel-arrow-dfe-config = "0.61.0"
+otel-arrow-dfe-query-engine = "0.61.0"
+otel-arrow-dfe-query-engine-languages = "0.61.0"
+otel-arrow-contrib-data-engine-expressions = "0.1.1"
+otel-arrow-contrib-data-engine-parser-abstractions = "0.1.1"
+opentelemetry-proto = { version = "0.32.0", default-features = false, features = [
+    "gen-tonic",
+    "with-serde",
+    "logs",
+    "metrics",
+    "trace",
+] }
+papaya = "0.2.4"
+parking_lot = { version = "0.12.5" }
+petgraph = "0.8.3"
+priority-queue = "2.7.0"
+prometheus-scraper = { version = "0.2.0", features = ["client"] }
+prometheus-client = "0.25.0"
+prost = "0.14.4"
+rangemap = "1.8.0"
+regex = "1.12"
+rdkafka = { version = "^0.39.0", features = [
+    "gssapi",
+    "cmake-build",
+    "ssl",
+    "zstd",
+] }
+rustc-hash = "2.1.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.150", features = [
+    "arbitrary_precision",
+    "raw_value",
+] }
+serde_yaml_ng = "0.10.0"
+sflow-parser = { version = "0.7", features = ["serde"] }
+smallvec = { version = "1.15.1", features = ["write"] }
+smol_str = { version = "0.3.6", features = ["serde"] }
+socket2 = { version = "0.6.5", features = ["all"] }
+string-interner = "0.20.0"
+strum = "0.28.0"
+strum_macros = "0.28.0"
+subtle = "2.6.1"
+syslog_loose = "0.23.0"
+thiserror = "2.0.18"
+tokio = { version = "1.53.0", features = ["full"] }
+tokio-rustls = "0.26.4"
+tokio-stream = "0.1.18"
+tokio-util = { version = "0.7.18", features = ["codec", "time"] }
+tonic = { version = "0.14.6", features = ["tls-aws-lc"] }
+tonic-prost = "0.14.6"
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-log = "0.2.0"
+tracing-subscriber = { version = "0.3.23", features = ["json"] }
+tracing-throttle = { version = "0.4.3", features = ["async"] }
+uuid = { version = "1.24.0", features = ["serde", "v5", "v7"] }
+xxhash-rust = { version = "0.8.17", features = ["xxh3"] }
+zstd = "0.14.0"
+# API and Database dependencies
+axum = { version = "0.8.9", features = ["macros", "http2", "ws"] }
+axum-server = { version = "0.8.0", features = ["tls-rustls"] }
+deadpool-postgres = "0.14.1"
+pkcs8 = { version = "0.11.0", features = ["encryption", "pem"] }
+refinery = { version = "0.9.2", features = ["tokio-postgres"] }
+rustls = "0.23.37"
+rustls-pemfile = "2.2.0"
+sea-query = { version = "1.0.1", features = ["thread-safe"] }
+sea-query-postgres = { version = "0.6.0", features = [
+    "with-uuid",
+    "with-chrono",
+    "with-json",
+    "postgres-array",
+] }
+tokio-postgres = { version = "0.7.18", features = [
+    "with-uuid-1",
+    "with-chrono-0_4",
+    "with-serde_json-1",
+    "with-time-0_3",
+] }
+tokio-postgres-rustls = "0.14.0"
+tower-http = { version = "0.7.0", features = [
+    "cors",
+    "trace",
+    "compression-full",
+    "decompression-full",
+] }
+utoipa = { version = "5.5.0", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum", "debug-embed"] }
+webpki-roots = "1.0.8"
+http-serde = "2.1.1"
+axum-extra = { version = "0.12.6", features = ["query"] }
+serde_repr = "0.1.20"
+time = "0.3.53"
+derive_more = { version = "2.1.1", features = ["debug"] }
+rand = "0.10.2"
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
+reqwest = { version = "0.13.4", default-features = false, features = [
+    "json",
+    "rustls",
+] }
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { version = "0.7.0", features = [
+    "unprefixed_malloc_on_supported_platforms",
+] }
+tikv-jemalloc-ctl = { version = "0.7.0", features = ["use_std"] }
+
+[features]
+default = ["mem-profile"]
+# Heap profiling ships in the default binary but boots idle; it is armed at
+# runtime via SIGUSR1 (see `install_mem_profile_signals` in main.rs).
+# `profiling_libunwind` implies `profiling`, and pulls in a link-time dep on
+# libunwind (`libunwind-dev` to build, `libunwind8` to run).
+mem-profile = [
+    "tikv-jemallocator/profiling_libunwind",
+    "tikv-jemalloc-ctl/profiling",
+]
+
+[dev-dependencies]
+libc = "0.2.186"
+rsa = "0.9.10"
+testcontainers = "0.27.3"
+tokio = { version = "1.52.2", features = ["full", "test-util"] }
+postgres-types = "0.2.13"
+pbjson = "0.9.0"
+pbjson-types = "0.9.0"
+criterion = { version = "0.8.2", features = ["html_reports"] }
+tempfile = "3.27.0"
+# An in-process agent for the snmp monitor tests.
+async-snmp = { version = "0.18.1", features = ["agent"] }
+
+[build-dependencies]
+prost-build = "0.14.3"
+pbjson-build = "0.9.0"
+tonic-prost-build = "0.14.6"
+
+[lints.clippy]
+# Only fires on #[async_trait]/#[async_recursion] output, and its fix deletes
+# the attribute, which breaks the build.
+double_must_use = "allow"
+
+[profile.dev]
+# Full debuginfo (debug = 2) bloats the binary and dominates link time on a
+# 700+ dep build. line-tables-only keeps file:line in panics/backtraces.
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+lto = "off"
+
+[profile.dev.package."*"]
+# Dependencies almost never need debuginfo during local iteration.
+debug = false
+
+[profile.release]
+# Unwind (the default), not abort: a panic is fatal either way, but unwinding
+# lets the panic hook log it and run the orderly shutdown (see
+# `common::panic`).
+
+[profile.profile]
+inherits = "release"
+debug = true
+strip = false
+
+[[bin]]
+name = "patrolli"
+bench = false
+path = "src/main.rs"
+
+
+[[bin]]
+name = "schema_gen"
+bench = false
+path = "src/schema_gen.rs"
+
+[[bench]]
+name = "bench_channels"
+harness = false
+
+[[bench]]
+name = "bench_builder"
+harness = false
+
+[[bench]]
+name = "bench_json"
+harness = false

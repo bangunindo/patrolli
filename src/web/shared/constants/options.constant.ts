@@ -1,0 +1,73 @@
+// SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+//
+// SPDX-License-Identifier: AGPL-3.0-only
+
+export default {
+	provinceList: [
+		{ label: 'Semua Provinsi', value: '' },
+		{ label: 'Daerah Istimewa Yogyakarta', value: '161' },
+		{ label: 'DKI Jakarta', value: '162' },
+		{ label: 'Jambi', value: '163' },
+		{ label: 'Papua Barat Daya', value: '164' },
+		{ label: 'Nusa Tenggara Barat', value: '1' },
+		{ label: 'Sulawesi Tengah', value: '6' },
+		{ label: 'Kalimantan Timur', value: '7' },
+		{ label: 'Sumatera Utara', value: '10' },
+		{ label: 'Aceh', value: '11' },
+		{ label: 'Kalimantan Barat', value: '12' },
+		{ label: 'Kalimantan Utara', value: '13' },
+		{ label: 'Kepulauan Riau', value: '14' },
+		{ label: 'Sulawesi Barat', value: '16' },
+		{ label: 'Sulawesi Utara', value: '17' },
+		{ label: 'Sumatera Barat', value: '18' },
+		{ label: 'Maluku Utara', value: '20' },
+		{ label: 'Sumatera Selatan', value: '21' },
+		{ label: 'Jawa Tengah', value: '22' },
+		{ label: 'Kepulauan Bangka Belitung', value: '29' },
+		{ label: 'Jawa Barat', value: '32' },
+		{ label: 'Riau', value: '34' },
+		{ label: 'Bali', value: '35' },
+		{ label: 'Banten', value: '36' },
+		{ label: 'Jawa Timur', value: '39' },
+		{ label: 'Kalimantan Tengah', value: '41' },
+		{ label: 'Bengkulu', value: '53' },
+		{ label: 'Lampung', value: '60' },
+		{ label: 'Papua Barat', value: '63' },
+		{ label: 'Nusa Tenggara Timur', value: '71' },
+		{ label: 'Papua', value: '72' },
+		{ label: 'Gorontalo', value: '74' },
+		{ label: 'Kalimantan Selatan', value: '76' },
+		{ label: 'Sulawesi Tenggara', value: '82' },
+		{ label: 'Maluku', value: '91' },
+		{ label: 'Sulawesi Selatan', value: '95' }
+	],
+	regionList: [
+		{ label: 'Semua Wilayah', value: '' },
+		{ label: 'ASEAN', value: 'asean' },
+		{ label: 'Asia (Tidak Terasuk ASEAN)', value: 'asia' },
+		{ label: 'Timur Tengah', value: 'timur_tengah' },
+		{ label: 'Eropa', value: 'eropa' },
+		{ label: 'Amerika', value: 'amerika' },
+		{ label: 'Oseania', value: 'oseania' },
+		{ label: 'Afrika', value: 'afrika' }
+	],
+	yearPeriodList: [
+		{ label: 'Semua Tahun', value: '' },
+		{ label: '2025', value: '2025' },
+		{ label: '2024', value: '2024' },
+		{ label: '2023', value: '2023' },
+		{ label: '2022', value: '2022' },
+		{ label: '2021', value: '2021' },
+		{ label: '2020', value: '2020' },
+		{ label: '2019', value: '2019' },
+		{ label: '2018', value: '2018' },
+		{ label: '2017', value: '2017' },
+		{ label: '2016', value: '2016' },
+		{ label: '2015', value: '2015' },
+		{ label: '2014', value: '2014' },
+		{ label: '2013', value: '2013' },
+		{ label: '2012', value: '2012' },
+		{ label: '2011', value: '2011' },
+		{ label: '2010', value: '2010' }
+	]
+}
