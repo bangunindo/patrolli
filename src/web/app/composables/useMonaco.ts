@@ -19,8 +19,8 @@ export function useMonaco() {
 
 		if (!monacoLoadingPromise) {
 			monacoLoadingPromise = (async () => {
-				const monaco = await import('monaco-editor/esm/vs/editor/editor.api')
-				await import('monaco-editor/esm/vs/language/json/monaco.contribution')
+				const monaco = await import('monaco-editor/esm/vs/editor/editor.api.js')
+				await import('monaco-editor/esm/vs/language/json/monaco.contribution.js')
 				monacoInstance = monaco as unknown as typeof MonacoType
 				return monacoInstance
 			})()
