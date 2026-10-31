@@ -680,9 +680,7 @@ mod tests {
     /// would check TLS files and create directories.
     #[test]
     fn the_shipped_configs_deserialize() {
-        for (name, yaml) in [
-            ("config-full.yaml", include_str!("../../config-full.yaml")),
-        ] {
+        for (name, yaml) in [("config-full.yaml", include_str!("../../config-full.yaml"))] {
             let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml).unwrap();
             numeric_oids(&mut value);
             if let Err(e) = serde_yaml_ng::from_value::<LocalFileConfig>(value) {
