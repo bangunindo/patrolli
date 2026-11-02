@@ -40,7 +40,7 @@ describe('Automated CI Schema Drift Verification', () => {
 
 	for (const entity of entities) {
 		describe(`Entity: ${entity.name}`, () => {
-			it('dapat diintrospeksi tanpa error dan menghasilkan FieldDescriptor valid', () => {
+			it('should introspect without errors and produce valid FieldDescriptors', () => {
 				const descriptors = introspectZodSchema(entity.schema, [], entity.hints)
 				expect(descriptors.length).toBeGreaterThan(0)
 
@@ -53,7 +53,7 @@ describe('Automated CI Schema Drift Verification', () => {
 				}
 			})
 
-			it('memvalidasi payload draft secara terkontrol via AutoFormAdapter', () => {
+			it('should validate draft payload in a controlled manner via AutoFormAdapter', () => {
 				const draft: Record<string, any> = {}
 				const result = AutoFormAdapter.toRequest(entity.schema, draft, entity.hints)
 

@@ -30,7 +30,7 @@ describe('Listener DynamicZodForm Integration', () => {
 		AppInputLabel: true
 	}
 
-	it('merender konfigurasi untuk tipe listener dummy, snmp_trap, syslog, netflow, dan open_telemetry', () => {
+	it('should render configurations for listener types dummy, snmp_trap, syslog, netflow, and open_telemetry', () => {
 		const json = convertZodToJsonSchema(CreateListenerRequest.shape.config) as any
 		const branches = json.anyOf || []
 
@@ -59,7 +59,7 @@ describe('Listener DynamicZodForm Integration', () => {
 		expect(otelBranch.properties.config.properties).toHaveProperty('listener')
 	})
 
-	it('merender ListenerForm dengan DynamicZodForm pada mode ADD', async () => {
+	it('should render ListenerForm with DynamicZodForm in ADD mode', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useListenerStore()
@@ -81,7 +81,7 @@ describe('Listener DynamicZodForm Integration', () => {
 		expect(wrapper.findComponent({ name: 'DynamicZodForm' }).exists()).toBe(true)
 	})
 
-	it('merender ListenerForm dengan konfigurasi Syslog pada mode UPDATE dan submit berhasil', async () => {
+	it('should render ListenerForm with Syslog configuration in UPDATE mode and submit successfully', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useListenerStore()
@@ -143,7 +143,7 @@ describe('Listener DynamicZodForm Integration', () => {
 		expect(submittedPayload.payload.config.config.listener.udp.address).toBe('0.0.0.0:514')
 	})
 
-	it('merender ListenerForm dengan konfigurasi SNMP Trap pada mode UPDATE dan memvalidasi payload', async () => {
+	it('should render ListenerForm with SNMP Trap configuration in UPDATE mode and validate payload', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useListenerStore()
@@ -198,7 +198,7 @@ describe('Listener DynamicZodForm Integration', () => {
 		expect(submittedPayload.payload.labels).toEqual({})
 	})
 
-	it('berhasil memvalidasi dan mensubmit listener tipe dummy pada mode ADD', async () => {
+	it('should successfully validate and submit dummy listener in ADD mode', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useListenerStore()
@@ -220,7 +220,7 @@ describe('Listener DynamicZodForm Integration', () => {
 		await flushPromises()
 
 		const vm = wrapper.vm as any
-		// Isi field mandatory 'name'
+		// Populate mandatory 'name' field
 		vm.form.name = 'Test Dummy Listener'
 		expect(vm.form.config.type).toBe('dummy')
 		expect(vm.form.config.config).toEqual({
@@ -241,7 +241,7 @@ describe('Listener DynamicZodForm Integration', () => {
 		})
 	})
 
-	it('mentransform string input dummy listener menjadi integer dengan benar', async () => {
+	it('should transform dummy listener string inputs to integers correctly', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useListenerStore()

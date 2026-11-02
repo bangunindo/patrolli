@@ -4,7 +4,7 @@
 
 export default {
 	provinceList: [
-		{ label: 'Semua Provinsi', value: '' },
+		{ label: 'All Provinces', value: '' },
 		{ label: 'Daerah Istimewa Yogyakarta', value: '161' },
 		{ label: 'DKI Jakarta', value: '162' },
 		{ label: 'Jambi', value: '163' },
@@ -42,17 +42,17 @@ export default {
 		{ label: 'Sulawesi Selatan', value: '95' }
 	],
 	regionList: [
-		{ label: 'Semua Wilayah', value: '' },
+		{ label: 'All Regions', value: '' },
 		{ label: 'ASEAN', value: 'asean' },
-		{ label: 'Asia (Tidak Terasuk ASEAN)', value: 'asia' },
-		{ label: 'Timur Tengah', value: 'timur_tengah' },
-		{ label: 'Eropa', value: 'eropa' },
-		{ label: 'Amerika', value: 'amerika' },
-		{ label: 'Oseania', value: 'oseania' },
-		{ label: 'Afrika', value: 'afrika' }
+		{ label: 'Asia (Excluding ASEAN)', value: 'asia' },
+		{ label: 'Middle East', value: 'timur_tengah' },
+		{ label: 'Europe', value: 'eropa' },
+		{ label: 'Americas', value: 'amerika' },
+		{ label: 'Oceania', value: 'oseania' },
+		{ label: 'Africa', value: 'afrika' }
 	],
 	yearPeriodList: [
-		{ label: 'Semua Tahun', value: '' },
+		{ label: 'All Years', value: '' },
 		{ label: '2025', value: '2025' },
 		{ label: '2024', value: '2024' },
 		{ label: '2023', value: '2023' },

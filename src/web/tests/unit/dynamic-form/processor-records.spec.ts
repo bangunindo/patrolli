@@ -15,7 +15,7 @@ import { AutoFormAdapter } from '@/app/services/forms/auto-adapter'
 
 describe('Processor Record Fields Dynamic Form Integration', () => {
 	describe('DropAttributes (Record of String Array)', () => {
-		it('mengintrospeksi DropAttributes dengan tepat', () => {
+		it('should accurately introspect DropAttributes', () => {
 			const descriptors = introspectZodSchema(DropAttributes, [], processorHints)
 			const keysDesc = descriptors.find((d) => d.name === 'keys')!
 
@@ -32,7 +32,7 @@ describe('Processor Record Fields Dynamic Form Integration', () => {
 			expect(childDesc?.widget).toBe('array-string')
 		})
 
-		it('AutoFormAdapter membersihkan dan memvalidasi draft DropAttributes', () => {
+		it('should sanitize and validate DropAttributes draft via AutoFormAdapter', () => {
 			const draft = {
 				keys: {
 					record: ['http.status_code', 'http.method', ''],
@@ -57,7 +57,7 @@ describe('Processor Record Fields Dynamic Form Integration', () => {
 	})
 
 	describe('RenameAttributes (Nested Record of Strings)', () => {
-		it('mengintrospeksi RenameAttributes secara rekursif', () => {
+		it('should recursively introspect RenameAttributes', () => {
 			const descriptors = introspectZodSchema(RenameAttributes, [], processorHints)
 			const renameDesc = descriptors.find((d) => d.name === 'rename_map')!
 
@@ -80,7 +80,7 @@ describe('Processor Record Fields Dynamic Form Integration', () => {
 			expect(innerValueDesc?.widget).toBe('text')
 		})
 
-		it('AutoFormAdapter membersihkan dan memvalidasi draft RenameAttributes', () => {
+		it('should sanitize and validate RenameAttributes draft via AutoFormAdapter', () => {
 			const draft = {
 				rename_map: {
 					record: {
@@ -116,7 +116,7 @@ describe('Processor Record Fields Dynamic Form Integration', () => {
 	})
 
 	describe('AddAttributes (Record of Record of Discriminated Union)', () => {
-		it('mengintrospeksi AddAttributes secara rekursif ke discriminated union', () => {
+		it('should recursively introspect AddAttributes to discriminated union', () => {
 			const descriptors = introspectZodSchema(AddAttributes, [], processorHints)
 			const kvMapDesc = descriptors.find((d) => d.name === 'kv_map')!
 			const overwriteDesc = descriptors.find((d) => d.name === 'overwrite')!
@@ -150,7 +150,7 @@ describe('Processor Record Fields Dynamic Form Integration', () => {
 			])
 		})
 
-		it('AutoFormAdapter membersihkan dan meng-coerce tipe data TransformValue', () => {
+		it('should sanitize and coerce TransformValue data types via AutoFormAdapter', () => {
 			const draft = {
 				overwrite: true,
 				kv_map: {
@@ -180,7 +180,7 @@ describe('Processor Record Fields Dynamic Form Integration', () => {
 	})
 
 	describe('CreateProcessorRequest Integration', () => {
-		it('berhasil memvalidasi processor dengan modul drop_attributes', () => {
+		it('should successfully validate processor with drop_attributes module', () => {
 			const payload = {
 				adm_status: 1,
 				name: 'Drop Attributes Processor',
@@ -207,7 +207,7 @@ describe('Processor Record Fields Dynamic Form Integration', () => {
 			expect(config.config.keys.record).toEqual(['user.password', 'secret.token'])
 		})
 
-		it('berhasil memvalidasi processor dengan modul rename_attributes', () => {
+		it('should successfully validate processor with rename_attributes module', () => {
 			const payload = {
 				adm_status: 1,
 				name: 'Rename Attributes Processor',
@@ -236,7 +236,7 @@ describe('Processor Record Fields Dynamic Form Integration', () => {
 			expect(config.config.rename_map.record['http.url']).toBe('url.full')
 		})
 
-		it('berhasil memvalidasi processor dengan modul add_attributes', () => {
+		it('should successfully validate processor with add_attributes module', () => {
 			const payload = {
 				adm_status: 1,
 				name: 'Add Attributes Processor',

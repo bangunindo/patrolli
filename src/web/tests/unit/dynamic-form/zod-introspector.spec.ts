@@ -8,7 +8,7 @@ import { introspectZodSchema, unwrapZodType } from '@/app/services/forms/zod-int
 
 describe('zod-introspector', () => {
 	describe('unwrapZodType', () => {
-		it('membuka wrapper ZodOptional, ZodNullable, dan ZodDefault dengan benar', () => {
+		it('should properly unwrap ZodOptional, ZodNullable, and ZodDefault wrappers', () => {
 			const schema = z.string().min(3).optional().nullable().default('test')
 			const unwrapped = unwrapZodType(schema)
 
@@ -19,7 +19,7 @@ describe('zod-introspector', () => {
 			expect(unwrapped.defaultValue).toBe('test')
 		})
 
-		it('mengekstrak deskripsi OpenAPI', () => {
+		it('should extract OpenAPI description', () => {
 			const schema = z.string().describe('Host target IP or FQDN')
 			const unwrapped = unwrapZodType(schema)
 
@@ -28,7 +28,7 @@ describe('zod-introspector', () => {
 	})
 
 	describe('introspectZodSchema - Basic Types', () => {
-		it('menginferensi tipe field standar dengan batasan validasi', () => {
+		it('should infer standard field types with validation constraints', () => {
 			const schema = z.object({
 				name: z.string().min(1).max(50),
 				retries: z.number().int().min(0).max(10).default(3),
@@ -70,7 +70,7 @@ describe('zod-introspector', () => {
 	})
 
 	describe('introspectZodSchema - Discriminated Unions', () => {
-		it('mendeteksi discriminated union berdasarkan properti type', () => {
+		it('should detect discriminated union based on type property', () => {
 			const snmpV1 = z.object({
 				type: z.literal('snmp_v1'),
 				community: z.string()
@@ -98,7 +98,7 @@ describe('zod-introspector', () => {
 	})
 
 	describe('introspectZodSchema - UI Hints Integration', () => {
-		it('mengaplikasikan override dari UI hints (sensitive, label, order)', () => {
+		it('should apply overrides from UI hints (sensitive, label, order)', () => {
 			const schema = z.object({
 				username: z.string(),
 				password: z.string(),
@@ -106,7 +106,7 @@ describe('zod-introspector', () => {
 			})
 
 			const hints = {
-				password: { sensitive: true, label: 'Kredensial Rahasia', order: 1 },
+				password: { sensitive: true, label: 'Secret Credential', order: 1 },
 				username: { order: 2 }
 			}
 
@@ -115,7 +115,7 @@ describe('zod-introspector', () => {
 			// Sorted by order
 			expect(descriptors[0].name).toBe('password')
 			expect(descriptors[0].widget).toBe('password')
-			expect(descriptors[0].label).toBe('Kredensial Rahasia')
+			expect(descriptors[0].label).toBe('Secret Credential')
 
 			expect(descriptors[1].name).toBe('username')
 			expect(descriptors[2].name).toBe('priority')

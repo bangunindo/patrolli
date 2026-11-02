@@ -17,21 +17,21 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 	describe('FormatValidatorRegistry', () => {
 		const ctx = { path: ['test'], pathKey: 'test', label: 'Test Field' }
 
-		it('memvalidasi format UUID bawaan', () => {
+		it('should validate built-in UUID format', () => {
 			expect(validateFormat('uuid', '123e4567-e89b-12d3-a456-426614174000', ctx)).toBeNull()
 			expect(validateFormat('uuid', 'invalid-uuid', ctx)).toBe(
 				'Test Field must be a valid UUID'
 			)
 		})
 
-		it('memvalidasi format Email bawaan', () => {
+		it('should validate built-in Email format', () => {
 			expect(validateFormat('email', 'admin@patrolli.io', ctx)).toBeNull()
 			expect(validateFormat('email', 'not-an-email', ctx)).toBe(
 				'Test Field must be a valid email address'
 			)
 		})
 
-		it('memvalidasi format IPv4, IPv6, dan CIDR', () => {
+		it('should validate IPv4, IPv6, and CIDR formats', () => {
 			// IPv4
 			expect(validateFormat('ipv4', '192.168.1.1', ctx)).toBeNull()
 			expect(validateFormat('ipv4', '999.999.999.999', ctx)).toBe(
@@ -61,7 +61,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 			)
 		})
 
-		it('memvalidasi format Port (1-65535)', () => {
+		it('should validate Port format (1-65535)', () => {
 			expect(validateFormat('port', 80, ctx)).toBeNull()
 			expect(validateFormat('port', '8080', ctx)).toBeNull()
 			expect(validateFormat('port', 0, ctx)).toBe(
@@ -72,7 +72,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 			)
 		})
 
-		it('memvalidasi format Hostname dan URL', () => {
+		it('should validate Hostname and URL formats', () => {
 			expect(validateFormat('hostname', 'api.patrolli.local', ctx)).toBeNull()
 			expect(validateFormat('hostname', '-invalid-.domain', ctx)).toBe(
 				'Test Field must be a valid hostname or domain'
@@ -84,7 +84,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 			)
 		})
 
-		it('mendukung registrasi custom format validator baru secara modular', () => {
+		it('should support modular registration of new custom format validators', () => {
 			const MAC_REGEX = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/
 			registerFormatValidator({
 				name: 'mac-address',
@@ -106,7 +106,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 	})
 
 	describe('Zod Schema Constraint Introspection', () => {
-		it('mengintrospeksi checks pada ZodString otomatis', () => {
+		it('should automatically introspect checks on ZodString', () => {
 			const TestSchema = z.object({
 				id: z.string().uuid(),
 				email: z.string().email(),
@@ -143,7 +143,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 			expect(bioDesc.max).toBe(100)
 		})
 
-		it('mengintrospeksi checks pada ZodNumber otomatis', () => {
+		it('should automatically introspect checks on ZodNumber', () => {
 			const TestSchema = z.object({
 				port: z.number().int().min(1).max(65535)
 			})
@@ -156,7 +156,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 			expect(portDesc.step).toBe(1)
 		})
 
-		it('memungkinkan override format dan rules melalui UI hints', () => {
+		it('should allow format and rules override via UI hints', () => {
 			const TestSchema = z.object({
 				custom_ip: z.string()
 			})
@@ -182,7 +182,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 			username: z.string().min(3)
 		})
 
-		it('menghasilkan pesan error yang ramah pengguna saat data tidak valid', () => {
+		it('should produce user-friendly error messages when data is invalid', () => {
 			const invalidDraft = {
 				user_id: 'bad-id',
 				email: 'bad-email',
@@ -200,7 +200,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 			}
 		})
 
-		it('menangani field required saat dikosongkan', () => {
+		it('should handle required fields when emptied', () => {
 			const res = AutoFormAdapter.toRequest(UserSchema, {})
 			expect(res.success).toBe(false)
 			if (!res.success) {
@@ -211,7 +211,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 			}
 		})
 
-		it('mengeksekusi custom validator function dari UI hints', () => {
+		it('should execute custom validator function from UI hints', () => {
 			const SimpleSchema = z.object({
 				code: z.string()
 			})
@@ -220,7 +220,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 				code: {
 					validator: (val: any) => {
 						if (val !== 'SECRET_KEY') {
-							return 'Code harus bernilai SECRET_KEY'
+							return 'Code must equal SECRET_KEY'
 						}
 						return true
 					}
@@ -230,14 +230,14 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 			const failRes = AutoFormAdapter.toRequest(SimpleSchema, { code: 'WRONG' }, hints)
 			expect(failRes.success).toBe(false)
 			if (!failRes.success) {
-				expect(failRes.issues['code']).toBe('Code harus bernilai SECRET_KEY')
+				expect(failRes.issues['code']).toBe('Code must equal SECRET_KEY')
 			}
 
 			const passRes = AutoFormAdapter.toRequest(SimpleSchema, { code: 'SECRET_KEY' }, hints)
 			expect(passRes.success).toBe(true)
 		})
 
-		it('menjalankan method validateField untuk validasi per-field secara terpisah', () => {
+		it('should run validateField method for isolated per-field validation', () => {
 			const draft = { user_id: 'not-a-uuid', email: 'valid@patrolli.io' }
 			const error = AutoFormAdapter.validateField(UserSchema, 'user_id', draft)
 			expect(error).toBe('User ID must be a valid UUID')
@@ -272,7 +272,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 			])
 		})
 
-		it('memvalidasi nested object dengan validateField menggunakan path relatif maupun absolut', () => {
+		it('should validate nested object using validateField with relative or absolute paths', () => {
 			const draft = {
 				name: 'Test',
 				listener: {
@@ -296,7 +296,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 			expect(portErr).toContain('less than or equal to 65535')
 		})
 
-		it('memvalidasi sub-scope nested form dengan validateScope', () => {
+		it('should validate sub-scope of nested form with validateScope', () => {
 			const draft = {
 				name: 'Test',
 				listener: {
@@ -315,7 +315,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 			expect(listenerScopeErrors['listener.port']).toBeDefined()
 		})
 
-		it('memvalidasi nested union branch dengan validateField dan validateScope', () => {
+		it('should validate nested union branch with validateField and validateScope', () => {
 			const draft = {
 				name: 'My Service',
 				config: {
@@ -346,7 +346,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 	})
 
 	describe('useValidation Unified Format Registry Integration', () => {
-		it('menguji bahwa useValidation menggunakan format validator yang terdaftar', async () => {
+		it('should verify that useValidation uses registered format validators', async () => {
 			const { useValidation } = await import('@/composables/useValidation')
 			const val = '192.168.1.1'
 			const rules = ['required', 'ipv4']
@@ -356,7 +356,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 			expect(messages.value).toEqual([])
 		})
 
-		it('memungkinkan menutup alert dengan mengubah showMessages menjadi false (close alert)', async () => {
+		it('should allow closing alert by setting showMessages to false', async () => {
 			const { useValidation } = await import('@/composables/useValidation')
 			const { ref } = await import('vue')
 			const val = ref('')

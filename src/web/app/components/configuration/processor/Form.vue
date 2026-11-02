@@ -110,7 +110,7 @@ const handleFormSubmit = async (validFormData: any) => {
 			if (!validation.isValid) {
 				if (dynamicFormRef.value) {
 					dynamicFormRef.value.issues = {
-						'config.config.opl': validation.error || 'Sintaks OPL tidak valid'
+						'config.config.opl': validation.error || 'Invalid OPL syntax'
 					}
 				}
 				loading.value.form = false

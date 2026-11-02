@@ -146,15 +146,15 @@ onMounted(async () => {
 				emit('update:modelValue', parsed)
 				isLocalChange = false
 			} catch (e: any) {
-				jsonError.value = 'Format JSON tidak valid: ' + e.message
+				jsonError.value = 'Invalid JSON format: ' + e.message
 			}
 		})
 
 		text.value = editorInstance.getValue() || ''
 	} catch (error) {
 		if (!isDestroyed) {
-			console.error('Gagal memuat Monaco Editor:', error)
-			jsonError.value = 'Gagal memuat teks editor.'
+			console.error('Failed to load Monaco Editor:', error)
+			jsonError.value = 'Failed to load text editor.'
 		}
 	} finally {
 		if (!isDestroyed) {
@@ -294,7 +294,7 @@ const {
 			<!-- Loading Overlay -->
 			<div v-if="isLoading" class="monaco-loading">
 				<div class="spinner"></div>
-				<span>Memuat Editor...</span>
+				<span>Loading Editor...</span>
 			</div>
 
 			<!-- Monaco Editor Main Container -->

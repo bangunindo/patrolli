@@ -430,7 +430,7 @@ function checkBalancedDelimiters(code: string): { isValid: boolean; error?: stri
 			if (stack.length === 0 || stack[stack.length - 1].char !== expected) {
 				return {
 					isValid: false,
-					error: `Tanda kurung '${char}' tidak memiliki pasangan pembuka yang sesuai.`
+					error: `Bracket '${char}' does not have a matching opening delimiter.`
 				}
 			}
 			stack.pop()
@@ -440,7 +440,7 @@ function checkBalancedDelimiters(code: string): { isValid: boolean; error?: stri
 	if (inString) {
 		return {
 			isValid: false,
-			error: 'Tanda kutip string belum tertutup.'
+			error: 'Unclosed string literal.'
 		}
 	}
 
@@ -448,7 +448,7 @@ function checkBalancedDelimiters(code: string): { isValid: boolean; error?: stri
 		const unclosed = stack[stack.length - 1].char
 		return {
 			isValid: false,
-			error: `Tanda kurung '${unclosed}' belum tertutup.`
+			error: `Bracket '${unclosed}' is not closed.`
 		}
 	}
 
@@ -510,7 +510,7 @@ export function validateOplSyntax(rawCode: string | null | undefined): OplValida
 	if (!rawCode || typeof rawCode !== 'string' || !rawCode.trim()) {
 		return {
 			isValid: false,
-			error: 'Kode OPL tidak boleh kosong.'
+			error: 'OPL code cannot be empty.'
 		}
 	}
 
@@ -518,7 +518,7 @@ export function validateOplSyntax(rawCode: string | null | undefined): OplValida
 	if (!stripped.trim()) {
 		return {
 			isValid: false,
-			error: 'Kode OPL tidak boleh kosong.'
+			error: 'OPL code cannot be empty.'
 		}
 	}
 
@@ -536,7 +536,7 @@ export function validateOplSyntax(rawCode: string | null | undefined): OplValida
 	if (segments.some((s) => s === '')) {
 		return {
 			isValid: false,
-			error: 'Terdapat segmen pipe (|) kosong atau tidak lengkap.'
+			error: 'Empty or incomplete pipe (|) segment found.'
 		}
 	}
 
@@ -547,14 +547,14 @@ export function validateOplSyntax(rawCode: string | null | undefined): OplValida
 	if (!oplSignals.includes(signalName.toLowerCase())) {
 		return {
 			isValid: false,
-			error: `Program OPL harus diawali dengan target signal (${oplSignals.slice(0, 4).join(', ')}, dll.). Ditemukan '${signalName}'.`
+			error: `OPL program must start with a target signal (${oplSignals.slice(0, 4).join(', ')}, etc.). Found '${signalName}'.`
 		}
 	}
 
 	if (firstTokens.length > 1) {
 		return {
 			isValid: false,
-			error: `Target signal '${signalName}' harus dipisahkan dengan tanda pipe (|) sebelum instruksi '${firstTokens[1]}'.`
+			error: `Target signal '${signalName}' must be separated by a pipe (|) before instruction '${firstTokens[1]}'.`
 		}
 	}
 
@@ -566,7 +566,7 @@ export function validateOplSyntax(rawCode: string | null | undefined): OplValida
 		if (!oplOperators.includes(operator)) {
 			return {
 				isValid: false,
-				error: `Operator '${tokens[0]}' pada segmen ke-${i + 1} tidak dikenali. Gunakan salah satu dari: where, set, rename, remove, drop, apply, dll.`
+				error: `Operator '${tokens[0]}' at segment ${i + 1} is unrecognized. Use one of: where, set, rename, remove, drop, apply, etc.`
 			}
 		}
 
@@ -577,7 +577,7 @@ export function validateOplSyntax(rawCode: string | null | undefined): OplValida
 				if (!restOfSegment) {
 					return {
 						isValid: false,
-						error: "Operator 'where' membutuhkan ekspresi kondisi (contoh: where severity_number >= 17)."
+						error: "Operator 'where' requires a condition expression (e.g. where severity_number >= 17)."
 					}
 				}
 				break
@@ -586,13 +586,13 @@ export function validateOplSyntax(rawCode: string | null | undefined): OplValida
 				if (!restOfSegment) {
 					return {
 						isValid: false,
-						error: 'Operator \'set\' membutuhkan target dan nilai (contoh: set attributes["key"] = "value").'
+						error: 'Operator \'set\' requires a target and value (e.g. set attributes["key"] = "value").'
 					}
 				}
 				if (!restOfSegment.includes('=')) {
 					return {
 						isValid: false,
-						error: 'Operator \'set\' harus memiliki tanda assignment \'=\' (contoh: set attributes["key"] = "value").'
+						error: 'Operator \'set\' must include an assignment \'=\' (e.g. set attributes["key"] = "value").'
 					}
 				}
 				break
@@ -601,13 +601,13 @@ export function validateOplSyntax(rawCode: string | null | undefined): OplValida
 				if (!restOfSegment) {
 					return {
 						isValid: false,
-						error: 'Operator \'rename\' membutuhkan target dan nama baru (contoh: rename attributes["old"] as "new").'
+						error: 'Operator \'rename\' requires a target and new name (e.g. rename attributes["old"] as "new").'
 					}
 				}
 				if (!/\bas\b/i.test(restOfSegment)) {
 					return {
 						isValid: false,
-						error: 'Operator \'rename\' harus menggunakan klausa \'as\' (contoh: rename attributes["old"] as "new").'
+						error: 'Operator \'rename\' must use the \'as\' clause (e.g. rename attributes["old"] as "new").'
 					}
 				}
 				break
@@ -616,7 +616,7 @@ export function validateOplSyntax(rawCode: string | null | undefined): OplValida
 				if (!restOfSegment) {
 					return {
 						isValid: false,
-						error: 'Operator \'remove\' membutuhkan target atribut (contoh: remove attributes["key"]).'
+						error: 'Operator \'remove\' requires an attribute target (e.g. remove attributes["key"]).'
 					}
 				}
 				break
@@ -625,13 +625,13 @@ export function validateOplSyntax(rawCode: string | null | undefined): OplValida
 				if (!restOfSegment) {
 					return {
 						isValid: false,
-						error: "Operator 'apply' membutuhkan target scope dan blok kurung kurawal '{ ... }' (contoh: apply data_points { ... })."
+						error: "Operator 'apply' requires a target scope and curly braces '{ ... }' (e.g. apply data_points { ... })."
 					}
 				}
 				if (!restOfSegment.includes('{') || !restOfSegment.includes('}')) {
 					return {
 						isValid: false,
-						error: "Operator 'apply' harus memiliki blok kurung kurawal '{ ... }' (contoh: apply data_points { ... })."
+						error: "Operator 'apply' must include curly braces '{ ... }' (e.g. apply data_points { ... })."
 					}
 				}
 				break

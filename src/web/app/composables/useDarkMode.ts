@@ -7,7 +7,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 export function useDarkMode() {
 	const isDarkMode = ref(false)
 
-	// Memeriksa preferensi dark mode
+	// Check dark mode preference
 	const checkDarkMode = () => {
 		const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
 		isDarkMode.value = mediaQuery.matches

@@ -379,7 +379,7 @@ function getOptionLabel(option: any) {
 							v-if="safeOptions.length === 0"
 							class="p-3 text-sm text-center text-muted-foreground"
 						>
-							Tidak ada data.
+							No data available.
 						</div>
 					</div>
 				</transition>

@@ -31,7 +31,7 @@ describe('Processor DynamicZodForm Integration', () => {
 		AppInputText: true
 	}
 
-	it('merender ProcessorForm dengan DynamicZodForm pada mode ADD', async () => {
+	it('should render ProcessorForm with DynamicZodForm in ADD mode', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useProcessorStore()
@@ -52,7 +52,7 @@ describe('Processor DynamicZodForm Integration', () => {
 		expect(wrapper.findComponent({ name: 'DynamicZodForm' }).exists()).toBe(true)
 	})
 
-	it('merender ProcessorForm dengan modul drop_attributes pada mode UPDATE dan submit berhasil', async () => {
+	it('should render ProcessorForm with drop_attributes module in UPDATE mode and submit successfully', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useProcessorStore()
@@ -108,7 +108,7 @@ describe('Processor DynamicZodForm Integration', () => {
 		expect(submittedPayload.payload.config.config.keys).toEqual({ record: ['debug.info'] })
 	})
 
-	it('merender ProcessorForm dengan modul attribute_filter pada mode UPDATE', async () => {
+	it('should render ProcessorForm with attribute_filter module in UPDATE mode', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useProcessorStore()
@@ -147,7 +147,7 @@ describe('Processor DynamicZodForm Integration', () => {
 		expect(filterComp.exists()).toBe(true)
 	})
 
-	it('memvalidasi add_attributes dengan default overwrite: false serta mempertahankan overwrite: true saat diaktifkan', () => {
+	it('should validate add_attributes with default overwrite: false and preserve overwrite: true when enabled', () => {
 		const draft = AutoFormAdapter.toDraft(AddAttributes, null, processorHints)
 		expect(draft.overwrite).toBe(false)
 
@@ -186,7 +186,7 @@ describe('Processor DynamicZodForm Integration', () => {
 		expect(trueResult.data?.overwrite).toBe(true)
 	})
 
-	it('merender ProcessorForm dengan modul transform (OPL) pada mode UPDATE dan submit berhasil', async () => {
+	it('should render ProcessorForm with transform (OPL) module in UPDATE mode and submit successfully', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useProcessorStore()
@@ -238,7 +238,7 @@ describe('Processor DynamicZodForm Integration', () => {
 		)
 	})
 
-	it('memblokir submit transform processor jika sintaks OPL tidak valid', async () => {
+	it('should block transform processor submit if OPL syntax is invalid', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useProcessorStore()
@@ -280,7 +280,7 @@ describe('Processor DynamicZodForm Integration', () => {
 		expect(store.updateProcessor).not.toHaveBeenCalled()
 		expect(vm.dynamicFormRef.issues['config.config.opl']).toBeDefined()
 		expect(vm.dynamicFormRef.issues['config.config.opl']).toContain(
-			"Operator 'where' membutuhkan ekspresi kondisi"
+			"Operator 'where' requires a condition expression"
 		)
 	})
 })

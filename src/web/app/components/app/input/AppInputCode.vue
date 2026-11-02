@@ -134,7 +134,7 @@ onMounted(async () => {
 		text.value = editorInstance.getValue() || ''
 	} catch (error) {
 		if (!isDestroyed) {
-			console.error('Gagal memuat Code Editor:', error)
+			console.error('Failed to load Code Editor:', error)
 		}
 	} finally {
 		if (!isDestroyed) {
@@ -281,7 +281,7 @@ const { elRef, errorMessage, showMessages, resetFormSubmitState, handleAlertClos
 			<!-- Loading Overlay -->
 			<div v-if="isLoading" class="monaco-loading">
 				<div class="spinner"></div>
-				<span>Memuat Editor {{ language.toUpperCase() }}...</span>
+				<span>Loading {{ language.toUpperCase() }} Editor...</span>
 			</div>
 
 			<!-- Monaco Editor Main Container -->

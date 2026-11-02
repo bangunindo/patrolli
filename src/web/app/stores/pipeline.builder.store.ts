@@ -542,7 +542,7 @@ export const usePipelineBuildStore = defineStore(
 				return
 			}
 
-			// Empty State: saat response api graph.nodes empty maka canvas menjadi empty state
+			// Empty State: when api graph.nodes response is empty, canvas enters empty state
 			nodes.value = []
 			edges.value = []
 		}
@@ -815,13 +815,13 @@ export const usePipelineBuildStore = defineStore(
 			const sourceNodeId = oldEdge.source
 			const targetNodeId = oldEdge.target
 
-			// 1. Buat node processor baru
+			// 1. Create new processor node
 			const newProc = addProcessorNode(x, y)
 
-			// 2. Hapus edge lama yang dipotong agar tidak menembus node
+			// 2. Remove old cut edge so it doesn't cross through node
 			edges.value.splice(edgeIndex, 1)
 
-			// 3. Hubungkan source ke newProc
+			// 3. Connect source to newProc
 			const fromNode = nodes.value.find((n) => n.id === sourceNodeId)
 			const isFromSource = fromNode?.type === 'source' || sourceNodeId.includes('source')
 			const hasOldItems =
@@ -865,7 +865,7 @@ export const usePipelineBuildStore = defineStore(
 				newProc.data.itemCount = edgeItemIds.length
 			}
 
-			// 4. Hubungkan newProc ke target
+			// 4. Connect newProc to target
 			edges.value.push(
 				createBuilderEdge({
 					id: `edge-${newProc.id}-${targetNodeId}-${Date.now() + 1}`,

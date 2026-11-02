@@ -189,7 +189,7 @@ const isIndeterminate = computed(() => {
 						:colspan="headers.length"
 						class="p-8 text-center text-sm text-muted-foreground"
 					>
-						Tidak ada data tersedia.
+						No data available.
 					</td>
 				</tr>
 			</tbody>

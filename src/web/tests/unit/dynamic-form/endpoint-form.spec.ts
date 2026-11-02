@@ -9,7 +9,7 @@ import { AutoFormAdapter } from '@/app/services/forms/auto-adapter'
 import { endpointHints } from '@/app/services/forms/ui-hints/endpoint.hints'
 
 describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
-	it('menghasilkan field descriptors lengkap untuk Endpoint dengan UI Hints terpasang', () => {
+	it('should generate complete field descriptors for Endpoint with UI Hints attached', () => {
 		const descriptors = introspectZodSchema(CreateEndpointRequest, [], endpointHints)
 
 		expect(descriptors.length).toBe(4)
@@ -90,14 +90,14 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 		expect(skipVerifyDesc?.widget).toBe('switch')
 	})
 
-	describe('Validasi Varian Protokol Endpoint via AutoFormAdapter', () => {
+	describe('Endpoint Protocol Variant Validation via AutoFormAdapter', () => {
 		const baseEndpoint = {
 			name: 'Core Router RouterOS',
 			host_id: '11111111-1111-1111-1111-111111111111',
 			adm_status: 1
 		}
 
-		it('berhasil memvalidasi protokol SNMP v1', () => {
+		it('should successfully validate SNMP v1 protocol', () => {
 			const draft = {
 				...baseEndpoint,
 				config: {
@@ -117,7 +117,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 			}
 		})
 
-		it('berhasil memvalidasi protokol SNMP v2c', () => {
+		it('should successfully validate SNMP v2c protocol', () => {
 			const draft = {
 				...baseEndpoint,
 				config: {
@@ -138,7 +138,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 			}
 		})
 
-		it('berhasil memvalidasi protokol SNMP v3 dengan USM', () => {
+		it('should successfully validate SNMP v3 protocol with USM', () => {
 			const draft = {
 				...baseEndpoint,
 				config: {
@@ -168,7 +168,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 			}
 		})
 
-		it('berhasil memvalidasi protokol HTTP dengan connect_timeout tanpa auth', () => {
+		it('should successfully validate HTTP protocol with connect_timeout without auth', () => {
 			const draft = {
 				...baseEndpoint,
 				config: {
@@ -189,7 +189,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 			}
 		})
 
-		it('berhasil memvalidasi protokol HTTP dengan Basic Auth dan TLS', () => {
+		it('should successfully validate HTTP protocol with Basic Auth and TLS', () => {
 			const draft = {
 				...baseEndpoint,
 				config: {
@@ -224,7 +224,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 			}
 		})
 
-		it('berhasil memvalidasi protokol HTTP dengan Bearer Auth', () => {
+		it('should successfully validate HTTP protocol with Bearer Auth', () => {
 			const draft = {
 				...baseEndpoint,
 				config: {
@@ -249,7 +249,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 			}
 		})
 
-		it('menolak payload HTTP jika Basic Auth kredensial kosong', () => {
+		it('should reject HTTP payload if Basic Auth credentials are empty', () => {
 			const draft = {
 				...baseEndpoint,
 				config: {
@@ -281,7 +281,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 			}
 		})
 
-		it('menolak payload HTTP jika Bearer token kosong', () => {
+		it('should reject HTTP payload if Bearer token is empty', () => {
 			const draft = {
 				...baseEndpoint,
 				config: {
@@ -305,7 +305,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 			}
 		})
 
-		it('menolak payload HTTP jika url kosong', () => {
+		it('should reject HTTP payload if url is empty', () => {
 			const draft = {
 				...baseEndpoint,
 				config: {
@@ -325,7 +325,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 			}
 		})
 
-		it('menolak payload jika ada field wajib yang kosong', () => {
+		it('should reject payload if required fields are empty', () => {
 			const draft = {
 				name: '',
 				host_id: '',
@@ -346,7 +346,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 			}
 		})
 
-		it('AutoFormAdapter.toDraft menghasilkan default endpoint form yang lengkap', () => {
+		it('should produce complete default endpoint form in AutoFormAdapter.toDraft', () => {
 			const draft = AutoFormAdapter.toDraft(CreateEndpointRequest, null, endpointHints)
 			expect(draft.adm_status).toBe(1)
 			expect(draft.config.type).toBe('snmp_v1')
@@ -354,7 +354,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 			expect(draft.config.config.community).toBeDefined()
 		})
 
-		it('AutoFormAdapter.toDraft mempopulasi data edit mode untuk HTTP endpoint dengan auth', () => {
+		it('should populate edit mode data for HTTP endpoint with auth in AutoFormAdapter.toDraft', () => {
 			const existing = {
 				name: 'Existing HTTP',
 				host_id: '11111111-1111-1111-1111-111111111111',
@@ -383,7 +383,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 			expect(draft.config.config.auth.Basic.password).toBe('mypassword')
 		})
 
-		it('menolak payload HTTP jika client cert_path diisi tanpa key_path', () => {
+		it('should reject HTTP payload if client cert_path is provided without key_path', () => {
 			const draft = {
 				...baseEndpoint,
 				config: {
@@ -408,7 +408,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 			}
 		})
 
-		it('menolak payload HTTP jika client key_path diisi tanpa cert_path', () => {
+		it('should reject HTTP payload if client key_path is provided without cert_path', () => {
 			const draft = {
 				...baseEndpoint,
 				config: {
@@ -433,7 +433,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 			}
 		})
 
-		it('AutoFormAdapter.toRequest membersihkan TLS yang kosong menjadi null pada HTTP endpoint', () => {
+		it('should clean empty TLS to null on HTTP endpoint in AutoFormAdapter.toRequest', () => {
 			const draft = {
 				...baseEndpoint,
 				config: {

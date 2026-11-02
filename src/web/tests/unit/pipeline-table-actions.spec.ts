@@ -93,7 +93,7 @@ describe('Pipeline Table & Host Selector Enhancements', () => {
 		'modal-confirmation-delete': true
 	}
 
-	it('startSelected menyalakan pipeline yang belum running', async () => {
+	it('startSelected starts pipelines that are not yet running', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = usePipelineStore()
@@ -127,7 +127,7 @@ describe('Pipeline Table & Host Selector Enhancements', () => {
 		)
 	})
 
-	it('menampilkan tombol Start Selected saat baris table dipilih', async () => {
+	it('should display Start Selected button when table rows are selected', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = usePipelineStore()
@@ -153,7 +153,7 @@ describe('Pipeline Table & Host Selector Enhancements', () => {
 		expect(wrapper.text()).toContain('Delete Selected')
 	})
 
-	it('membuka modal konfirmasi status saat aksi Stop atau Start dipicu', async () => {
+	it('should open status confirmation modal when Stop or Start action is triggered', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = usePipelineStore()
