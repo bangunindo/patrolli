@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 720 168" width="720" height="168" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="node-roles-dark-title node-roles-dark-desc" id="node-roles-dark-root">
+  <title id="node-roles-dark-title">Node roles in a cluster</title>
+  <desc id="node-roles-dark-desc">node_id A runs a leader process and a standby process. node_id B runs a main process. node_id C runs a spare process with no hosts.</desc>
+  <defs>
+    <marker id="node-roles-dark-arrow-muted" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#bfc0c0"/></marker>
+    <marker id="node-roles-dark-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#f08a59"/></marker>
+    <marker id="node-roles-dark-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#739fdf"/></marker>
+  </defs>
+  <rect width="100%" height="100%" fill="#2d3142"/>
+  <rect x="16" y="24" width="336" height="120" rx="8" fill="none" stroke="rgba(191,192,192,0.25)" stroke-width="1"/>
+  <text x="32" y="46" fill="#949eb2" font-size="9" letter-spacing="1" font-family="'Geist Mono', ui-monospace, monospace">NODE_ID A</text>
+  <rect x="368" y="24" width="160" height="120" rx="8" fill="none" stroke="rgba(191,192,192,0.25)" stroke-width="1"/>
+  <text x="384" y="46" fill="#949eb2" font-size="9" letter-spacing="1" font-family="'Geist Mono', ui-monospace, monospace">NODE_ID B</text>
+  <rect x="544" y="24" width="160" height="120" rx="8" fill="none" stroke="rgba(191,192,192,0.25)" stroke-width="1"/>
+  <text x="560" y="46" fill="#949eb2" font-size="9" letter-spacing="1" font-family="'Geist Mono', ui-monospace, monospace">NODE_ID C</text>
+  <rect x="32" y="64" width="144" height="56" rx="6" fill="#2d3142"/>
+  <rect x="32" y="64" width="144" height="56" rx="6" fill="#f08a59" fill-opacity="0.08" stroke="#f08a59" stroke-width="1"/>
+  <text x="104" y="90" fill="#f5f5f5" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Leader</text>
+  <text x="104" y="106" fill="#bfc0c0" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">places the hosts</text>
+  <rect x="192" y="64" width="144" height="56" rx="6" fill="#2d3142"/>
+  <rect x="192" y="64" width="144" height="56" rx="6" fill="#2d3142" stroke="#bfc0c0" stroke-dasharray="5,4" stroke-width="1"/>
+  <text x="264" y="90" fill="#f5f5f5" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Standby</text>
+  <text x="264" y="106" fill="#bfc0c0" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">waits for the lock</text>
+  <rect x="384" y="64" width="128" height="56" rx="6" fill="#2d3142"/>
+  <rect x="384" y="64" width="128" height="56" rx="6" fill="#393e53" stroke="#f5f5f5" stroke-width="1"/>
+  <text x="448" y="90" fill="#f5f5f5" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Main</text>
+  <text x="448" y="106" fill="#bfc0c0" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">carries hosts</text>
+  <rect x="560" y="64" width="128" height="56" rx="6" fill="#2d3142"/>
+  <rect x="560" y="64" width="128" height="56" rx="6" fill="#f5f5f5" fill-opacity="0.05" stroke="rgba(191,192,192,0.25)" stroke-width="1"/>
+  <text x="624" y="90" fill="#f5f5f5" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Spare</text>
+  <text x="624" y="106" fill="#bfc0c0" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">carries no hosts</text>
+</svg>
