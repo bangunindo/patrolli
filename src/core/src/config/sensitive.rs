@@ -16,7 +16,9 @@ use std::fmt;
 use std::mem::discriminant;
 use std::num::NonZeroU32;
 use utoipa::openapi::RefOr;
-use utoipa::openapi::schema::{ObjectBuilder, OneOfBuilder, Schema, Type};
+use utoipa::openapi::schema::{
+    KnownFormat, ObjectBuilder, OneOfBuilder, Schema, SchemaFormat, Type,
+};
 
 const KEYS_ENV: &str = "PATROLLI_SECRET_KEYS";
 const ACTIVE_KEY_ENV: &str = "PATROLLI_SECRET_ACTIVE_KEY";
@@ -178,7 +180,11 @@ impl<'de> Visitor<'de> for SensitiveVisitor {
 impl utoipa::PartialSchema for Sensitive {
     fn schema() -> RefOr<Schema> {
         OneOfBuilder::new()
-            .item(ObjectBuilder::new().schema_type(Type::String))
+            .item(
+                ObjectBuilder::new()
+                    .schema_type(Type::String)
+                    .format(Some(SchemaFormat::KnownFormat(KnownFormat::Password))),
+            )
             .item(
                 ObjectBuilder::new()
                     .property("set", ObjectBuilder::new().schema_type(Type::String))

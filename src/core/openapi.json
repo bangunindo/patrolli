@@ -13093,7 +13093,8 @@
       "Sensitive": {
         "oneOf": [
           {
-            "type": "string"
+            "type": "string",
+            "format": "password"
           },
           {
             "type": "object",
