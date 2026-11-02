@@ -173,22 +173,6 @@ export const usePipelineBuildStore = defineStore(
 			}
 		}
 
-		// Legacy compatibility for configuration/pipeline-builder
-		const itemPagination = reactive({
-			rows: 10,
-			currentPage: 1,
-			totalRecords: 0,
-			reachEnd: false
-		})
-		const itemFilter = reactive<any>({})
-		const items = ref<any[]>([])
-		const itemLoading = reactive({ table: false })
-		const itemError = ref<string | null>(null)
-
-		async function fetchItems(_isSearch?: boolean, _selected?: string[]) {}
-		async function fetchGraph() {}
-		async function updateCanvas() {}
-
 		function markDirty() {
 			isDirty.value = true
 		}
@@ -1519,16 +1503,7 @@ export const usePipelineBuildStore = defineStore(
 			saveGraph,
 			saveNodeContent,
 			getSourceActiveItemIds,
-			buildGraphRepresentation,
-			// Legacy compatibility
-			itemPagination,
-			itemFilter,
-			items,
-			itemLoading,
-			itemError,
-			fetchItems,
-			fetchGraph,
-			updateCanvas
+			buildGraphRepresentation
 		}
 	},
 	{ persist: false }
