@@ -7,7 +7,7 @@
       "name": "AGPL-3.0-only",
       "identifier": "AGPL-3.0-only"
     },
-    "version": "0.6.2"
+    "version": "0.1.0-beta.1"
   },
   "paths": {
     "/api/v1/auth/change-password": {
@@ -13093,7 +13093,8 @@
       "Sensitive": {
         "oneOf": [
           {
-            "type": "string"
+            "type": "string",
+            "format": "password"
           },
           {
             "type": "object",
