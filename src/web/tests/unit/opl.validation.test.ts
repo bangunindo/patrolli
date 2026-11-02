@@ -65,15 +65,15 @@ describe('validateOplSyntax', () => {
 		it('should reject empty or whitespace-only code', () => {
 			expect(validateOplSyntax('')).toEqual({
 				isValid: false,
-				error: 'Kode OPL tidak boleh kosong.'
+				error: 'OPL code cannot be empty.'
 			})
 			expect(validateOplSyntax('   \n\t  ')).toEqual({
 				isValid: false,
-				error: 'Kode OPL tidak boleh kosong.'
+				error: 'OPL code cannot be empty.'
 			})
 			expect(validateOplSyntax('// only comments\n/* here */')).toEqual({
 				isValid: false,
-				error: 'Kode OPL tidak boleh kosong.'
+				error: 'OPL code cannot be empty.'
 			})
 		})
 
@@ -81,98 +81,98 @@ describe('validateOplSyntax', () => {
 			const opl = 'where severity_number >= 17 | drop'
 			const result = validateOplSyntax(opl)
 			expect(result.isValid).toBe(false)
-			expect(result.error).toContain('harus diawali dengan target signal')
+			expect(result.error).toContain('must start with a target signal')
 		})
 
 		it('should reject unknown target signal', () => {
 			const opl = 'unknown_signal | where severity >= 10'
 			const result = validateOplSyntax(opl)
 			expect(result.isValid).toBe(false)
-			expect(result.error).toContain("Ditemukan 'unknown_signal'")
+			expect(result.error).toContain("Found 'unknown_signal'")
 		})
 
 		it('should reject signal without pipe before next instruction', () => {
 			const opl = 'logs where severity >= 10'
 			const result = validateOplSyntax(opl)
 			expect(result.isValid).toBe(false)
-			expect(result.error).toContain('harus dipisahkan dengan tanda pipe (|)')
+			expect(result.error).toContain('must be separated by a pipe (|)')
 		})
 
 		it('should reject empty pipe segments', () => {
 			const opl = 'logs | | where severity >= 10'
 			const result = validateOplSyntax(opl)
 			expect(result.isValid).toBe(false)
-			expect(result.error).toContain('segmen pipe (|) kosong')
+			expect(result.error).toContain('Empty or incomplete pipe (|) segment found')
 		})
 
 		it('should reject trailing pipe segments', () => {
 			const opl = 'logs | where severity >= 10 |'
 			const result = validateOplSyntax(opl)
 			expect(result.isValid).toBe(false)
-			expect(result.error).toContain('segmen pipe (|) kosong')
+			expect(result.error).toContain('Empty or incomplete pipe (|) segment found')
 		})
 
 		it('should reject unbalanced parentheses', () => {
 			const opl = 'logs | where (severity >= 10'
 			const result = validateOplSyntax(opl)
 			expect(result.isValid).toBe(false)
-			expect(result.error).toContain("Tanda kurung '(' belum tertutup")
+			expect(result.error).toContain("Bracket '(' is not closed")
 		})
 
 		it('should reject unbalanced brackets', () => {
 			const opl = 'logs | set attributes["key" = "value"'
 			const result = validateOplSyntax(opl)
 			expect(result.isValid).toBe(false)
-			expect(result.error).toContain("Tanda kurung '[' belum tertutup")
+			expect(result.error).toContain("Bracket '[' is not closed")
 		})
 
 		it('should reject unclosed string quotes', () => {
 			const opl = 'logs | set attributes["key"] = "unclosed string'
 			const result = validateOplSyntax(opl)
 			expect(result.isValid).toBe(false)
-			expect(result.error).toContain('Tanda kutip string belum tertutup')
+			expect(result.error).toContain('Unclosed string literal')
 		})
 
 		it('should reject unknown operators', () => {
 			const opl = 'logs | calculate attributes["x"] = 1'
 			const result = validateOplSyntax(opl)
 			expect(result.isValid).toBe(false)
-			expect(result.error).toContain("Operator 'calculate' pada segmen ke-2 tidak dikenali")
+			expect(result.error).toContain("Operator 'calculate' at segment 2 is unrecognized")
 		})
 
 		it('should reject where operator without expression', () => {
 			const opl = 'logs | where'
 			const result = validateOplSyntax(opl)
 			expect(result.isValid).toBe(false)
-			expect(result.error).toContain("Operator 'where' membutuhkan ekspresi kondisi")
+			expect(result.error).toContain("Operator 'where' requires a condition expression")
 		})
 
 		it('should reject set operator without assignment', () => {
 			const opl = 'logs | set attributes["key"]'
 			const result = validateOplSyntax(opl)
 			expect(result.isValid).toBe(false)
-			expect(result.error).toContain("Operator 'set' harus memiliki tanda assignment '='")
+			expect(result.error).toContain("Operator 'set' must include an assignment '='")
 		})
 
 		it('should reject rename operator without as clause', () => {
 			const opl = 'logs | rename attributes["old"] attributes["new"]'
 			const result = validateOplSyntax(opl)
 			expect(result.isValid).toBe(false)
-			expect(result.error).toContain("Operator 'rename' harus menggunakan klausa 'as'")
+			expect(result.error).toContain("Operator 'rename' must use the 'as' clause")
 		})
 
 		it('should reject remove operator without target', () => {
 			const opl = 'logs | remove'
 			const result = validateOplSyntax(opl)
 			expect(result.isValid).toBe(false)
-			expect(result.error).toContain("Operator 'remove' membutuhkan target atribut")
+			expect(result.error).toContain("Operator 'remove' requires an attribute target")
 		})
 
 		it('should reject apply operator without scope or braces', () => {
 			const opl = 'metrics | apply data_points'
 			const result = validateOplSyntax(opl)
 			expect(result.isValid).toBe(false)
-			expect(result.error).toContain("Operator 'apply' harus memiliki blok kurung kurawal")
+			expect(result.error).toContain("Operator 'apply' must include curly braces")
 		})
 	})
 })

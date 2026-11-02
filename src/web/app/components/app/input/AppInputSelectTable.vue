@@ -189,7 +189,7 @@ watchOnce(
 				debouncedFetch()
 			}
 		} else {
-			console.log('Terjadi sebelum mounted')
+			console.log('Occurred before mounted')
 		}
 	}
 )

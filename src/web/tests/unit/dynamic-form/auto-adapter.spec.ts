@@ -15,8 +15,8 @@ describe('auto-adapter', () => {
 		override_val: z.string().nullable().optional()
 	})
 
-	describe('toRequest - Sanitasi & Coercion', () => {
-		it('mengonversi string kosong ke undefined untuk field opsional dan angka', () => {
+	describe('toRequest - Sanitization & Coercion', () => {
+		it('should convert empty string to undefined for optional and numeric fields', () => {
 			const rawDraft = {
 				name: 'Test Endpoint',
 				retries: '',
@@ -31,7 +31,7 @@ describe('auto-adapter', () => {
 			}
 		})
 
-		it('mengonversi string angka menjadi number (coercion)', () => {
+		it('should coerce numeric strings to numbers', () => {
 			const rawDraft = {
 				name: 'Test Endpoint',
 				retries: '5',
@@ -46,7 +46,7 @@ describe('auto-adapter', () => {
 			}
 		})
 
-		it('mengonversi string kosong ke null jika emptyPolicy diatur ke null', () => {
+		it('should convert empty string to null if emptyPolicy is set to null', () => {
 			const rawDraft = {
 				name: 'Test Item',
 				override_val: ''
@@ -62,9 +62,9 @@ describe('auto-adapter', () => {
 			}
 		})
 
-		it('mengembalikan dictionary issues saat validasi gagal', () => {
+		it('should return issues dictionary when validation fails', () => {
 			const rawDraft = {
-				name: '', // Field wajib
+				name: '', // Required field
 				retries: -1 // Min 0
 			}
 
@@ -78,13 +78,13 @@ describe('auto-adapter', () => {
 	})
 
 	describe('toDraft', () => {
-		it('mengisi nilai default dari Zod schema saat draft awal kosong', () => {
+		it('should populate default values from Zod schema when initial draft is empty', () => {
 			const draft = AutoFormAdapter.toDraft(testSchema)
 			expect(draft.timeout).toBe(1000)
 			expect(draft.name).toBeUndefined()
 		})
 
-		it('mempertahankan nilai entitas yang ada', () => {
+		it('should retain existing entity values', () => {
 			const entity = { name: 'Existing Endpoint', timeout: 3000 }
 			const draft = AutoFormAdapter.toDraft(testSchema, entity)
 

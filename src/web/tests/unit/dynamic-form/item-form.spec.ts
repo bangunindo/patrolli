@@ -44,7 +44,7 @@ describe('Item DynamicZodForm Integration', () => {
 		AppInputJson: true
 	}
 
-	it('merender ItemForm dengan DynamicZodForm pada mode ADD untuk Host Item', async () => {
+	it('should render ItemForm with DynamicZodForm in ADD mode for Host Item', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useItemsStore()
@@ -81,7 +81,7 @@ describe('Item DynamicZodForm Integration', () => {
 		).toBe(true)
 	})
 
-	it('merender ItemForm dengan DynamicZodForm pada mode ADD untuk Template Item', async () => {
+	it('should render ItemForm with DynamicZodForm in ADD mode for Template Item', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useItemsStore()
@@ -108,7 +108,7 @@ describe('Item DynamicZodForm Integration', () => {
 		expect(wrapper.text()).not.toContain('No applicable renderer found')
 	})
 
-	it('merender ItemForm dengan SNMP pada mode UPDATE dan memvalidasi submit payload', async () => {
+	it('should render ItemForm with SNMP in UPDATE mode and validate submit payload', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useItemsStore()
@@ -174,7 +174,7 @@ describe('Item DynamicZodForm Integration', () => {
 		expect(submittedPayload.payload.config.config.oid).toBe('1.3.6.1.4.1.2021.10.1.3.1')
 	})
 
-	it('mendeserialisasi data dummy item yang ada (attrs tuple array, body object, dan ISO datetime) ke format form', async () => {
+	it('should deserialize existing dummy item data (attrs tuple array, body object, and ISO datetime) to form format', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useItemsStore()
@@ -225,7 +225,7 @@ describe('Item DynamicZodForm Integration', () => {
 		expect(row.source_port).toBe(8080)
 	})
 
-	it('mempersistensikan dan menserialisasikan typed attributes (String, Int64, Double, Bool, Null) sesuai Zod LogRowOwned schema', async () => {
+	it('should persist and serialize typed attributes (String, Int64, Double, Bool, Null) according to Zod LogRowOwned schema', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useItemsStore()
@@ -290,7 +290,7 @@ describe('Item DynamicZodForm Integration', () => {
 		])
 	})
 
-	it('mempersistensikan dan menserialisasikan field body sesuai ZStringOwned schema ({ String: string } atau null)', async () => {
+	it('should persist and serialize body field according to ZStringOwned schema ({ String: string } or null)', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useItemsStore()
@@ -351,7 +351,7 @@ describe('Item DynamicZodForm Integration', () => {
 		})
 	})
 
-	it('berhasil melakukan validasi Zod dan submit Dummy item saat dipicu via triggerSubmit() pada form baru', async () => {
+	it('should validate Zod schema and submit Dummy item when triggered via triggerSubmit() on a new form', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useItemsStore()
@@ -375,7 +375,7 @@ describe('Item DynamicZodForm Integration', () => {
 		await flushPromises()
 
 		const vm = wrapper.vm as any
-		// Isi data mandatory
+		// Fill mandatory data
 		vm.form.host_id = 'test-host-id'
 		vm.form.name = 'Dummy Through TriggerSubmit'
 		vm.form.schedule = '10s'
@@ -427,7 +427,7 @@ describe('Item DynamicZodForm Integration', () => {
 		expect(row.attrs).toContainEqual([{ String: 'tier' }, { String: { String: 'backend' } }])
 	})
 
-	it('mencegah submit dan menampilkan hostError jika host_id kosong pada mode ADD Host Item', async () => {
+	it('should prevent submit and display hostError if host_id is empty in Host Item ADD mode', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useItemsStore()
@@ -459,7 +459,7 @@ describe('Item DynamicZodForm Integration', () => {
 		expect(hostInput.props('error')).toBe('Host is required')
 	})
 
-	it('menyembunyikan endpoint, menampilkan listener, dan memvalidasi listener_id saat module diubah ke listener', async () => {
+	it('should hide endpoint, show listener, and validate listener_id when module is changed to listener', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useItemsStore()
@@ -516,7 +516,7 @@ describe('Item DynamicZodForm Integration', () => {
 		expect(submittedPayload.payload.config.type).toBe('listener')
 	})
 
-	it('menyembunyikan receiver dan langsung bisa submit saat module diubah ke dummy', async () => {
+	it('should hide receiver and allow direct submission when module is changed to dummy', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useItemsStore()
@@ -583,7 +583,7 @@ describe('Item DynamicZodForm Integration', () => {
 		expect(submittedPayload.payload.listener_id).toBeUndefined()
 	})
 
-	it('merender form edit untuk Applied Item Template dengan urutan field yang sama dan menampilkan resolved_schedule serta resolved_timeout_ms sebagai placeholder', async () => {
+	it('should render edit form for Applied Item Template with matching field order and display resolved_schedule and resolved_timeout_ms as placeholders', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useItemsStore()
@@ -690,7 +690,7 @@ describe('Item DynamicZodForm Integration', () => {
 		expect(submittedPayload.payload.timeout_ms).toBeNull()
 	})
 
-	it('mengirim nilai baru saat user mengisi override pada schedule dan timeout_ms di Applied Item Template', async () => {
+	it('should send new values when user provides override for schedule and timeout_ms in Applied Item Template', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useItemsStore()

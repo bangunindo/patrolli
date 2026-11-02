@@ -23,7 +23,7 @@ setActivePinia(createPinia())
 
 describe('Collector Module Listener & Sink Form Dynamic Form Integration', () => {
 	describe('Collector Module: Listener', () => {
-		it('mengintrospeksi ItemConfig listener dengan discriminator method pada match_strategy', () => {
+		it('should introspect ItemConfig listener with method discriminator on match_strategy', () => {
 			const desc = introspectField('config', ItemConfig, [], itemHints)
 			expect(desc.widget).toBe('discriminated-union')
 			expect(desc.unionDiscriminator).toBe('type')
@@ -67,7 +67,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			expect(attrMatchConfig?.label).toBe('Match Filter')
 		})
 
-		it('AutoFormAdapter validasi draft Host Item dengan match_strategy source_ips', () => {
+		it('should validate Host Item draft with match_strategy source_ips via AutoFormAdapter', () => {
 			const draft = {
 				name: 'Listener Item',
 				schedule: '10s',
@@ -100,7 +100,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			}
 		})
 
-		it('AutoFormAdapter validasi draft Host Item dengan match_strategy none', () => {
+		it('should validate Host Item draft with match_strategy none via AutoFormAdapter', () => {
 			const draft = {
 				name: 'Listener Item None',
 				schedule: '10s',
@@ -133,7 +133,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 	})
 
 	describe('Sink Form: CreateSinkRequest', () => {
-		it('mengintrospeksi CreateSinkRequest dengan channel (ZodIntersection) dan config', () => {
+		it('should introspect CreateSinkRequest with channel (ZodIntersection) and config', () => {
 			const descriptors = introspectZodSchema(CreateSinkRequest, [], sinkHints)
 
 			// Channel descriptor
@@ -206,7 +206,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			expect(saslDesc?.hints?.visibleWhen).toContain("'sasl_ssl'")
 		})
 
-		it('AutoFormAdapter validasi draft CreateSinkRequest', () => {
+		it('should validate CreateSinkRequest draft via AutoFormAdapter', () => {
 			const draft = {
 				name: 'Sink Production',
 				adm_status: 1,
@@ -240,7 +240,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			}
 		})
 
-		it('mengintrospeksi optional union distribution pada ClickHouse sink dengan opsi none', () => {
+		it('should introspect optional union distribution on ClickHouse sink with none option', () => {
 			const desc = introspectField('config', CreateSinkRequest.shape.config, [], sinkHints)
 			const clickhouseBranch = desc.unionBranches?.['clickhouse']
 			expect(clickhouseBranch).toBeDefined()
@@ -253,7 +253,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			expect(optValues).toContain('none')
 		})
 
-		it('AutoFormAdapter.toRequest memvalidasi Kafka Sink dengan protocol plaintext dan membersihkan ssl & sasl ke null', () => {
+		it('should validate Kafka Sink with plaintext protocol and clean ssl & sasl to null via AutoFormAdapter.toRequest', () => {
 			const draft = {
 				name: 'Kafka Plaintext Sink',
 				adm_status: 1,
@@ -300,7 +300,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			}
 		})
 
-		it('AutoFormAdapter.toRequest memvalidasi Kafka Sink dengan protocol ssl', () => {
+		it('should validate Kafka Sink with ssl protocol via AutoFormAdapter.toRequest', () => {
 			const validSslDraft = {
 				name: 'Kafka SSL Sink',
 				adm_status: 1,
@@ -349,7 +349,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 				expect(cfg.sasl).toBeNull()
 			}
 
-			// SSL tanpa ssl block atau ca_cert_path ditolak
+			// SSL without ssl block or ca_cert_path is rejected
 			const missingSslDraft = {
 				...validSslDraft,
 				config: {
@@ -373,7 +373,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			}
 		})
 
-		it('AutoFormAdapter.toRequest memvalidasi Kafka Sink dengan protocol sasl_plaintext', () => {
+		it('should validate Kafka Sink with sasl_plaintext protocol via AutoFormAdapter.toRequest', () => {
 			const validSaslDraft = {
 				name: 'Kafka SASL Sink',
 				adm_status: 1,
@@ -419,7 +419,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 				expect(cfg.ssl).toBeNull()
 			}
 
-			// SASL tanpa credentials ditolak
+			// SASL without credentials is rejected
 			const invalidSaslDraft = {
 				...validSaslDraft,
 				config: {
@@ -445,7 +445,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			}
 		})
 
-		it('AutoFormAdapter.toRequest memvalidasi Kafka Sink dengan protocol sasl_ssl (memerlukan ssl dan sasl)', () => {
+		it('should validate Kafka Sink with sasl_ssl protocol (requiring ssl and sasl) via AutoFormAdapter.toRequest', () => {
 			const validDraft = {
 				name: 'Kafka SASL SSL Sink',
 				adm_status: 1,
@@ -493,7 +493,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			}
 		})
 
-		it('Sink Form: auto-check Use SSL dan Use SASL secara reaktif saat protocol security berubah', async () => {
+		it('Sink Form: should reactively auto-check Use SSL and Use SASL when security protocol changes', async () => {
 			const wrapper = mount(SinkForm, {
 				global: {
 					stubs: {
@@ -588,7 +588,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 	})
 
 	describe('Listener Form: CreateListenerRequest with Netflow and Nested Address', () => {
-		it('mengintrospeksi CreateListenerRequest dengan union Netflow dan UdpListener address', () => {
+		it('should introspect CreateListenerRequest with union Netflow and UdpListener address', () => {
 			const descriptors = introspectZodSchema(CreateListenerRequest, [], listenerHints)
 			const configDesc = descriptors.find((d) => d.name === 'config')
 			expect(configDesc).toBeDefined()
@@ -609,7 +609,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			expect(addressDesc?.pathKey).toBe('config.config.listener.address')
 		})
 
-		it('memunculkan validation error message pada nested address saat dikosongkan', () => {
+		it('should produce validation error message on nested address when emptied', () => {
 			const invalidDraft = {
 				name: 'My Netflow Listener',
 				adm_status: 1,
@@ -642,7 +642,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			}
 		})
 
-		it('berhasil memvalidasi draft saat nested address terisi dengan benar', () => {
+		it('should successfully validate draft when nested address is properly filled', () => {
 			const validDraft = {
 				name: 'Valid Netflow Listener',
 				adm_status: 1,
@@ -669,7 +669,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			}
 		})
 
-		it('memastikan AutoFormAdapter selalu menghasilkan objek valid untuk labels (bukan undefined/omitted) dan memparsing string json', () => {
+		it('should ensure AutoFormAdapter produces a valid object for labels and parses json string', () => {
 			// 1. Draft with empty string labels
 			const draftEmptyLabels = {
 				name: 'Dummy Listener',
@@ -738,7 +738,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			expect(editDraft.labels).toBe('{"env":"staging"}')
 		})
 
-		it('mengintrospeksi CreateListenerRequest untuk branch snmp_trap dengan default values dan widgets yang tepat', () => {
+		it('should introspect CreateListenerRequest for snmp_trap branch with appropriate default values and widgets', () => {
 			const descriptors = introspectZodSchema(CreateListenerRequest, [], listenerHints)
 			const configDesc = descriptors.find((d) => d.name === 'config')
 			const snmpTrapBranch = configDesc?.unionBranches?.['snmp_trap']
@@ -774,7 +774,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			expect(privPassDesc?.widget).toBe('password')
 		})
 
-		it('AutoFormAdapter.toDraft menghasilkan default SNMP Trap dengan address dan v2c community', () => {
+		it('should produce default SNMP Trap with address and v2c community in AutoFormAdapter.toDraft', () => {
 			const draft = AutoFormAdapter.toDraft(
 				CreateListenerRequest,
 				{
@@ -793,7 +793,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			expect(draft.config.config.v2c.communities).toEqual(['public'])
 		})
 
-		it('AutoFormAdapter.toRequest memvalidasi dan mensanitasi form SNMP Trap dengan v2c community', () => {
+		it('should validate and sanitize SNMP Trap form with v2c community in AutoFormAdapter.toRequest', () => {
 			const draft = {
 				name: 'Production Trap Listener',
 				adm_status: 1,
@@ -821,13 +821,13 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 				const cfg = (res.data.config as any).config
 				expect(cfg.listener.address).toBe('0.0.0.0:162')
 				expect(cfg.v2c.communities).toEqual(['public', 'internal'])
-				// Empty communities dan empty security_models disanitasi menjadi null
+				// Empty communities and empty security_models are sanitized to null
 				expect(cfg.v1).toBeNull()
 				expect(cfg.v3).toBeNull()
 			}
 		})
 
-		it('AutoFormAdapter.toRequest memvalidasi SNMP Trap dengan v3 USM security model', () => {
+		it('should validate SNMP Trap with v3 USM security model in AutoFormAdapter.toRequest', () => {
 			const draft = {
 				name: 'SNMP v3 Trap Listener',
 				adm_status: 1,
@@ -882,7 +882,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			}
 		})
 
-		it('AutoFormAdapter.toRequest menolak SNMP Trap jika v1, v2c, dan v3 semuanya kosong', () => {
+		it('should reject SNMP Trap if v1, v2c, and v3 are all empty in AutoFormAdapter.toRequest', () => {
 			const draft = {
 				name: 'Empty Trap Listener',
 				adm_status: 1,
@@ -911,7 +911,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			}
 		})
 
-		it('AutoFormAdapter.toRequest menolak SNMP v3 jika privacy dikonfigurasi tanpa authentication', () => {
+		it('should reject SNMP v3 if privacy is configured without authentication in AutoFormAdapter.toRequest', () => {
 			const draft = {
 				name: 'Invalid v3 Trap Listener',
 				adm_status: 1,
@@ -954,7 +954,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			}
 		})
 
-		it('mengintrospeksi CreateListenerRequest untuk branch open_telemetry dengan konfigurasi mode, batch, listener, dan tls', () => {
+		it('should introspect CreateListenerRequest for open_telemetry branch with mode, batch, listener, and tls configuration', () => {
 			const descriptors = introspectZodSchema(CreateListenerRequest, [], listenerHints)
 			const configDesc = descriptors.find((d) => d.name === 'config')
 			const otelBranch = configDesc?.unionBranches?.['open_telemetry']
@@ -993,7 +993,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			expect(tlsDesc?.hints?.visibleWhen).toBeUndefined()
 		})
 
-		it('AutoFormAdapter.toDraft menghasilkan default OpenTelemetry dengan mode, address, dan tls null', () => {
+		it('should produce default OpenTelemetry with mode, address, and null tls in AutoFormAdapter.toDraft', () => {
 			const draft = AutoFormAdapter.toDraft(
 				CreateListenerRequest,
 				{
@@ -1013,7 +1013,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			expect(draft.config.config.tls).toBeNull()
 		})
 
-		it('AutoFormAdapter.toRequest memvalidasi dan mensanitasi OpenTelemetry tanpa TLS (plain TCP)', () => {
+		it('should validate and sanitize OpenTelemetry without TLS (plain TCP) in AutoFormAdapter.toRequest', () => {
 			const draft = {
 				name: 'Production OTel Listener',
 				adm_status: 1,
@@ -1056,7 +1056,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			}
 		})
 
-		it('AutoFormAdapter.toRequest memvalidasi OpenTelemetry dengan TLS lengkap', () => {
+		it('should validate OpenTelemetry with full TLS in AutoFormAdapter.toRequest', () => {
 			const draft = {
 				name: 'Secure OTel Listener',
 				adm_status: 1,
@@ -1093,7 +1093,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			}
 		})
 
-		it('AutoFormAdapter.toRequest menolak OpenTelemetry jika cert_path diisi tanpa key_path', () => {
+		it('should reject OpenTelemetry if cert_path is provided without key_path in AutoFormAdapter.toRequest', () => {
 			const draft = {
 				name: 'Invalid TLS OTel Listener',
 				adm_status: 1,
@@ -1124,7 +1124,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			}
 		})
 
-		it('menginisialisasi draft listener dengan port default yang tepat untuk masing-masing listener type', () => {
+		it('should initialize listener draft with appropriate default ports for each listener type', () => {
 			const snmpDraft = AutoFormAdapter.toDraft(
 				CreateListenerRequest,
 				{ config: { type: 'snmp_trap' } },
@@ -1147,7 +1147,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 			expect(syslogDraft.config.config.listener.udp.address).toBe('0.0.0.0:514')
 		})
 
-		it('tidak memetakan nested error worker_count ke root worker_count field', () => {
+		it('should not map nested worker_count error to root worker_count field', () => {
 			const rootErr = AutoFormAdapter.validateField(
 				CreateListenerRequest,
 				'worker_count',

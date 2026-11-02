@@ -23,7 +23,7 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 	const pinia = createPinia()
 	setActivePinia(pinia)
 	describe('useValidation Composable Core Capabilities', () => {
-		it('mengintegrasikan format registry rules secara otomatis', () => {
+		it('should automatically integrate format registry rules', () => {
 			const val = ref('invalid-email')
 			const rules = ref(['required', 'email'])
 			const { validate, messages, hasError, isValid } = useValidation(
@@ -45,15 +45,15 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 			expect(isValid.value).toBe(true)
 		})
 
-		it('memvalidasi format item array dengan benar meskipun item pertama valid dan item kedua tidak valid', () => {
+		it('should validate array items correctly even if first item is valid and second item is invalid', () => {
 			const context = { path: ['ips'], pathKey: 'ips', label: 'IP List' }
 			const errs = validateRules(['192.168.1.1', 'not-an-ip'], ['ipv4'], context)
 			expect(errs).toContain('IP List field must be a valid IPv4 address (e.g. 192.168.1.1)')
 		})
 
-		it('mendukung validasi langsung dengan Zod Schema opsional', () => {
+		it('should support direct validation with optional Zod schema', () => {
 			const val = ref(15)
-			const AgeSchema = z.number().int().min(18, 'Minimal usia adalah 18 tahun')
+			const AgeSchema = z.number().int().min(18, 'Minimum age is 18 years')
 			const { validate, hasError, errorMessage } = useValidation({
 				label: 'Age',
 				value: val,
@@ -66,9 +66,9 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 			expect(errorMessage.value).toMatch(/18/)
 		})
 
-		it('mendukung sinkronisasi external error prop dari DynamicForm atau API', async () => {
+		it('should support syncing external error prop from DynamicForm or API', async () => {
 			const val = ref('sample')
-			const externalError = ref('Nama host sudah digunakan')
+			const externalError = ref('Host name already in use')
 			const onErrorChange = vi.fn()
 
 			const { hasError, errorMessage, showMessages } = useValidation('Host Name', val, [], {
@@ -78,7 +78,7 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 
 			expect(hasError.value).toBe(true)
 			expect(showMessages.value).toBe(true)
-			expect(errorMessage.value).toBe('Nama host sudah digunakan')
+			expect(errorMessage.value).toBe('Host name already in use')
 
 			// User types / modifies input value
 			val.value = 'sample-renamed'
@@ -88,7 +88,7 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 			expect(onErrorChange).toHaveBeenCalledWith('')
 		})
 
-		it('dapat mengatur dan membersihkan pesan error manual dengan setError dan clearError', () => {
+		it('should set and clear manual error messages with setError and clearError', () => {
 			const val = ref('')
 			const { setError, clearError, messages, hasError, errorMessage } = useValidation(
 				'Token',
@@ -96,17 +96,17 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 				[]
 			)
 
-			setError('Token kedaluwarsa')
+			setError('Token expired')
 			expect(hasError.value).toBe(true)
-			expect(errorMessage.value).toBe('Token kedaluwarsa')
-			expect(messages.value).toEqual(['Token kedaluwarsa'])
+			expect(errorMessage.value).toBe('Token expired')
+			expect(messages.value).toEqual(['Token expired'])
 
 			clearError()
 			expect(hasError.value).toBe(false)
 			expect(messages.value).toEqual([])
 		})
 
-		it('menutup alert dan mereset state saat handleAlertClose dipanggil', () => {
+		it('should close alert and reset state when handleAlertClose is called', () => {
 			const val = ref('')
 			const onClose = vi.fn()
 			const { setError, handleAlertClose, showMessages, hasError, messages } = useValidation(
@@ -116,7 +116,7 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 				{ onClose }
 			)
 
-			setError('Kode salah')
+			setError('Invalid code')
 			expect(showMessages.value).toBe(true)
 			expect(hasError.value).toBe(true)
 
@@ -126,7 +126,7 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 			expect(onClose).toHaveBeenCalled()
 		})
 
-		it('memunculkan kembali alert saat validate dipanggil ulang setelah alert ditutup', () => {
+		it('should re-trigger alert when validate is called again after alert was closed', () => {
 			const val = ref('')
 			const { validate, handleAlertClose, showMessages, hasError, messages } = useValidation(
 				'Code',
@@ -152,10 +152,10 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 	})
 
 	describe('AppInputError Standardized UI Component', () => {
-		it('merender string tunggal sebagai title pada b-alert', () => {
+		it('should render a single string as title in b-alert', () => {
 			const wrapper = mount(AppInputError, {
 				props: {
-					messages: 'Field ini wajib diisi'
+					messages: 'This field is required'
 				},
 				global: {
 					stubs: {
@@ -167,10 +167,10 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 				}
 			})
 
-			expect(wrapper.text()).toContain('Field ini wajib diisi')
+			expect(wrapper.text()).toContain('This field is required')
 		})
 
-		it('menggabungkan array pesan error dengan pemisah pipe ( | )', () => {
+		it('should join array of error messages with pipe separator ( | )', () => {
 			const wrapper = mount(AppInputError, {
 				props: {
 					messages: ['Error 1', 'Error 2']
@@ -188,7 +188,7 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 			expect(wrapper.text()).toContain('Error 1 | Error 2')
 		})
 
-		it('tidak merender apapun jika tidak ada error', () => {
+		it('should not render anything when there is no error', () => {
 			const wrapper = mount(AppInputError, {
 				props: {
 					messages: []
@@ -203,10 +203,10 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 			expect(wrapper.find('div').exists()).toBe(false)
 		})
 
-		it('mendukung dismissal (close) tanpa v-model (uncontrolled) dan re-aktif saat error baru datang', async () => {
+		it('should support uncontrolled dismissal and reactivate when a new error arrives', async () => {
 			const wrapper = mount(AppInputError, {
 				props: {
-					messages: 'Format tanggal salah'
+					messages: 'Invalid date format'
 				}
 			})
 
@@ -217,16 +217,16 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 			expect(wrapper.find('div').exists()).toBe(false)
 
 			// New error arrives from form validator
-			await wrapper.setProps({ messages: 'Wajib diisi' })
+			await wrapper.setProps({ messages: 'Required' })
 			expect(wrapper.find('div').exists()).toBe(true)
-			expect(wrapper.text()).toContain('Wajib diisi')
+			expect(wrapper.text()).toContain('Required')
 		})
 
-		it('mereset isDismissed dan menampilkan kembali alert saat modelValue diaktifkan kembali oleh parent', async () => {
+		it('should reset isDismissed and redisplay alert when modelValue is reactivated by parent', async () => {
 			const wrapper = mount(AppInputError, {
 				props: {
 					modelValue: true,
-					messages: 'Field ini wajib diisi'
+					messages: 'This field is required'
 				}
 			})
 
@@ -246,11 +246,11 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 	})
 
 	describe('Atomic & Complex Input Component Integration', () => {
-		it('AppInputText menampilkan error konsisten saat menerima prop error', async () => {
+		it('should display consistent error in AppInputText when error prop is provided', async () => {
 			const wrapper = mount(AppInputText, {
 				props: {
 					label: 'Endpoint Name',
-					error: 'Nama endpoint duplikat'
+					error: 'Duplicate endpoint name'
 				},
 				global: {
 					stubs: {
@@ -263,16 +263,16 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 				}
 			})
 
-			expect(wrapper.text()).toContain('Nama endpoint duplikat')
+			expect(wrapper.text()).toContain('Duplicate endpoint name')
 		})
 
-		it('AppInputSelect menampilkan error konsisten saat menerima prop error', async () => {
+		it('should display consistent error in AppInputSelect when error prop is provided', async () => {
 			const wrapper = mount(AppInputSelect, {
 				props: {
 					modelValue: null,
 					label: 'Cluster Node',
 					options: [{ label: 'Node 1', value: 'node-1' }],
-					error: 'Pilih minimal satu node'
+					error: 'Select at least one node'
 				},
 				global: {
 					stubs: {
@@ -284,13 +284,13 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 				}
 			})
 
-			expect(wrapper.text()).toContain('Pilih minimal satu node')
+			expect(wrapper.text()).toContain('Select at least one node')
 		})
 
-		it('Password component menampilkan error konsisten saat menerima prop error', async () => {
+		it('should display consistent error in Password component when error prop is provided', async () => {
 			const wrapper = mount(Password, {
 				props: {
-					error: 'Password terlalu lemah'
+					error: 'Password too weak'
 				},
 				global: {
 					stubs: {
@@ -303,14 +303,14 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 				}
 			})
 
-			expect(wrapper.text()).toContain('Password terlalu lemah')
+			expect(wrapper.text()).toContain('Password too weak')
 		})
 
-		it('ArrayString component menampilkan error konsisten saat menerima prop error', async () => {
+		it('should display consistent error in ArrayString component when error prop is provided', async () => {
 			const wrapper = mount(ArrayString, {
 				props: {
 					label: 'Tags',
-					error: 'Tags tidak boleh kosong'
+					error: 'Tags cannot be empty'
 				},
 				global: {
 					stubs: {
@@ -327,14 +327,14 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 				}
 			})
 
-			expect(wrapper.text()).toContain('Tags tidak boleh kosong')
+			expect(wrapper.text()).toContain('Tags cannot be empty')
 		})
 
-		it('AppInputHost meneruskan prop error ke AppInputSelectTable dan merender banner error', async () => {
+		it('should forward error prop to AppInputSelectTable and render error banner in AppInputHost', async () => {
 			const wrapper = mount(AppInputHost, {
 				props: {
 					label: 'Target Host',
-					error: 'Host wajib dipilih'
+					error: 'Host is required'
 				},
 				global: {
 					plugins: [pinia],
@@ -352,10 +352,10 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 				}
 			})
 
-			expect(wrapper.text()).toContain('Host wajib dipilih')
+			expect(wrapper.text()).toContain('Host is required')
 		})
 
-		it('AppInputHost meneruskan prop disabled ke AppInputSelectTable dan mencegah interaksi', async () => {
+		it('should forward disabled prop to AppInputSelectTable and prevent interaction in AppInputHost', async () => {
 			const wrapper = mount(AppInputHost, {
 				props: {
 					label: 'Target Host',
@@ -383,12 +383,12 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 			expect(triggerDiv.classes()).toContain('cursor-not-allowed')
 		})
 
-		it('Label.vue mendukung error prop dan useValidation', async () => {
+		it('should support error prop and useValidation in Label.vue', async () => {
 			const wrapper = mount(AppInputLabel, {
 				props: {
 					modelValue: '{}',
 					label: 'Service Labels',
-					error: 'Labels harus memiliki minimal 1 pasangan key-value'
+					error: 'Labels must have at least 1 key-value pair'
 				},
 				global: {
 					stubs: {
@@ -405,10 +405,10 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 				}
 			})
 
-			expect(wrapper.text()).toContain('Labels harus memiliki minimal 1 pasangan key-value')
+			expect(wrapper.text()).toContain('Labels must have at least 1 key-value pair')
 		})
 
-		it('AppInputAttributeFilter merender AppInputError saat root dan ada error', async () => {
+		it('should render AppInputError in AppInputAttributeFilter when root is true and error is present', async () => {
 			const wrapper = mount(AppInputAttributeFilter, {
 				props: {
 					modelValue: {
@@ -420,7 +420,7 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 							value: { string: 'prod' }
 						}
 					},
-					error: 'Aturan filter wajib diisi',
+					error: 'Filter rule is required',
 					root: true
 				},
 				global: {
@@ -439,10 +439,10 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 
 			expect(wrapper.find('[data-invalid="true"]').exists()).toBe(true)
 			expect(wrapper.classes()).toContain('has-error')
-			expect(wrapper.text()).toContain('Aturan filter wajib diisi')
+			expect(wrapper.text()).toContain('Filter rule is required')
 		})
 
-		it('semua input dalam classic form yang tidak valid menerima status error pada submit', async () => {
+		it('should mark all invalid inputs with error status on submit in classic forms', async () => {
 			const FormComp = defineComponent({
 				components: { AppInputText },
 				template: `
@@ -469,7 +469,7 @@ describe('Centralized Validation Engine & Standardized UI Error Presentation', (
 			wrapper.unmount()
 		})
 
-		it('memunculkan kembali alert saat form di-submit ulang setelah alert field ditutup', async () => {
+		it('should reappear alert when form is resubmitted after field alert was closed', async () => {
 			const FormComp = defineComponent({
 				components: { AppInputText },
 				template: `

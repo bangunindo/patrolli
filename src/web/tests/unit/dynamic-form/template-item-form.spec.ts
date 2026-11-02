@@ -41,7 +41,7 @@ describe('Item Template Form DynamicZodForm Integration', () => {
 		AppInputText: true
 	}
 
-	it('merender ItemFormTemplate dengan DynamicZodForm pada mode ADD', async () => {
+	it('should render ItemFormTemplate with DynamicZodForm in ADD mode', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useItemsStore()
@@ -69,7 +69,7 @@ describe('Item Template Form DynamicZodForm Integration', () => {
 		expect(wrapper.findComponent({ name: 'AppInputHost' }).exists()).toBe(false)
 	})
 
-	it('berhasil memvalidasi dan memanggil createItemForTemplate saat submit template item', async () => {
+	it('should validate and call createItemForTemplate when submitting template item', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useItemsStore()
@@ -117,7 +117,7 @@ describe('Item Template Form DynamicZodForm Integration', () => {
 		expect(submittedPayload.payload.config.type).toBe(ItemType.SNMP)
 	})
 
-	it('merender ItemFormTemplate pada mode UPDATE untuk template item', async () => {
+	it('should render ItemFormTemplate in UPDATE mode for template item', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useItemsStore()

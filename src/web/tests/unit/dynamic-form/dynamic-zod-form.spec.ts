@@ -11,7 +11,7 @@ import { hintsToUiSchema } from '@/app/services/forms/hints-to-uischema'
 import DynamicZodForm from '@/components/app/dynamic-zod-form/DynamicZodForm.vue'
 
 describe('Dynamic Zod Form (JSON Forms + Zod + BTJ UI)', () => {
-	it('mengonversi Zod Schema ke JSON Schema Draft-07 dengan union branches yang valid', () => {
+	it('should convert Zod Schema to JSON Schema Draft-07 with valid union branches', () => {
 		const jsonSchema = convertZodToJsonSchema(CreateEndpointRequest) as any
 
 		expect(jsonSchema.type).toBe('object')
@@ -28,7 +28,7 @@ describe('Dynamic Zod Form (JSON Forms + Zod + BTJ UI)', () => {
 		expect(branches.length).toBe(4)
 	})
 
-	it('mengonversi UI Hints menjadi UISchema element secara terurut', () => {
+	it('should convert UI Hints into ordered UISchema elements', () => {
 		const jsonSchema = convertZodToJsonSchema(CreateEndpointRequest)
 		const uischema = hintsToUiSchema(jsonSchema, endpointHints) as any
 
@@ -42,7 +42,7 @@ describe('Dynamic Zod Form (JSON Forms + Zod + BTJ UI)', () => {
 		expect(firstElement.options?.placeholder).toBe('Name of endpoint')
 	})
 
-	it('berhasil memvalidasi dan memicu emit error saat submit data tidak valid', async () => {
+	it('should validate and emit error event when submitting invalid data', async () => {
 		const wrapper = mount(DynamicZodForm, {
 			props: {
 				schema: CreateEndpointRequest,
@@ -80,7 +80,7 @@ describe('Dynamic Zod Form (JSON Forms + Zod + BTJ UI)', () => {
 		expect(wrapper.emitted('submit')).toBeUndefined()
 	})
 
-	it('memunculkan kembali banner alert validasi saat validateAndSubmit dipanggil ulang setelah alert ditutup', async () => {
+	it('should reappear validation alert banner when validateAndSubmit is recalled after alert is closed', async () => {
 		const wrapper = mount(DynamicZodForm, {
 			props: {
 				schema: CreateEndpointRequest,
@@ -123,7 +123,7 @@ describe('Dynamic Zod Form (JSON Forms + Zod + BTJ UI)', () => {
 		expect(Object.keys(wrapper.vm.issues).length).toBeGreaterThan(0)
 	})
 
-	it('berhasil memicu emit submit dengan data yang lolos validasi Zod', async () => {
+	it('should emit submit event with data passing Zod validation', async () => {
 		const validData = {
 			name: 'My Endpoint',
 			host_id: '123e4567-e89b-12d3-a456-426614174000',

@@ -10,7 +10,7 @@ import CustomSlotRenderer from '@/components/app/dynamic-zod-form/renderers/Cust
 import DynamicZodForm from '@/components/app/dynamic-zod-form/DynamicZodForm.vue'
 
 describe('CustomSlotRenderer DOM stability and focus preservation', () => {
-	it('mempertahankan elemen DOM input saat parent me-render ulang slot function closure baru', async () => {
+	it('should preserve input DOM element when parent re-renders a new slot function closure', async () => {
 		const ParentComponent = defineComponent({
 			setup() {
 				const count = ref(0)
@@ -66,7 +66,7 @@ describe('CustomSlotRenderer DOM stability and focus preservation', () => {
 		wrapper.unmount()
 	})
 
-	it('mempertahankan elemen input pada field slot saat DynamicZodForm menerima input data', async () => {
+	it('should preserve slot input element when DynamicZodForm receives input data', async () => {
 		const testSchema = z.object({
 			name: z.string(),
 			description: z.string().optional()

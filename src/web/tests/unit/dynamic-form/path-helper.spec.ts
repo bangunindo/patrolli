@@ -14,7 +14,7 @@ import {
 
 describe('path-helper', () => {
 	describe('getValueByPath & setValueByPath', () => {
-		it('mengambil nilai bersarang dengan benar', () => {
+		it('should get nested value correctly', () => {
 			const obj = {
 				config: {
 					snmp_v3: {
@@ -28,7 +28,7 @@ describe('path-helper', () => {
 			expect(getValueByPath(obj, ['non_existent'])).toBeUndefined()
 		})
 
-		it('menetapkan nilai bersarang dan membuat objek perantara jika belum ada', () => {
+		it('should set nested value and create intermediate objects if they do not exist', () => {
 			const obj: Record<string, any> = {}
 			setValueByPath(obj, ['config', 'http', 'url'], 'http://localhost:8080')
 
@@ -37,7 +37,7 @@ describe('path-helper', () => {
 			expect(obj.config.http.url).toBe('http://localhost:8080')
 		})
 
-		it('menghapus nilai bersarang dengan benar', () => {
+		it('should delete nested value correctly', () => {
 			const obj = {
 				config: {
 					old_branch: { value: 123 },
@@ -52,7 +52,7 @@ describe('path-helper', () => {
 	})
 
 	describe('pathToString & stringToPath', () => {
-		it('mengonversi array ke string dan sebaliknya', () => {
+		it('should convert array to string and vice versa', () => {
 			const path = ['config', 'snmp', 'address']
 			const str = pathToString(path)
 			expect(str).toBe('config.snmp.address')
@@ -61,7 +61,7 @@ describe('path-helper', () => {
 	})
 
 	describe('formatFieldLabel', () => {
-		it('mengonversi snake_case ke Title Case dengan akronim yang tepat', () => {
+		it('should convert snake_case to Title Case with proper acronyms', () => {
 			expect(formatFieldLabel('name')).toBe('Name')
 			expect(formatFieldLabel('host_id')).toBe('Host ID')
 			expect(formatFieldLabel('max_bulk_repetitions')).toBe('Max Bulk Repetitions')
@@ -70,7 +70,7 @@ describe('path-helper', () => {
 			expect(formatFieldLabel('tls_cert_path')).toBe('TLS Cert Path')
 		})
 
-		it('mengonversi camelCase ke Title Case', () => {
+		it('should convert camelCase to Title Case', () => {
 			expect(formatFieldLabel('workerCount')).toBe('Worker Count')
 			expect(formatFieldLabel('disableClusterForwarding')).toBe('Disable Cluster Forwarding')
 		})

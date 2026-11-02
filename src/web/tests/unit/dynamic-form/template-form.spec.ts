@@ -40,7 +40,7 @@ describe('Template ModalForm DynamicZodForm Integration', () => {
 		ModalUnlinkTemplate: true
 	}
 
-	it('merender TemplateModalForm dengan DynamicZodForm pada mode ADD', async () => {
+	it('should render TemplateModalForm with DynamicZodForm in ADD mode', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useTemplatesStore()
@@ -65,7 +65,7 @@ describe('Template ModalForm DynamicZodForm Integration', () => {
 		expect(wrapper.text()).not.toContain('No applicable renderer found')
 	})
 
-	it('berhasil memvalidasi dan memanggil createTemplate saat submit form template valid', async () => {
+	it('should validate and call createTemplate when submitting valid template form', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useTemplatesStore()
@@ -101,7 +101,7 @@ describe('Template ModalForm DynamicZodForm Integration', () => {
 		expect(submittedPayload.payload.labels).toEqual({ env: 'production', tier: 'frontend' })
 	})
 
-	it('merender TemplateModalForm pada mode UPDATE dan menginisialisasi initial data', async () => {
+	it('should render TemplateModalForm in UPDATE mode and initialize data', async () => {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useTemplatesStore()
