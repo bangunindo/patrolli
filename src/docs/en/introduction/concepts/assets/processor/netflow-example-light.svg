@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 720 104" width="720" height="104" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="netflow-example-light-title netflow-example-light-desc" id="netflow-example-light-root">
+        <title id="netflow-example-light-title">NetFlow through two processors</title>
+        <desc id="netflow-example-light-desc">A netflow item sends flows to the only-next-hop filter, then to the add-geoip lookup, then to a ClickHouse sink.</desc>
+        <defs>
+      <style>#netflow-example-light-root { font-family: 'Geist', system-ui, sans-serif; color: #2d3142; }
+      #netflow-example-light-root .diagram-container { width: 100%; overflow-x: auto; }
+      @media print {
+#netflow-example-light-root .diagram-container { overflow-x: visible; }
+}</style>
+          <marker id="netflow-example-light-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        </defs>
+        <rect width="100%" height="100%" fill="#f5f5f5"/>
+        <path d="M 152,52 H 200" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#netflow-example-light-arrow)"/>
+        <path d="M 336,52 H 384" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#netflow-example-light-arrow)"/>
+        <path d="M 520,52 H 568" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#netflow-example-light-arrow)"/>
+        <rect x="16" y="24" width="136" height="56" rx="6" fill="#f5f5f5"/>
+        <rect x="16" y="24" width="136" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <text x="84" y="50" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Item</text>
+        <text x="84" y="66" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">netflow</text>
+        <rect x="200" y="24" width="136" height="56" rx="6" fill="#f5f5f5"/>
+        <rect x="200" y="24" width="136" height="56" rx="6" fill="#bf4520" stroke="#bf4520" stroke-width="1" fill-opacity="0.08"/>
+        <text x="268" y="50" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">only-next-hop</text>
+        <text x="268" y="66" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">attribute_filter</text>
+        <rect x="384" y="24" width="136" height="56" rx="6" fill="#f5f5f5"/>
+        <rect x="384" y="24" width="136" height="56" rx="6" fill="#bf4520" stroke="#bf4520" stroke-width="1" fill-opacity="0.08"/>
+        <text x="452" y="50" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">add-geoip</text>
+        <text x="452" y="66" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">attribute_lookup</text>
+        <rect x="568" y="24" width="136" height="56" rx="6" fill="#f5f5f5"/>
+        <rect x="568" y="24" width="136" height="56" rx="6" fill="#2d3142" stroke="#4f5d75" stroke-width="1" fill-opacity="0.05"/>
+        <text x="636" y="50" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Sink</text>
+        <text x="636" y="66" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">ClickHouse</text>
+      </svg>
