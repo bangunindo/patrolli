@@ -35,9 +35,8 @@ If no processor and no sink reads from a processor, Patrolli drops the output of
 
 Suppose you receive NetFlow from your routers. You want only the flows that go through one next hop, and you want the country of each source address. You connect the objects like this:
 
-```
-Item (netflow) --> only-next-hop --> add-geoip --> Sink (ClickHouse)
-```
+![A netflow item sends data to only-next-hop, then to add-geoip, then to a ClickHouse sink.](./assets/processor/netflow-example-light.svg){.light-only}
+![A netflow item sends data to only-next-hop, then to add-geoip, then to a ClickHouse sink.](./assets/processor/netflow-example-dark.svg){.dark-only}
 
 In the YAML file, the two processors look like this:
 

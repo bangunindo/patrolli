@@ -19,15 +19,8 @@ Patrolli has six kinds of objects. You connect them to describe where data comes
 
 Data always starts at an item, goes through zero or more processors, and ends at one or more sinks.
 
-```
-Endpoint --> Item (poll) ----------+
-                                   |
-                                   v
-                               Processor --> Processor --> Sink
-                                   ^                   |
-                                   |                   +--> Sink
-Listener --> Item (listener) ------+
-```
+![An endpoint feeds a poll item and a listener feeds a listener item. Both items send data to a processor, then to a second processor, then to two sinks.](./assets/index/data-flow-light.svg){.light-only}
+![An endpoint feeds a poll item and a listener feeds a listener item. Both items send data to a processor, then to a second processor, then to two sinks.](./assets/index/data-flow-dark.svg){.dark-only}
 
 ## Example
 
