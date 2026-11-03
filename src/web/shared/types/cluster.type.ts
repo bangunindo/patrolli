@@ -10,6 +10,8 @@ export interface ICluster {
 	name: string
 	url: string
 	clientPath?: string
+	path_api?: string
+	path_websocket?: string
 }
 
 export interface IKeycloakConfig {

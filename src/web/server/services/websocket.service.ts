@@ -148,6 +148,21 @@ export function resolveWebSocketUpstreamUrl(
 		upstreamPath = `/${upstreamPath}`
 	}
 
+	if (targetCluster.path_websocket) {
+		const cleanWsPrefix = targetCluster.path_websocket.trim().replace(/^\/+|\/+$/g, '')
+		if (
+			cleanWsPrefix &&
+			upstreamPath !== `/${cleanWsPrefix}` &&
+			!upstreamPath.startsWith(`/${cleanWsPrefix}/`)
+		) {
+			if (upstreamPath === '/ws' || upstreamPath.startsWith('/ws/')) {
+				upstreamPath = upstreamPath.replace(/^\/ws(?=\/|$)/, `/${cleanWsPrefix}`)
+			} else {
+				upstreamPath = `/${cleanWsPrefix}${upstreamPath}`
+			}
+		}
+	}
+
 	// Remove token/access_token from query string forwarded to cluster to prevent leaking credentials in logs
 	let cleanSearch = parsedSearch
 	if (parsedSearch) {

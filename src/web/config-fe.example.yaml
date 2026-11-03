@@ -12,8 +12,12 @@ ssl:
 clusters:
     - name: 'patrolli'
       url: 'http://patrolli:8080'
+      path_api: 'api/v1'
+      path_websocket: 'api/v1/ws'
     - name: 'patrolli1'
       url: 'http://patrolli1:8080'
+      path_api: 'api/v1'
+      path_websocket: 'ws/v1'
 
 auth:
     keycloak:

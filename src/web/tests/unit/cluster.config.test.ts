@@ -4,13 +4,16 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import * as apiBaseService from '@@/server/services/apibase.service'
 import {
+	forwardToCluster,
 	getClustersConfig,
 	getKeycloakConfig,
 	parseClustersConfig,
-	resolveClusterTargets
+	resolveClusterTargets,
+	resolveClusterTargetPath
 } from '@@/server/services/cluster.service'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 describe('Cluster Config Parser', () => {
 	const originalEnv = process.env
@@ -221,6 +224,122 @@ clusters:
 			const attack3 = resolveClusterTargets('http://evil-attacker.com', clusters)
 			expect(attack3).toEqual(clusters)
 			expect(attack3.some((c) => c.url.includes('evil-attacker.com'))).toBe(false)
+		})
+	})
+
+	describe('path_api prefix support', () => {
+		it('should parse path_api and path_websocket from array of cluster objects', () => {
+			const input = [
+				{
+					name: 'cluster1',
+					url: 'http://c1:8080',
+					path_api: 'api/v1',
+					path_websocket: 'api/v1/ws'
+				},
+				{ name: 'cluster2', url: 'http://c2:8080' }
+			]
+			const res = parseClustersConfig(input)
+			expect(res[0].path_api).toBe('api/v1')
+			expect(res[0].path_websocket).toBe('api/v1/ws')
+			expect(res[1].path_api).toBeUndefined()
+			expect(res[1].path_websocket).toBeUndefined()
+		})
+
+		it('should parse path_api and path_websocket from YAML config', () => {
+			const yamlInput = `
+- name: 'patrolli'
+  url: 'http://patrolli:8080'
+  path_api: 'api/v1'
+  path_websocket: 'api/v1/ws'
+`
+			const res = parseClustersConfig(yamlInput)
+			expect(res[0].path_api).toBe('api/v1')
+			expect(res[0].path_websocket).toBe('api/v1/ws')
+		})
+
+		it('should parse path_websocket from map of clusters', () => {
+			const mapInput = {
+				c1: {
+					url: 'http://c1:8080',
+					path_api: 'api/v1',
+					path_websocket: 'ws/v1'
+				}
+			}
+			const res = parseClustersConfig(mapInput)
+			expect(res[0].path_api).toBe('api/v1')
+			expect(res[0].path_websocket).toBe('ws/v1')
+		})
+
+		describe('resolveClusterTargetPath', () => {
+			it('should replace /api prefix with path_api for /api endpoints', () => {
+				const cluster = { name: 'c1', url: 'http://c1:8080', path_api: 'api/v1' }
+				expect(resolveClusterTargetPath(cluster, '/api/items')).toBe('/api/v1/items')
+				expect(resolveClusterTargetPath(cluster, '/api')).toBe('/api/v1')
+				expect(resolveClusterTargetPath(cluster, '/api/nodes')).toBe('/api/v1/nodes')
+			})
+
+			it('should prepend path_api for /auth endpoints', () => {
+				const cluster = { name: 'c1', url: 'http://c1:8080', path_api: 'api/v1' }
+				expect(resolveClusterTargetPath(cluster, '/auth/login')).toBe('/api/v1/auth/login')
+				expect(resolveClusterTargetPath(cluster, '/auth/logout')).toBe(
+					'/api/v1/auth/logout'
+				)
+			})
+
+			it('should handle version-only prefix like v1 or v2', () => {
+				const cluster = { name: 'c1', url: 'http://c1:8080', path_api: 'v1' }
+				expect(resolveClusterTargetPath(cluster, '/api/items')).toBe('/v1/items')
+				expect(resolveClusterTargetPath(cluster, '/auth/login')).toBe('/v1/auth/login')
+			})
+
+			it('should sanitize leading and trailing slashes in path_api', () => {
+				const cluster = { name: 'c1', url: 'http://c1:8080', path_api: '/api/v2/' }
+				expect(resolveClusterTargetPath(cluster, '/api/items')).toBe('/api/v2/items')
+				expect(resolveClusterTargetPath(cluster, '/auth/login')).toBe('/api/v2/auth/login')
+			})
+
+			it('should return raw path if path_api is empty or not configured', () => {
+				const noPrefixCluster = { name: 'c1', url: 'http://c1:8080' }
+				expect(resolveClusterTargetPath(noPrefixCluster, '/api/items')).toBe('/api/items')
+				expect(resolveClusterTargetPath(noPrefixCluster, '/auth/login')).toBe('/auth/login')
+
+				const emptyPrefixCluster = { name: 'c1', url: 'http://c1:8080', path_api: '   ' }
+				expect(resolveClusterTargetPath(emptyPrefixCluster, '/api/items')).toBe(
+					'/api/items'
+				)
+			})
+
+			it('should not duplicate path_api prefix if targetPath already starts with path_api', () => {
+				const cluster = { name: 'c1', url: 'http://c1:8080', path_api: 'api/v1' }
+				expect(resolveClusterTargetPath(cluster, '/api/v1/items')).toBe('/api/v1/items')
+				expect(resolveClusterTargetPath(cluster, '/api/v1/auth/login')).toBe(
+					'/api/v1/auth/login'
+				)
+				expect(resolveClusterTargetPath(cluster, '/api/v1')).toBe('/api/v1')
+			})
+		})
+
+		describe('forwardToCluster with path_api', () => {
+			it('should forward request to cluster with rewritten path_api URL', async () => {
+				const reqSpy = vi.spyOn(apiBaseService, 'executeHttpRequest').mockResolvedValue({
+					status: 200,
+					headers: {},
+					data: { success: true }
+				} as any)
+
+				const cluster = { name: 'c1', url: 'http://c1:8080', path_api: 'api/v1' }
+				const res = await forwardToCluster(cluster, '/api/items', {
+					method: 'GET'
+				})
+
+				expect(reqSpy).toHaveBeenCalledWith(
+					expect.objectContaining({
+						url: 'http://c1:8080/api/v1/items',
+						method: 'GET'
+					})
+				)
+				expect(res.status).toBe(200)
+			})
 		})
 	})
 })

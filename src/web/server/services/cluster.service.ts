@@ -29,6 +29,23 @@ declare const useRuntimeConfig: (event?: H3Event) => any
  * - JSON string: [ { name: 'patrolli1', url: 'http://patrolli1:8080' } ]
  * - Object / Map: { patrolli1: 'http://patrolli1:8080' }
  */
+function createClusterEntry(item: Record<string, any>, fallbackKey?: string): ICluster {
+	const cleanName = item.name ? String(item.name).trim() : String(fallbackKey || '').trim()
+	const cleanKey = item.key ? String(item.key).trim() : String(fallbackKey || cleanName).trim()
+	const cleanUrl = String(item.url).trim().replace(/\/+$/, '')
+
+	return {
+		key: cleanKey,
+		name: cleanName,
+		url: cleanUrl,
+		clientPath: item.clientPath
+			? String(item.clientPath).trim()
+			: `/${cleanName.replace(/^\//, '')}`,
+		path_api: item.path_api ? String(item.path_api).trim() : undefined,
+		path_websocket: item.path_websocket ? String(item.path_websocket).trim() : undefined
+	}
+}
+
 export function parseClustersConfig(raw: any): ICluster[] {
 	if (!raw) return []
 
@@ -64,16 +81,7 @@ export function parseClustersConfig(raw: any): ICluster[] {
 			} else if (item.clusters && typeof item.clusters === 'object') {
 				entries.push(...parseClustersConfig(item.clusters))
 			} else if (item.name && item.url) {
-				const cleanName = String(item.name).trim()
-				const cleanUrl = String(item.url).trim().replace(/\/+$/, '')
-				entries.push({
-					key: item.key ? String(item.key).trim() : cleanName,
-					name: cleanName,
-					url: cleanUrl,
-					clientPath: item.clientPath
-						? String(item.clientPath).trim()
-						: `/${cleanName.replace(/^\//, '')}`
-				})
+				entries.push(createClusterEntry(item))
 			}
 		}
 		return entries
@@ -88,25 +96,9 @@ export function parseClustersConfig(raw: any): ICluster[] {
 		for (const [key, value] of Object.entries(raw)) {
 			const cleanKey = key.trim()
 			if (typeof value === 'string' && value.trim()) {
-				result.push({
-					key: cleanKey,
-					name: cleanKey,
-					url: value.trim().replace(/\/+$/, ''),
-					clientPath: `/${cleanKey.replace(/^\//, '')}`
-				})
+				result.push(createClusterEntry({ url: value }, cleanKey))
 			} else if (typeof value === 'object' && value !== null && (value as any).url) {
-				const name = (value as any).name ? String((value as any).name).trim() : cleanKey
-				const url = String((value as any).url)
-					.trim()
-					.replace(/\/+$/, '')
-				result.push({
-					key: (value as any).key ? String((value as any).key).trim() : cleanKey,
-					name,
-					url,
-					clientPath: (value as any).clientPath
-						? String((value as any).clientPath).trim()
-						: `/${name.replace(/^\//, '')}`
-				})
+				result.push(createClusterEntry(value as Record<string, any>, cleanKey))
 			}
 		}
 		return result
@@ -233,6 +225,38 @@ export function resolveClusterTargets(
 	return matchedClusters.length > 0 ? matchedClusters : allClusters
 }
 
+/**
+ * Resolves the upstream target path according to the cluster's path_api prefix configuration.
+ * - Replaces '/api' with '/${path_api}' for /api/... endpoints
+ * - Prepends '/${path_api}' for /auth/... endpoints
+ * - Returns original path if path_api is not configured
+ */
+export function resolveClusterTargetPath(cluster: ICluster, targetPath: string): string {
+	const rawPath = targetPath.startsWith('/') ? targetPath : `/${targetPath}`
+	if (!cluster?.path_api) {
+		return rawPath
+	}
+
+	const cleanPrefix = cluster.path_api.trim().replace(/^\/+|\/+$/g, '')
+	if (!cleanPrefix) {
+		return rawPath
+	}
+
+	if (rawPath === `/${cleanPrefix}` || rawPath.startsWith(`/${cleanPrefix}/`)) {
+		return rawPath
+	}
+
+	if (rawPath === '/api' || rawPath.startsWith('/api/')) {
+		return rawPath.replace(/^\/api(?=\/|$)/, `/${cleanPrefix}`)
+	}
+
+	if (rawPath === '/auth' || rawPath.startsWith('/auth/')) {
+		return `/${cleanPrefix}${rawPath}`
+	}
+
+	return rawPath
+}
+
 export async function forwardToCluster(
 	cluster: ICluster,
 	targetPath: string,
@@ -243,10 +267,11 @@ export async function forwardToCluster(
 		body?: any
 	}
 ): Promise<{ status: number; headers: Headers; data: any }> {
-	const targetUrl = new URL(
-		targetPath.startsWith('/') ? targetPath : `/${targetPath}`,
-		cluster.url
-	)
+	const resolvedPath = resolveClusterTargetPath(cluster, targetPath)
+	const baseUrl = new URL(cluster.url)
+	const basePath = baseUrl.pathname.replace(/\/+$/, '')
+	const finalPath = `${basePath ? `${basePath}${resolvedPath}` : resolvedPath}`
+	const targetUrl = new URL(finalPath, cluster.url)
 	if (options.query) {
 		Object.entries(options.query).forEach(([k, v]) => {
 			if (v !== undefined && v !== null && k !== 'cluster') {
