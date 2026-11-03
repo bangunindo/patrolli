@@ -8,7 +8,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import { usePipelineStore } from '@/stores/pipeline.store'
 import { useAppStore } from '@/stores/app.store'
-import pipelineManagementApi from '@/app/api/pipeline.management.api'
+import pipelinesApi from '@/app/api/pipelines.api'
 import hostsApi from '@/app/api/hosts.api'
 import sinksApi from '@/app/api/sinks.api'
 import appHelper from '@/app/helpers/app.helper'
@@ -66,36 +66,34 @@ describe('Pipeline Store & Multicluster Integration', () => {
 	})
 
 	it('fetches pipelines across all available clusters', async () => {
-		const getPipelinesSpy = vi
-			.spyOn(pipelineManagementApi, 'getPipelines')
-			.mockResolvedValueOnce({
-				success: true,
-				data: {
-					pipeline_managements: [
-						{
-							pipeline_management_id: 'pipe-uuid-1',
-							name: 'Pipeline One',
-							adm_status: 1,
-							visibility: 1,
-							created_at: new Date().toISOString(),
-							last_updated: new Date().toISOString(),
-							cluster_url: 'http://c1.test:8080',
-							cluster_name: 'Cluster 1'
-						},
-						{
-							pipeline_management_id: 'pipe-uuid-2',
-							name: 'Pipeline Two',
-							adm_status: 0,
-							visibility: 0,
-							created_at: new Date().toISOString(),
-							last_updated: new Date().toISOString(),
-							cluster_url: 'http://c2.test:8080',
-							cluster_name: 'Cluster 2'
-						}
-					] as any,
-					total: 2
-				}
-			} as any)
+		const getPipelinesSpy = vi.spyOn(pipelinesApi, 'getPipelines').mockResolvedValueOnce({
+			success: true,
+			data: {
+				pipelines: [
+					{
+						pipeline_id: 'pipe-uuid-1',
+						name: 'Pipeline One',
+						adm_status: 1,
+						visibility: 1,
+						created_at: new Date().toISOString(),
+						last_updated: new Date().toISOString(),
+						cluster_url: 'http://c1.test:8080',
+						cluster_name: 'Cluster 1'
+					},
+					{
+						pipeline_id: 'pipe-uuid-2',
+						name: 'Pipeline Two',
+						adm_status: 0,
+						visibility: 0,
+						created_at: new Date().toISOString(),
+						last_updated: new Date().toISOString(),
+						cluster_url: 'http://c2.test:8080',
+						cluster_name: 'Cluster 2'
+					}
+				] as any,
+				total: 2
+			}
+		} as any)
 
 		const store = usePipelineStore()
 		await store.fetchPipelines()
@@ -115,12 +113,12 @@ describe('Pipeline Store & Multicluster Integration', () => {
 		const appStore = useAppStore()
 		appStore.activeClusterURL = 'http://c2.test:8080'
 
-		const getPipelinesSpy = vi.spyOn(pipelineManagementApi, 'getPipelines').mockResolvedValue({
+		const getPipelinesSpy = vi.spyOn(pipelinesApi, 'getPipelines').mockResolvedValue({
 			success: true,
 			data: {
-				pipeline_managements: [
+				pipelines: [
 					{
-						pipeline_management_id: 'pipe-uuid-2',
+						pipeline_id: 'pipe-uuid-2',
 						name: 'Pipeline Two',
 						adm_status: 1,
 						visibility: 1,
@@ -182,16 +180,16 @@ describe('Pipeline Store & Multicluster Integration', () => {
 	})
 
 	it('creates a pipeline with cluster header and payload', async () => {
-		const createSpy = vi.spyOn(pipelineManagementApi, 'createPipeline').mockResolvedValue({
+		const createSpy = vi.spyOn(pipelinesApi, 'createPipeline').mockResolvedValue({
 			success: true,
 			data: {
-				pipeline_management_id: 'new-pipe-id'
+				pipeline_id: 'new-pipe-id'
 			}
 		} as any)
 
-		const fetchSpy = vi.spyOn(pipelineManagementApi, 'getPipelines').mockResolvedValue({
+		const fetchSpy = vi.spyOn(pipelinesApi, 'getPipelines').mockResolvedValue({
 			success: true,
-			data: { pipeline_managements: [], total: 0 }
+			data: { pipelines: [], total: 0 }
 		} as any)
 
 		const store = usePipelineStore()
@@ -218,7 +216,7 @@ describe('Pipeline Store & Multicluster Integration', () => {
 	})
 
 	it('deletes a pipeline using deletePipeline API', async () => {
-		const deleteSpy = vi.spyOn(pipelineManagementApi, 'deletePipeline').mockResolvedValue({
+		const deleteSpy = vi.spyOn(pipelinesApi, 'deletePipeline').mockResolvedValue({
 			success: true
 		} as any)
 

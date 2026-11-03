@@ -3,22 +3,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import type {
-	CreatePipelineManagementRequest,
-	ListPipelineManagementResponseInner,
-	PipelineManagementDetail,
-	UpdatePipelineManagementRequest
+	CreatePipelineRequest,
+	ListPipelineResponseInner,
+	PipelineDetail,
+	UpdatePipelineRequest
 } from '@@/shared/generated/patrolliAPI.schemas.type'
 import type {
-	GetPipelineManagementParams,
-	ListPipelineManagementQueryParams
-} from '@@/shared/generated/pipeline-management.type'
+	GetPipelineParams,
+	ListPipelinesQueryParams
+} from '@@/shared/generated/pipelines.type'
 import type z from 'zod'
 
 export type PipelineStatus = 'running' | 'stopped' | 'draft'
 export type PipelineAccess = 'public' | 'private'
 
-export type IPipelineManagementQueryParams = z.infer<typeof ListPipelineManagementQueryParams>
-export type IGetPipelineManagementParams = z.infer<typeof GetPipelineManagementParams>
+export type IPipelineQueryParams = z.infer<typeof ListPipelinesQueryParams>
+export type IGetPipelineParams = z.infer<typeof GetPipelineParams>
 
 export interface IPipelineItem {
 	id: string
@@ -37,7 +37,7 @@ export interface IPipelineItem {
 	createdAt?: string
 	cluster_url?: string
 	cluster_name?: string
-	raw?: ListPipelineManagementResponseInner | PipelineManagementDetail
+	raw?: ListPipelineResponseInner | PipelineDetail
 }
 
 export interface IHostSelectorItem {
@@ -66,8 +66,8 @@ export interface IPipelineCreateForm {
 }
 
 export type {
-	CreatePipelineManagementRequest,
-	ListPipelineManagementResponseInner,
-	PipelineManagementDetail,
-	UpdatePipelineManagementRequest
+	CreatePipelineRequest,
+	ListPipelineResponseInner,
+	PipelineDetail,
+	UpdatePipelineRequest
 }

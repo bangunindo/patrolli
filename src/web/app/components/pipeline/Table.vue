@@ -12,7 +12,7 @@ import AppTable from '@/components/app/AppTable.vue'
 import ModalConfirmationDelete from '@/components/modal/ModalConfirmationDelete.vue'
 import { usePipelineStore } from '@/stores/pipeline.store'
 import { FormMode } from '@@/shared/types/app.type'
-import type { IPipelineItem } from '@@/shared/types/pipeline.management.type'
+import type { IPipelineItem } from '@@/shared/types/pipeline.type'
 
 const router = useRouter()
 const pipelineStore = usePipelineStore()

@@ -3,7 +3,7 @@
  * Do not edit manually.
  * Patrolli API
  * RESTful API for Patrolli monitoring system
- * OpenAPI spec version: 0.6.2
+ * OpenAPI spec version: 0.1.0-beta.1
  */
 import {
 	ChangePasswordRequest,
@@ -17,7 +17,7 @@ import {
 /**
  * Updates a user's password after verifying their current credentials.
  * Only for the caller's own password; changing another user's password is
- * `PATCH /api/users/{user_id}`.
+ * `PATCH /api/v1/users/{user_id}`.
  * @summary Change password endpoint
  */
 export const ChangePasswordBody = ChangePasswordRequest

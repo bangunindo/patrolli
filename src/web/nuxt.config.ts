@@ -24,7 +24,22 @@ export default defineNuxtConfig({
 			: false
 	},
 
-	modules: ['@pinia/nuxt', 'shadcn-nuxt'],
+	modules: [
+		'@pinia/nuxt',
+		'shadcn-nuxt',
+		(_options, nuxt) => {
+			nuxt.hook('modules:done', () => {
+				nuxt.hook('prepare:types', ({ tsConfig }) => {
+					if (Array.isArray(tsConfig.vueCompilerOptions?.plugins)) {
+						tsConfig.vueCompilerOptions.plugins =
+							tsConfig.vueCompilerOptions.plugins.filter(
+								(p: unknown) => p !== 'vue-router/volar/sfc-route-blocks'
+							)
+					}
+				})
+			})
+		}
+	],
 
 	shadcn: {
 		prefix: 'Ui',

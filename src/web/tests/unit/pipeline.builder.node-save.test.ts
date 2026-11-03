@@ -6,7 +6,7 @@ import '@@/shared/types/array.type'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { usePipelineBuildStore } from '@/stores/pipeline.builder.store'
-import pipelineManagementApi from '@/app/api/pipeline.management.api'
+import pipelinesApi from '@/app/api/pipelines.api'
 import processorsApi from '@/app/api/processors.api'
 
 describe('Pipeline Builder: Node Content Save Integration (updatePipelineNode)', () => {
@@ -96,10 +96,10 @@ describe('Pipeline Builder: Node Content Save Integration (updatePipelineNode)',
 		] as any
 
 		// Stage 1 mock: updatePipelineGraph
-		const graphSpy = vi.spyOn(pipelineManagementApi, 'updatePipelineGraph').mockResolvedValue({
+		const graphSpy = vi.spyOn(pipelinesApi, 'updatePipelineGraph').mockResolvedValue({
 			success: true,
 			data: {
-				pipeline_management_id: 'pipe-1111-2222',
+				pipeline_id: 'pipe-1111-2222',
 				canvas_id: 'canvas-3333-4444',
 				last_updated: '2026-10-22T10:00:00Z',
 				graph: { nodes: [], relations: [] }
@@ -108,7 +108,7 @@ describe('Pipeline Builder: Node Content Save Integration (updatePipelineNode)',
 
 		// Stage 2 mock: getPipelineNode for fresh last_updated and backend state
 		const getNodeSpy = vi
-			.spyOn(pipelineManagementApi, 'getPipelineNode')
+			.spyOn(pipelinesApi, 'getPipelineNode')
 			.mockImplementation((params) => {
 				if (params.node_id === 'source-node-1') {
 					return Promise.resolve({
@@ -158,12 +158,10 @@ describe('Pipeline Builder: Node Content Save Integration (updatePipelineNode)',
 			})
 
 		// Stage 2 mock: updatePipelineNode
-		const updateNodeSpy = vi
-			.spyOn(pipelineManagementApi, 'updatePipelineNode')
-			.mockResolvedValue({
-				success: true,
-				data: {}
-			} as any)
+		const updateNodeSpy = vi.spyOn(pipelinesApi, 'updatePipelineNode').mockResolvedValue({
+			success: true,
+			data: {}
+		} as any)
 
 		const result = await store.saveGraph()
 
@@ -257,12 +255,12 @@ describe('Pipeline Builder: Node Content Save Integration (updatePipelineNode)',
 			}
 		] as any
 
-		vi.spyOn(pipelineManagementApi, 'updatePipelineGraph').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'updatePipelineGraph').mockResolvedValue({
 			success: true,
 			data: { last_updated: '2026-10-22T10:00:00Z' }
 		} as any)
 
-		vi.spyOn(pipelineManagementApi, 'getPipelineNode').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineNode').mockResolvedValue({
 			success: true,
 			data: {
 				node_id: 'empty-sink-node',
@@ -271,12 +269,10 @@ describe('Pipeline Builder: Node Content Save Integration (updatePipelineNode)',
 			}
 		} as any)
 
-		const updateNodeSpy = vi
-			.spyOn(pipelineManagementApi, 'updatePipelineNode')
-			.mockResolvedValue({
-				success: true,
-				data: {}
-			} as any)
+		const updateNodeSpy = vi.spyOn(pipelinesApi, 'updatePipelineNode').mockResolvedValue({
+			success: true,
+			data: {}
+		} as any)
 
 		const result = await store.saveGraph()
 		expect(result).toBe(true)
@@ -307,12 +303,12 @@ describe('Pipeline Builder: Node Content Save Integration (updatePipelineNode)',
 			}
 		] as any
 
-		vi.spyOn(pipelineManagementApi, 'updatePipelineGraph').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'updatePipelineGraph').mockResolvedValue({
 			success: true,
 			data: { last_updated: '2026-10-22T10:00:00Z' }
 		} as any)
 
-		vi.spyOn(pipelineManagementApi, 'getPipelineNode').mockImplementation((params) => {
+		vi.spyOn(pipelinesApi, 'getPipelineNode').mockImplementation((params) => {
 			if (params.node_id === 'node-fail') {
 				// Simulate read failure
 				return Promise.resolve({ success: false, data: null } as any)
@@ -327,7 +323,7 @@ describe('Pipeline Builder: Node Content Save Integration (updatePipelineNode)',
 			} as any)
 		})
 
-		vi.spyOn(pipelineManagementApi, 'updatePipelineNode').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'updatePipelineNode').mockResolvedValue({
 			success: true,
 			data: {}
 		} as any)
@@ -374,12 +370,12 @@ describe('Pipeline Builder: Node Content Save Integration (updatePipelineNode)',
 			}
 		] as any
 
-		vi.spyOn(pipelineManagementApi, 'updatePipelineGraph').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'updatePipelineGraph').mockResolvedValue({
 			success: true,
 			data: { last_updated: '2026-10-22T10:00:00Z' }
 		} as any)
 
-		vi.spyOn(pipelineManagementApi, 'getPipelineNode').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineNode').mockResolvedValue({
 			success: true,
 			data: {
 				node_id: 'proc-group-node-1',
@@ -394,12 +390,10 @@ describe('Pipeline Builder: Node Content Save Integration (updatePipelineNode)',
 		} as any)
 
 		let sentPayload: any = null
-		vi.spyOn(pipelineManagementApi, 'updatePipelineNode').mockImplementation(
-			(_params, payload) => {
-				sentPayload = payload
-				return Promise.resolve({ success: true, data: {} } as any)
-			}
-		)
+		vi.spyOn(pipelinesApi, 'updatePipelineNode').mockImplementation((_params, payload) => {
+			sentPayload = payload
+			return Promise.resolve({ success: true, data: {} } as any)
+		})
 
 		const result = await store.saveGraph()
 
@@ -435,12 +429,12 @@ describe('Pipeline Builder: Node Content Save Integration (updatePipelineNode)',
 			}
 		] as any
 
-		vi.spyOn(pipelineManagementApi, 'updatePipelineGraph').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'updatePipelineGraph').mockResolvedValue({
 			success: true,
 			data: { last_updated: '2026-10-22T10:00:00Z' }
 		} as any)
 
-		vi.spyOn(pipelineManagementApi, 'getPipelineNode').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineNode').mockResolvedValue({
 			success: true,
 			data: {
 				node_id: 'proc-group-node-2',
@@ -454,23 +448,21 @@ describe('Pipeline Builder: Node Content Save Integration (updatePipelineNode)',
 
 		let callCount = 0
 		let lastSentPayload: any = null
-		vi.spyOn(pipelineManagementApi, 'updatePipelineNode').mockImplementation(
-			(_params, payload) => {
-				callCount++
-				lastSentPayload = payload
-				if (callCount === 1) {
-					return Promise.resolve({
-						status_code: 400,
-						success: false,
-						error: {
-							title: 'Validation error',
-							detail: `Processor IDs already used: ${collidedId}`
-						}
-					} as any)
-				}
-				return Promise.resolve({ success: true, data: {} } as any)
+		vi.spyOn(pipelinesApi, 'updatePipelineNode').mockImplementation((_params, payload) => {
+			callCount++
+			lastSentPayload = payload
+			if (callCount === 1) {
+				return Promise.resolve({
+					status_code: 400,
+					success: false,
+					error: {
+						title: 'Validation error',
+						detail: `Processor IDs already used: ${collidedId}`
+					}
+				} as any)
 			}
-		)
+			return Promise.resolve({ success: true, data: {} } as any)
+		})
 
 		const result = await store.saveGraph()
 

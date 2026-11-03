@@ -10,7 +10,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { usePipelineBuildStore } from '@/stores/pipeline.builder.store'
 import { useProcessorStore } from '@/stores/processor.store'
 import { FormMode } from '@@/shared/types/app.type'
-import pipelineManagementApi from '@/app/api/pipeline.management.api'
+import pipelinesApi from '@/app/api/pipelines.api'
 import processorsApi from '@/app/api/processors.api'
 import EdgeItemsModal from '@/components/pipeline/builder/modals/EdgeItemsModal.vue'
 import ProcessorGroupDrawer from '@/components/pipeline/builder/ProcessorGroupDrawer.vue'
@@ -25,7 +25,7 @@ describe('Pipeline Builder - Processor Group Feature', () => {
 		setActivePinia(createPinia())
 		vi.clearAllMocks()
 
-		vi.spyOn(pipelineManagementApi, 'getPipelineNode').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineNode').mockResolvedValue({
 			success: true,
 			data: {
 				last_updated: '2026-10-22T00:00:00Z',
@@ -33,7 +33,7 @@ describe('Pipeline Builder - Processor Group Feature', () => {
 			}
 		} as any)
 
-		vi.spyOn(pipelineManagementApi, 'updatePipelineNode').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'updatePipelineNode').mockResolvedValue({
 			success: true,
 			data: {}
 		} as any)
@@ -873,15 +873,15 @@ describe('Pipeline Builder - Processor Group Feature', () => {
 		const store = usePipelineBuildStore()
 		const procNodeId = 'proc-group-node-101'
 
-		vi.spyOn(pipelineManagementApi, 'getPipelineById').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineById').mockResolvedValue({
 			success: true,
 			data: {
-				pipeline_management_id: 'pipe-reload-1',
+				pipeline_id: 'pipe-reload-1',
 				canvases: [{ canvas_id: 'canvas-reload-1' }]
 			}
 		} as any)
 
-		vi.spyOn(pipelineManagementApi, 'getPipelineGraph').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineGraph').mockResolvedValue({
 			success: true,
 			data: {
 				canvas_id: 'canvas-reload-1',
@@ -915,7 +915,7 @@ describe('Pipeline Builder - Processor Group Feature', () => {
 		} as any)
 
 		// getPipelineNode returns real content with adm_status: 1 (active) and 2 (disabled)
-		vi.spyOn(pipelineManagementApi, 'getPipelineNode').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineNode').mockResolvedValue({
 			success: true,
 			data: {
 				node_id: procNodeId,

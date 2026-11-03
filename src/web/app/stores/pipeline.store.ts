@@ -4,23 +4,23 @@
 
 import { defineStore } from 'pinia'
 import { computed, reactive, ref } from 'vue'
-import pipelineManagementApi from '@/app/api/pipeline.management.api'
+import pipelinesApi from '@/app/api/pipelines.api'
 import hostsApi from '@/app/api/hosts.api'
 import sinksApi from '@/app/api/sinks.api'
 import appHelper from '@/app/helpers/app.helper'
 import { FormMode } from '@@/shared/types/app.type'
 import type {
-	CreatePipelineManagementRequest,
+	CreatePipelineRequest,
 	IHostSelectorItem,
 	IPipelineCreateForm,
 	IPipelineItem,
-	IPipelineManagementQueryParams,
+	IPipelineQueryParams,
 	ISinkSelectorItem,
 	PipelineAccess,
-	PipelineManagementDetail,
+	PipelineDetail,
 	PipelineStatus,
-	UpdatePipelineManagementRequest
-} from '@@/shared/types/pipeline.management.type'
+	UpdatePipelineRequest
+} from '@@/shared/types/pipeline.type'
 
 export const usePipelineStore = defineStore(
 	'pipeline',
@@ -31,7 +31,7 @@ export const usePipelineStore = defineStore(
 			totalRecords: 0
 		})
 
-		const filter = reactive<IPipelineManagementQueryParams>({
+		const filter = reactive<IPipelineQueryParams>({
 			name: undefined,
 			limit: pagination.rows,
 			offset: (pagination.currentPage - 1) * pagination.rows,
@@ -83,9 +83,9 @@ export const usePipelineStore = defineStore(
 			loading.table = true
 			error.value = null
 			try {
-				const response = await pipelineManagementApi.getPipelines(filter, clusterURLs)
+				const response = await pipelinesApi.getPipelines(filter, clusterURLs)
 				if (response?.success && response.data) {
-					const items = response.data.pipeline_managements ?? []
+					const items = response.data.pipelines ?? []
 					pipelines.value = items.map((item: any) => {
 						const status: PipelineStatus = item.adm_status === 1 ? 'running' : 'stopped'
 						const access: PipelineAccess = item.visibility === 1 ? 'public' : 'private'
@@ -93,9 +93,9 @@ export const usePipelineStore = defineStore(
 						const sinkIds: string[] = item.sink_ids || []
 						const clusterUrl = item.cluster_url || ''
 						return {
-							id: item.pipeline_management_id,
+							id: item.pipeline_id,
 							name: item.name,
-							code: `pipe-${item.pipeline_management_id.slice(0, 8)}`,
+							code: `pipe-${item.pipeline_id.slice(0, 8)}`,
 							status,
 							adm_status: item.adm_status,
 							access,
@@ -172,9 +172,9 @@ export const usePipelineStore = defineStore(
 		async function openPipelineDetail(id: string, clusterURL?: string) {
 			try {
 				const cUrls = clusterURL ? [clusterURL] : undefined
-				const res = await pipelineManagementApi.getPipelineById(id, cUrls)
+				const res = await pipelinesApi.getPipelineById(id, cUrls)
 				if (res?.success && res.data) {
-					return res.data as PipelineManagementDetail
+					return res.data as PipelineDetail
 				}
 			} catch (err: any) {
 				error.value = err.message || 'Failed to load pipeline detail'
@@ -201,14 +201,12 @@ export const usePipelineStore = defineStore(
 				form.assignedHosts = [...pipeline.assignedHosts]
 				form.assignedSinks = [...pipeline.assignedSinks]
 
-				// Load fresh resource lists for cluster
-				await Promise.all([
+				const [, , detail] = await Promise.all([
 					fetchHostsForCluster(form.cluster_url),
-					fetchSinksForCluster(form.cluster_url)
+					fetchSinksForCluster(form.cluster_url),
+					openPipelineDetail(pipeline.id, form.cluster_url)
 				])
 
-				// Load full detail (host_ids, sink_ids, last_updated)
-				const detail = await openPipelineDetail(pipeline.id, form.cluster_url)
 				if (detail) {
 					form.last_updated = detail.last_updated
 					form.assignedHosts = [...(detail.host_ids || [])]
@@ -252,7 +250,7 @@ export const usePipelineStore = defineStore(
 				const visibility = form.access === 'public' ? 1 : 0
 
 				if (pipelineFormMode.value === FormMode.UPDATE && currentPipeline.value) {
-					const payload: UpdatePipelineManagementRequest = {
+					const payload: UpdatePipelineRequest = {
 						name: form.name.trim(),
 						adm_status: form.adm_status ?? 1,
 						visibility,
@@ -262,7 +260,7 @@ export const usePipelineStore = defineStore(
 						force: true
 					}
 
-					const res = await pipelineManagementApi.updatePipeline(
+					const res = await pipelinesApi.updatePipeline(
 						currentPipeline.value.id,
 						payload,
 						cUrls
@@ -275,7 +273,7 @@ export const usePipelineStore = defineStore(
 					return false
 				}
 
-				const payload: CreatePipelineManagementRequest = {
+				const payload: CreatePipelineRequest = {
 					name: form.name.trim(),
 					adm_status: 1,
 					visibility,
@@ -283,7 +281,7 @@ export const usePipelineStore = defineStore(
 					sink_ids: form.assignedSinks
 				}
 
-				const res = await pipelineManagementApi.createPipeline(payload, cUrls)
+				const res = await pipelinesApi.createPipeline(payload, cUrls)
 				if (res?.success) {
 					await fetchPipelines()
 					togglePipelineModalForm(false)
@@ -301,7 +299,7 @@ export const usePipelineStore = defineStore(
 		async function deletePipeline(id: string, clusterURL?: string): Promise<boolean> {
 			try {
 				const cUrls = clusterURL ? [clusterURL] : undefined
-				await pipelineManagementApi.deletePipeline(id, cUrls)
+				await pipelinesApi.deletePipeline(id, cUrls)
 				pipelines.value = pipelines.value.filter((p) => p.id !== id)
 				return true
 			} catch (err: any) {
@@ -322,7 +320,7 @@ export const usePipelineStore = defineStore(
 						: undefined
 				const detail = await openPipelineDetail(id, clusterURL || target.cluster_url)
 				if (detail) {
-					const payload: UpdatePipelineManagementRequest = {
+					const payload: UpdatePipelineRequest = {
 						name: detail.name,
 						adm_status: nextAdmStatus,
 						visibility: detail.visibility,
@@ -331,7 +329,7 @@ export const usePipelineStore = defineStore(
 						last_updated: detail.last_updated,
 						force: true
 					}
-					const res = await pipelineManagementApi.updatePipeline(id, payload, cUrls)
+					const res = await pipelinesApi.updatePipeline(id, payload, cUrls)
 					if (res?.success) {
 						target.status = nextAdmStatus === 1 ? 'running' : 'stopped'
 						target.adm_status = nextAdmStatus
