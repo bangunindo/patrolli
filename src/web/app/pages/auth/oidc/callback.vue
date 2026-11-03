@@ -5,6 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
+import authApi from '@/app/api/auth.api'
 import cookieHelper from '@/app/helpers/cookie.helper'
 import tokenHelper from '@/app/helpers/token.helper'
 import { useAuthStore } from '@/stores/auth.store'
@@ -34,13 +35,7 @@ onMounted(async () => {
 
 	try {
 		// Call server endpoint to exchange code for tokens securely
-		const response = await $fetch<{ success: boolean; data?: any }>(
-			'/api/auth/keycloak/callback',
-			{
-				method: 'POST',
-				body: { code }
-			}
-		)
+		const response = await authApi.exchangeKeycloakCode(code)
 
 		if (response && response.success && response.data?.access_token) {
 			const tokens = response.data

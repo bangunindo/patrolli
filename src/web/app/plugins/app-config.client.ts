@@ -2,41 +2,28 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import clustersApi, { formatClusterOptions } from '@/app/api/clusters.api'
 import { useAppStore } from '@/stores/app.store'
 
 export default defineNuxtPlugin(async () => {
 	try {
-		const response = await fetch('/api/clusters')
-		if (response.ok) {
-			const resp = await response.json()
-			const clusterList = Array.isArray(resp?.data)
-				? resp.data.map((c: any) =>
-						typeof c === 'string' ? c : c.name || c.key || c.value
-					)
-				: Array.isArray(resp)
-					? resp
-					: []
+		const resp = await clustersApi.getClusters()
+		if (resp) {
+			const rawItems = Array.isArray(resp?.data) ? resp.data : Array.isArray(resp) ? resp : []
+			const formatted = formatClusterOptions(rawItems)
 
 			window.__APP_CONFIG__ = {
 				...window.__APP_CONFIG__,
-				API_URLS: clusterList
+				API_URLS: formatted.map((c) => c.name)
 			}
 
-			try {
-				const formatted = Array.isArray(resp?.data)
-					? resp.data.map((item: any) => ({
-							alias: item.key || item.name || item.value,
-							name: item.name || item.key || item.value,
-							label: item.label || item.name || item.key || item.value,
-							value: item.value || item.clientPath || item.url || item.name
-						}))
-					: []
-				if (formatted.length > 0) {
+			if (Array.isArray(resp?.data) && formatted.length > 0) {
+				try {
 					const appStore = useAppStore()
 					appStore.setAvailableClusters(formatted)
+				} catch {
+					// Store not ready yet
 				}
-			} catch {
-				// Store not ready yet
 			}
 		}
 	} catch (error) {

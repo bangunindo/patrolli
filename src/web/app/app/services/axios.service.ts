@@ -106,7 +106,9 @@ export class AxiosService {
 			if (error.response?.status === 401 && originalRequest) {
 				const isAuthPath =
 					originalRequest.url?.startsWith('/auth') ||
-					originalRequest.url?.startsWith('auth')
+					originalRequest.url?.startsWith('auth') ||
+					originalRequest.url?.startsWith('/api/auth') ||
+					originalRequest.url?.startsWith('api/auth')
 
 				if (!isAuthPath && !originalRequest._retry) {
 					originalRequest._retry = true

@@ -5,6 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
+import authApi from '@/app/api/auth.api'
 import appHelper from '@/app/helpers/app.helper'
 import AppInputCluster from '@/components/app/input/AppInputCluster.vue'
 import { useAuthStore } from '@/stores/auth.store'
@@ -73,9 +74,7 @@ const keycloakLoading = ref<boolean>(false)
 const loginWithKeycloak = async () => {
 	try {
 		keycloakLoading.value = true
-		const response = await $fetch<{ success: boolean; data?: { url: string } }>(
-			'/api/auth/keycloak/login'
-		)
+		const response = await authApi.getKeycloakLoginUrl()
 		if (response && response.data?.url) {
 			window.location.href = response.data.url
 		} else {

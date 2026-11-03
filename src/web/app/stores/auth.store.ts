@@ -5,6 +5,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import authApi from '@/app/api/auth.api'
+import clustersApi, { formatClusterOptions } from '@/app/api/clusters.api'
 import cookieHelper from '@/app/helpers/cookie.helper'
 import tokenHelper from '@/app/helpers/token.helper'
 import { useAppStore } from '@/stores/app.store'
@@ -87,13 +88,7 @@ export const useAuthStore = defineStore(
 		async function refreshAccessToken(): Promise<string | null> {
 			try {
 				// Nitro BFF handles token refresh using HTTP cookies
-				const response = await $fetch<{ success: boolean; data?: any }>(
-					'/api/auth/refresh',
-					{
-						method: 'POST',
-						credentials: 'include'
-					}
-				)
+				const response = await authApi.refreshToken()
 
 				if (response && response.success && response.data?.access_token) {
 					const data = response.data
@@ -153,24 +148,16 @@ export const useAuthStore = defineStore(
 		async function refreshUserClusters() {
 			try {
 				cookieHelper.remove('user_clusters')
-				const response = await $fetch<{ success: boolean; data: any }>(
-					'/api/clusters?refresh=true'
-				)
+				const response = await clustersApi.getClusters({ refresh: true })
 				if (response && response.data) {
-					const rawList = Array.isArray(response.data) ? response.data : []
-					const formatted = rawList.map((item: any) => ({
-						alias: item.key || item.name || item.value,
-						name: item.name || item.key || item.value,
-						label: item.label || item.name || item.key || item.value,
-						value: item.value || item.clientPath || item.url || item.name
-					}))
+					const formatted = formatClusterOptions(response.data)
 
 					cookieHelper.set('user_clusters', JSON.stringify(formatted), 7)
 
 					if (typeof window !== 'undefined') {
 						window.__APP_CONFIG__ = {
 							...window.__APP_CONFIG__,
-							API_URLS: formatted.map((c: any) => c.name)
+							API_URLS: formatted.map((c) => c.name)
 						}
 					}
 

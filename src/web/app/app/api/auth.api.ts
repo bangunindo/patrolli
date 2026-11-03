@@ -2,7 +2,12 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import type { ILoginBody, ILoginResponse, ILogoutResponse } from '@@/shared/types/auth.type'
+import type {
+	IAuthResponse,
+	ILoginBody,
+	ILoginResponse,
+	ILogoutResponse
+} from '@@/shared/types/auth.type'
 import cookieHelper from '@/app/helpers/cookie.helper'
 import { httpService } from '@/app/services/http.service'
 
@@ -24,6 +29,20 @@ const authApi = {
 	async changePassword(payload?: ILoginBody): Promise<ILogoutResponse | undefined> {
 		const path = `${this.path}/change-password`
 		return httpService.post(path, payload)
+	},
+
+	async refreshToken(): Promise<IAuthResponse | undefined> {
+		return httpService.post<IAuthResponse>('/api/auth/refresh')
+	},
+
+	async getKeycloakLoginUrl(): Promise<{ success: boolean; data?: { url: string } } | undefined> {
+		return httpService.get<{ success: boolean; data?: { url: string } }>(
+			'/api/auth/keycloak/login'
+		)
+	},
+
+	async exchangeKeycloakCode(code: string): Promise<IAuthResponse | undefined> {
+		return httpService.post<IAuthResponse>('/api/auth/keycloak/callback', { code })
 	}
 }
 
