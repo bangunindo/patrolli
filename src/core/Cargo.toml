@@ -246,3 +246,7 @@ harness = false
 [[bench]]
 name = "bench_json"
 harness = false
+
+[[bench]]
+name = "bench_lookup_prefix"
+harness = false
