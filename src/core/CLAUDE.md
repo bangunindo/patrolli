@@ -53,7 +53,7 @@ servers: `clickhouse_insert_test` and `kafka_sink_test` (their servers), `otel_e
 collectors and telemetrygen, which reach patrolli on the host through the Docker host gateway, so a host
 firewall must let container → host traffic through), and the `cluster_*` and
 `config_propagation_e2e` binaries only for Postgres, which `PATROLLI_TEST_DATABASE_URL` replaces.
-`shutdown_test` needs none. `tests/setup::setup_db` gives each test its own migrated Postgres
+`shutdown_test` and `lookup_table_e2e` need none. `tests/setup::setup_db` gives each test its own migrated Postgres
 database: a `postgres:18-alpine` container by default, or, with `PATROLLI_TEST_DATABASE_URL` set to a
 server the user can `CREATE DATABASE` on, a fresh `patrolli_test_<uuid>` database there, dropped when
 the test's `TestDb` guard is.
