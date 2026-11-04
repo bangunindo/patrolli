@@ -23,6 +23,7 @@ pub mod index;
 pub mod loader;
 pub mod metrics;
 pub mod mutable;
+pub mod prefix;
 pub mod schema;
 pub mod status;
 
