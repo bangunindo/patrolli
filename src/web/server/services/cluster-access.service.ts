@@ -31,7 +31,7 @@ export async function verifyUserClusterAccess(
 	const checkResults = await Promise.all(
 		allClusters.map(async (cluster) => {
 			try {
-				const res = await forwardToCluster(cluster, '/api/nodes', {
+				const res = await forwardToCluster(cluster, '/api/v1/nodes', {
 					method: 'GET',
 					headers: {
 						authorization: `Bearer ${accessToken}`

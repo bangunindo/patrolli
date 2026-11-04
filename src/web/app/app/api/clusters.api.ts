@@ -25,7 +25,7 @@ export function formatClusterOptions(rawList: unknown): IFormattedClusterOption[
 		}
 		const name = item.name || item.key || item.value
 		return {
-			alias: item.key || name,
+			alias: item.key || item.alias || name,
 			name,
 			label: item.label || name,
 			value: item.value || item.clientPath || item.url || name

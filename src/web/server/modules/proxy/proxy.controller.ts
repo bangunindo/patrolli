@@ -18,10 +18,7 @@ import { extractProxyContext } from './proxy.utils'
  * Handles GET /api/[...path] multi-cluster scatter-gather proxy
  */
 export async function handleProxyGet(event: H3Event) {
-	const { method, fullApiPath, reqHeaders, query, clusterHeader } = extractProxyContext(
-		event,
-		'/api/'
-	)
+	const { method, fullApiPath, reqHeaders, query, clusterHeader } = extractProxyContext(event)
 
 	const allClusters = getClustersConfig(event)
 	const targetClusters = resolveClusterTargets(clusterHeader, allClusters)

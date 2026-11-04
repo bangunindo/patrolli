@@ -97,7 +97,7 @@ describe('Cluster Access Verification Feature', () => {
 			expect(clusterService.forwardToCluster).toHaveBeenCalledTimes(3)
 			expect(clusterService.forwardToCluster).toHaveBeenCalledWith(
 				mockClusters[0],
-				'/api/nodes',
+				'/api/v1/nodes',
 				{
 					method: 'GET',
 					headers: {

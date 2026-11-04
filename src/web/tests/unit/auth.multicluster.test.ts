@@ -119,12 +119,12 @@ describe('Auth Route - Multi-Cluster Login & Logout', () => {
 		expect(forwardSpy).toHaveBeenCalledTimes(2)
 		expect(forwardSpy).toHaveBeenCalledWith(
 			clusters[0],
-			'/auth/login',
+			'/api/v1/auth/login',
 			expect.objectContaining({ method: 'POST' })
 		)
 		expect(forwardSpy).toHaveBeenCalledWith(
 			clusters[1],
-			'/auth/login',
+			'/api/v1/auth/login',
 			expect.objectContaining({ method: 'POST' })
 		)
 
@@ -253,7 +253,7 @@ describe('Auth Route - Multi-Cluster Login & Logout', () => {
 		expect(forwardSpy).toHaveBeenCalledTimes(1)
 		expect(forwardSpy).toHaveBeenCalledWith(
 			clusters[1],
-			'/auth/login',
+			'/api/v1/auth/login',
 			expect.objectContaining({ method: 'POST' })
 		)
 

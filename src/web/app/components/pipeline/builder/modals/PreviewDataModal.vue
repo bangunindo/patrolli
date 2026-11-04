@@ -134,7 +134,7 @@ function initWebSocket() {
 			? rawBaseUrl
 			: `/${rawBaseUrl}`
 	const path =
-		`${cleanBase}/ws/processors/subscribe_capture/${selectedProcessorId.value}`.replace(
+		`${cleanBase}/ws/v1/processors/subscribe_capture/${selectedProcessorId.value}`.replace(
 			/^\/\//,
 			'/'
 		)

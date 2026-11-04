@@ -45,7 +45,7 @@ describe('BFF DELETE /api/users/:userId - Multi-Cluster Resolution', () => {
 
 		expect(clusterService.forwardToCluster).toHaveBeenCalledWith(
 			clusterAlpha,
-			'/api/users/alpha-1',
+			'/api/v1/users/alpha-1',
 			expect.objectContaining({ method: 'DELETE' })
 		)
 		expect(res.status_code).toBe(200)
@@ -68,7 +68,7 @@ describe('BFF DELETE /api/users/:userId - Multi-Cluster Resolution', () => {
 		vi.mocked(clusterService.forwardToCluster).mockImplementation(
 			async (cluster, targetPath, options) => {
 				// 1. Initial lookup to get username by userId
-				if (targetPath === '/api/users/repr-id' && options.method === 'GET') {
+				if (targetPath === '/api/v1/users/repr-id' && options.method === 'GET') {
 					return {
 						status: 200,
 						headers: new Headers(),
@@ -76,7 +76,7 @@ describe('BFF DELETE /api/users/:userId - Multi-Cluster Resolution', () => {
 					}
 				}
 				// 2. Search users by username
-				if (targetPath === '/api/users' && options.method === 'GET') {
+				if (targetPath === '/api/v1/users' && options.method === 'GET') {
 					if (cluster.name === 'Cluster Alpha') {
 						return {
 							status: 200,
@@ -107,17 +107,17 @@ describe('BFF DELETE /api/users/:userId - Multi-Cluster Resolution', () => {
 
 		const res = await deleteUserHandler(event)
 
-		// Alpha had john -> should delete /api/users/alpha-john
+		// Alpha had john -> should delete /api/v1/users/alpha-john
 		expect(clusterService.forwardToCluster).toHaveBeenCalledWith(
 			clusterAlpha,
-			'/api/users/alpha-john',
+			'/api/v1/users/alpha-john',
 			expect.objectContaining({ method: 'DELETE' })
 		)
 
 		// Beta did not have john -> should NOT delete on Beta
 		expect(clusterService.forwardToCluster).not.toHaveBeenCalledWith(
 			clusterBeta,
-			expect.stringMatching(/\/api\/users\//),
+			expect.stringMatching(/\/api\/v1\/users\//),
 			expect.objectContaining({ method: 'DELETE' })
 		)
 

@@ -162,9 +162,7 @@ export const usePipelineBuildStore = defineStore(
 			loadingItems.value = true
 			const cUrls = clusterUrl.value ? [clusterUrl.value] : undefined
 			try {
-				const res = await itemsApi
-					.getItems({ host_ids: hostIds, limit: 100 }, cUrls)
-					.catch(() => undefined)
+				const res = await itemsApi.getItems({ host_ids: hostIds, limit: 100 }, cUrls)
 				pipelineItems.value = res?.data?.items || []
 			} catch (err) {
 				console.error('Failed to fetch pipeline items:', err)

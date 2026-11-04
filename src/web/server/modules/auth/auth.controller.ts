@@ -35,7 +35,8 @@ export async function handleAuthProxy(event: H3Event) {
 	if (pathParam.startsWith('oidc')) {
 		return
 	}
-	const fullAuthPath = `/auth/${pathParam}`
+	const cleanPathParam = pathParam.replace(/^(?:\/?v1\/)?(?:\/?auth\/)?/, '')
+	const fullAuthPath = `/api/v1/auth/${cleanPathParam}`
 	const isLogout = isLogoutPath(pathParam, fullAuthPath)
 
 	const allClusters = getClustersConfig(event)
@@ -300,7 +301,7 @@ export async function handleAuthRefresh(event: H3Event) {
 
 	const responses = await Promise.all(
 		targetClusters.map(async (cluster) => {
-			const res = await forwardAuthToCluster(cluster, '/auth/refresh', {
+			const res = await forwardAuthToCluster(cluster, '/api/v1/auth/refresh', {
 				method: 'POST',
 				headers: reqHeaders,
 				query,

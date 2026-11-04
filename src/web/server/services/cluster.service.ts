@@ -5,8 +5,9 @@
 import { logClusterError, logClusterForward, logClusterResponse } from './logger.service'
 import { handleSingleClusterResponse, mergeDynamicResponses } from '@@/server/utils/response'
 import { executeHttpRequest } from '@@/server/services/apibase.service'
+import { extractProxyContext } from '@@/server/modules/proxy/proxy.utils'
 import type { ICluster, IKeycloakConfig } from '@@/shared/types/cluster.type'
-import { type H3Event, getQuery, getRequestHeaders, readBody, setResponseStatus } from 'h3'
+import { type H3Event, readBody, setResponseStatus } from 'h3'
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
@@ -40,9 +41,7 @@ function createClusterEntry(item: Record<string, any>, fallbackKey?: string): IC
 		url: cleanUrl,
 		clientPath: item.clientPath
 			? String(item.clientPath).trim()
-			: `/${cleanName.replace(/^\//, '')}`,
-		path_api: item.path_api ? String(item.path_api).trim() : undefined,
-		path_websocket: item.path_websocket ? String(item.path_websocket).trim() : undefined
+			: `/${cleanName.replace(/^\//, '')}`
 	}
 }
 
@@ -225,38 +224,6 @@ export function resolveClusterTargets(
 	return matchedClusters.length > 0 ? matchedClusters : allClusters
 }
 
-/**
- * Resolves the upstream target path according to the cluster's path_api prefix configuration.
- * - Replaces '/api' with '/${path_api}' for /api/... endpoints
- * - Prepends '/${path_api}' for /auth/... endpoints
- * - Returns original path if path_api is not configured
- */
-export function resolveClusterTargetPath(cluster: ICluster, targetPath: string): string {
-	const rawPath = targetPath.startsWith('/') ? targetPath : `/${targetPath}`
-	if (!cluster?.path_api) {
-		return rawPath
-	}
-
-	const cleanPrefix = cluster.path_api.trim().replace(/^\/+|\/+$/g, '')
-	if (!cleanPrefix) {
-		return rawPath
-	}
-
-	if (rawPath === `/${cleanPrefix}` || rawPath.startsWith(`/${cleanPrefix}/`)) {
-		return rawPath
-	}
-
-	if (rawPath === '/api' || rawPath.startsWith('/api/')) {
-		return rawPath.replace(/^\/api(?=\/|$)/, `/${cleanPrefix}`)
-	}
-
-	if (rawPath === '/auth' || rawPath.startsWith('/auth/')) {
-		return `/${cleanPrefix}${rawPath}`
-	}
-
-	return rawPath
-}
-
 export async function forwardToCluster(
 	cluster: ICluster,
 	targetPath: string,
@@ -267,10 +234,10 @@ export async function forwardToCluster(
 		body?: any
 	}
 ): Promise<{ status: number; headers: Headers; data: any }> {
-	const resolvedPath = resolveClusterTargetPath(cluster, targetPath)
+	const rawPath = targetPath.startsWith('/') ? targetPath : `/${targetPath}`
 	const baseUrl = new URL(cluster.url)
 	const basePath = baseUrl.pathname.replace(/\/+$/, '')
-	const finalPath = `${basePath ? `${basePath}${resolvedPath}` : resolvedPath}`
+	const finalPath = `${basePath}${rawPath}`
 	const targetUrl = new URL(finalPath, cluster.url)
 	if (options.query) {
 		Object.entries(options.query).forEach(([k, v]) => {
@@ -376,17 +343,8 @@ export async function forwardToCluster(
 }
 
 export async function handleClusterMutation(event: H3Event) {
-	const method = event.method
-	const pathParam = event.context.params?.path || ''
-	const fullApiPath = `/api/${pathParam}`
+	const { method, fullApiPath, reqHeaders, query, clusterHeader } = extractProxyContext(event)
 	const allClusters = getClustersConfig(event)
-	const reqHeaders = getRequestHeaders(event)
-	const query = getQuery(event)
-	const clusterHeader =
-		(reqHeaders['x-cluster-url'] as string | undefined) ||
-		(query.cluster as string | undefined) ||
-		null
-
 	const targetClusters = resolveClusterTargets(clusterHeader, allClusters)
 
 	if (targetClusters.length === 0) {

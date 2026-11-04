@@ -46,7 +46,7 @@ export default defineEventHandler(async (event) => {
 	if (!username && userId) {
 		for (const cluster of allClusters) {
 			try {
-				const res = await forwardToCluster(cluster, `/api/users/${userId}`, {
+				const res = await forwardToCluster(cluster, `/api/v1/users/${userId}`, {
 					method: 'GET',
 					headers: reqHeaders
 				})
@@ -68,7 +68,7 @@ export default defineEventHandler(async (event) => {
 				let clusterUserId = userId
 
 				if (username) {
-					const searchRes = await forwardToCluster(cluster, '/api/users', {
+					const searchRes = await forwardToCluster(cluster, '/api/v1/users', {
 						method: 'GET',
 						headers: reqHeaders,
 						query: { username }
@@ -90,7 +90,7 @@ export default defineEventHandler(async (event) => {
 
 				const unlinkRes = await forwardToCluster(
 					cluster,
-					`/api/users/${clusterUserId}/unlink-sso`,
+					`/api/v1/users/${clusterUserId}/unlink-sso`,
 					{
 						method: 'POST',
 						headers: reqHeaders,

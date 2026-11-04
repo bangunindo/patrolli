@@ -37,7 +37,7 @@ export default defineEventHandler(async (event) => {
 	// 1. Single cluster target: delete directly with provided userId
 	if (targetClusters.length === 1 && targetClusters[0]) {
 		const singleCluster = targetClusters[0]
-		const res = await forwardToCluster(singleCluster, `/api/users/${userId}`, {
+		const res = await forwardToCluster(singleCluster, `/api/v1/users/${userId}`, {
 			method: 'DELETE',
 			headers: reqHeaders
 		})
@@ -56,7 +56,7 @@ export default defineEventHandler(async (event) => {
 	if (!username && userId) {
 		for (const cluster of allClusters) {
 			try {
-				const res = await forwardToCluster(cluster, `/api/users/${userId}`, {
+				const res = await forwardToCluster(cluster, `/api/v1/users/${userId}`, {
 					method: 'GET',
 					headers: reqHeaders
 				})
@@ -78,7 +78,7 @@ export default defineEventHandler(async (event) => {
 				let clusterUserId = userId
 
 				if (username) {
-					const searchRes = await forwardToCluster(cluster, '/api/users', {
+					const searchRes = await forwardToCluster(cluster, '/api/v1/users', {
 						method: 'GET',
 						headers: reqHeaders,
 						query: { username }
@@ -94,10 +94,14 @@ export default defineEventHandler(async (event) => {
 					}
 				}
 
-				const deleteRes = await forwardToCluster(cluster, `/api/users/${clusterUserId}`, {
-					method: 'DELETE',
-					headers: reqHeaders
-				})
+				const deleteRes = await forwardToCluster(
+					cluster,
+					`/api/v1/users/${clusterUserId}`,
+					{
+						method: 'DELETE',
+						headers: reqHeaders
+					}
+				)
 
 				return {
 					cluster,

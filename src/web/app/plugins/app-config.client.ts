@@ -17,7 +17,7 @@ export default defineNuxtPlugin(async () => {
 				API_URLS: formatted.map((c) => c.name)
 			}
 
-			if (Array.isArray(resp?.data) && formatted.length > 0) {
+			if (formatted.length > 0) {
 				try {
 					const appStore = useAppStore()
 					appStore.setAvailableClusters(formatted)

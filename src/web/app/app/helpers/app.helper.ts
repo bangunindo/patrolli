@@ -4,6 +4,7 @@
 
 import { useAppStore } from '@/stores/app.store'
 import { getActivePinia } from 'pinia'
+import { formatClusterOptions } from '@/app/api/clusters.api'
 import cookieHelper from '@/app/helpers/cookie.helper'
 
 export default {
@@ -13,13 +14,9 @@ export default {
 				const cookieVal = cookieHelper.get('user_clusters')
 				if (cookieVal) {
 					const parsed = JSON.parse(cookieVal)
-					if (Array.isArray(parsed) && parsed.length > 0) {
-						return parsed.map((item: any) => ({
-							alias: item.key || item.name || item.value,
-							name: item.name || item.key || item.value,
-							label: item.label || item.name || item.key || item.value,
-							value: item.value || item.clientPath || item.url || item.name
-						}))
+					const formatted = formatClusterOptions(parsed)
+					if (formatted.length > 0) {
+						return formatted
 					}
 				}
 			} catch (error) {
@@ -31,24 +28,11 @@ export default {
 		const clusterKeys = config?.API_URLS
 
 		if (!clusterKeys || !Array.isArray(clusterKeys) || clusterKeys.length === 0) {
-			const key = 'node-default'
-			return [
-				{
-					alias: key,
-					name: key,
-					label: key,
-					value: key
-				}
-			]
+			return formatClusterOptions(['node-default'])
 		}
 
 		try {
-			return clusterKeys.map((key) => ({
-				alias: key,
-				name: key,
-				label: key,
-				value: key
-			}))
+			return formatClusterOptions(clusterKeys)
 		} catch (error) {
 			console.error('Failed to parse cluster configuration:', error)
 			return []

@@ -76,7 +76,7 @@ describe('BFF PATCH /api/users/:userId - Single Cluster User Update', () => {
 		expect(clusterService.forwardToCluster).toHaveBeenCalledTimes(1)
 		expect(clusterService.forwardToCluster).toHaveBeenCalledWith(
 			clusterAlpha,
-			'/api/users/alpha-1',
+			'/api/v1/users/alpha-1',
 			expect.objectContaining({
 				method: 'PATCH',
 				body: expect.objectContaining({

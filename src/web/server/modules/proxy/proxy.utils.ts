@@ -8,10 +8,11 @@ import { getQuery, getRequestHeaders } from 'h3'
 /**
  * Extracts target cluster header / query and sanitizes request context
  */
-export function extractProxyContext(event: H3Event, pathPrefix: string = '/api/') {
+export function extractProxyContext(event: H3Event, pathPrefix: string = '/api/v1/') {
 	const method = event.method || 'GET'
 	const pathParam = event.context?.params?.path || ''
-	const fullApiPath = `${pathPrefix}${pathParam}`
+	const cleanPathParam = pathParam.replace(/^\/?v1\//, '')
+	const fullApiPath = `${pathPrefix}${cleanPathParam}`
 
 	const reqHeaders = getRequestHeaders(event)
 	const query = getQuery(event)

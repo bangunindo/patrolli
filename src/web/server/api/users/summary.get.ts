@@ -26,11 +26,11 @@ export default defineEventHandler(async (event) => {
 			targetClusters.map(async (cluster) => {
 				let data: { total?: number; allow_sso?: number; disabled?: number } | undefined
 				try {
-					const res = await forwardToCluster(cluster, '/api/users/summary', {
+					const res = await forwardToCluster(cluster, '/api/v1/users/summary', {
 						method: 'GET',
 						headers: reqHeaders
 					})
-					if ((res.status === undefined || res.status < 400) && res.data?.data) {
+					if ((res?.status === undefined || res.status < 400) && res?.data?.data) {
 						data = res.data.data
 					}
 				} catch {
@@ -39,13 +39,17 @@ export default defineEventHandler(async (event) => {
 
 				if (!data) {
 					try {
-						const usersRes = await forwardToCluster(cluster, '/api/users?limit=1000', {
-							method: 'GET',
-							headers: reqHeaders
-						})
+						const usersRes = await forwardToCluster(
+							cluster,
+							'/api/v1/users?limit=1000',
+							{
+								method: 'GET',
+								headers: reqHeaders
+							}
+						)
 						if (
-							(usersRes.status === undefined || usersRes.status < 400) &&
-							usersRes.data?.data
+							(usersRes?.status === undefined || usersRes.status < 400) &&
+							usersRes?.data?.data
 						) {
 							const users = usersRes.data.data.users || []
 							const countTotal = Number(usersRes.data.data.total ?? users.length)
