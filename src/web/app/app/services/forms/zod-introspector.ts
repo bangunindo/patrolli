@@ -5,6 +5,7 @@
 import { z } from 'zod'
 import type { FieldDescriptor, FieldPath, UiHint } from '@@/shared/types/dynamic-form.type'
 import { formatFieldLabel, pathToString } from './path-helper'
+import { isSensitiveSchema } from './sensitive.utils'
 
 export interface UnwrappedZodType {
 	innerType: z.ZodTypeAny
@@ -428,6 +429,7 @@ export function introspectField(
 	const typeName = unwrapped.typeName
 
 	let widget: string = 'text'
+	let sensitive: boolean = hint.sensitive || false
 	let defaultValue: any = undefined
 	let min: number | undefined
 	let max: number | undefined
@@ -607,6 +609,13 @@ export function introspectField(
 				}
 			}
 
+			// Check if this is a Sensitive secret schema (z.union([z.string(), z.object({ set: z.string() })]))
+			if (isSensitiveSchema(inner) || hint.widget === 'password' || hint.sensitive) {
+				widget = 'password'
+				sensitive = true
+				break
+			}
+
 			// Check if this is an AttributeFilter schema ({ and: [...] } | { or: [...] } | { match: ... })
 			if (isAttributeFilterSchema(inner) || hint.widget === 'attribute-filter') {
 				widget = 'attribute-filter'
@@ -655,6 +664,7 @@ export function introspectField(
 		pathKey,
 		label: hint.label || formatFieldLabel(key),
 		widget: hint.widget || widget,
+		sensitive: hint.sensitive ?? sensitive,
 		zodType: typeName,
 		required: !isOptional && !isNullable && !unwrapped.hasDefault,
 		isOptional,

@@ -33,6 +33,12 @@ const emits = defineEmits<{
 }>()
 
 const input = defineModel<string | null>({ default: null })
+const safeInput = computed({
+	get: () => (typeof input.value === 'string' ? input.value : ''),
+	set: (val: string) => {
+		input.value = val
+	}
+})
 const passwordView = ref(false)
 
 const togglePasswordView = () => {
@@ -69,7 +75,7 @@ const { elRef, errorMessage, showMessages, resetFormSubmitState, handleAlertClos
 
 		<div class="relative w-full">
 			<UiInput
-				v-model="input"
+				v-model="safeInput"
 				:type="passwordView ? 'text' : 'password'"
 				:placeholder="props.placeholder"
 				:required="props.required"

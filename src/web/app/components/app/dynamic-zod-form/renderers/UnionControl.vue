@@ -12,6 +12,7 @@ import AppInputSelect from '@/components/app/input/AppInputSelect.vue'
 import AppInputError from '@/components/app/input/AppInputError.vue'
 import UiCheckbox from '@/components/ui/checkbox/Checkbox.vue'
 import { createControlElement, resolveHintForPath } from '@/app/services/forms/hints-to-uischema'
+import { isSensitiveJsonSchema } from '@/app/services/forms/sensitive.utils'
 import type { UiHint } from '@@/shared/types/dynamic-form.type'
 import { formatFieldLabel } from '@/app/services/forms/path-helper'
 import CustomSlotRenderer from './CustomSlotRenderer.vue'
@@ -248,7 +249,14 @@ const activeBranchUiSchema = computed<UISchemaElement | null>(() => {
 				[discriminatorKey.value]: branchKey
 			}
 		}
-		const ctrl = createControlElement(propName, fullPath, formHints.value, rootDataWithBranch)
+		const propSchema = (info.schema.properties as any)[propName]
+		const ctrl = createControlElement(
+			propName,
+			fullPath,
+			formHints.value,
+			rootDataWithBranch,
+			propSchema
+		)
 		// If branchSpecificPath has a hint (e.g. widget: 'attribute-filter'), merge it into ctrl options
 		const branchHint = resolveHintForPath(
 			branchSpecificPath,
@@ -282,7 +290,7 @@ const onBranchChange = (newVal: any) => {
 		const extPropSchema = (targetBranch.schema.properties as any)[extKey]
 		// Determine default inner value (object with defaults or string)
 		let defaultVal: any = {}
-		if (extPropSchema?.type === 'string') {
+		if (extPropSchema?.type === 'string' || isSensitiveJsonSchema(extPropSchema)) {
 			defaultVal = ''
 		}
 		handleChange(control.value.path, {
@@ -389,7 +397,7 @@ const onCheckboxToggle = (val: boolean) => {
 			const extKey = target.externalPropertyKey
 			const extProp = (target.schema.properties as any)[extKey]
 			handleChange(control.value.path, {
-				[extKey]: extProp?.type === 'string' ? '' : {}
+				[extKey]: extProp?.type === 'string' || isSensitiveJsonSchema(extProp) ? '' : {}
 			})
 		} else {
 			handleChange(control.value.path, {})
