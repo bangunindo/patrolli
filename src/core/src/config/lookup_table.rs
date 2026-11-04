@@ -74,8 +74,9 @@ impl LookupTable {
     serde(rename_all = "snake_case")
 )]
 pub enum Key {
-    Range(Range),
     Hash(Hash),
+    /// longest-prefix match on an IP prefix (CIDR) column
+    Prefix(Prefix),
 }
 
 impl Key {
@@ -85,8 +86,8 @@ impl Key {
     /// tagged, so the reader merges the tag back rather than nesting under it.
     pub fn to_json_value(&self) -> Result<serde_json::Value> {
         match self {
-            Self::Range(range) => Ok(serde_json::to_value(range)?),
             Self::Hash(hash) => Ok(serde_json::to_value(hash)?),
+            Self::Prefix(prefix) => Ok(serde_json::to_value(prefix)?),
         }
     }
 
@@ -125,72 +126,49 @@ impl Key {
                     }
                 }
             }
-            Key::Range(range) => {
-                check("key.start_column", &range.start_column)?;
-                check("key.end_column", &range.end_column)?;
-                if range.start_column == range.end_column {
-                    bail!("key.start_column and key.end_column must differ");
-                }
+            Key::Prefix(prefix) => {
+                let pcol = &prefix.prefix_column;
+                check("key.prefix_column", pcol)?;
                 let mut seen = FxHashSet::default();
-                for col in &range.partition_columns {
+                for col in &prefix.partition_columns {
                     check("key.partition_columns entry", col)?;
                     if !seen.insert(col.as_str()) {
                         bail!("key.partition_columns contains {col:?} more than once");
                     }
-                    if *col == range.start_column || *col == range.end_column {
-                        bail!(
-                            "key.partition_columns must not contain the range bound column {col:?}"
-                        );
+                    if col == pcol {
+                        bail!("key.partition_columns must not contain the prefix column {col:?}");
                     }
                     if source.value_type_of(col) == ValueType::Double {
                         bail!("partition column {col:?} is a double; doubles cannot be keys");
                     }
                 }
-                // Bound columns are consumed by the index and never
-                // materialized, so a table made only of them returns nothing.
+                // The prefix column is consumed by the index and never
+                // materialized, so a table made only of it returns nothing.
                 // `ColumnLayout::build` rejects it too, but from inside
                 // `LookupTable::replace`, which is all-or-nothing — one such
                 // table would stop the node initializing at all. Caught here it
                 // is one skipped row, or a named startup error locally.
                 if let Some(columns) = &columns
-                    && columns
-                        .iter()
-                        .all(|c| *c == range.start_column || *c == range.end_column)
+                    && columns.iter().all(|c| c == pcol)
                 {
                     bail!(
-                        "a range table needs at least one column besides key.start_column and \
-                         key.end_column, which are consumed by the index and never stored"
+                        "a prefix table needs at least one column besides key.prefix_column, \
+                         which is consumed by the index and never stored"
                     );
                 }
-                // The bound columns are parsed according to `range_type`, so a
-                // contradicting cast is always a config mistake.
-                let want = match range.range_type {
-                    RangeType::Ip => ValueType::Ip,
-                    RangeType::Integer => ValueType::Integer,
-                };
-                for col in [&range.start_column, &range.end_column] {
-                    if let Some(declared) = source.declared_value_type_of(col)
-                        && declared != want
-                    {
-                        bail!(
-                            "range bound column {col:?} is cast to {declared:?} but range_type is \
-                             {:?}, which needs {want:?}",
-                            range.range_type
-                        );
-                    }
+                // The prefix column is CIDR text, parsed by the index itself.
+                if let Some(declared) = source.declared_value_type_of(pcol)
+                    && declared != ValueType::String
+                {
+                    bail!(
+                        "prefix column {pcol:?} is declared {declared:?}, but it holds CIDR \
+                         text and must be String"
+                    );
                 }
             }
         }
         Ok(())
     }
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RangeType {
-    Ip,
-    #[default]
-    Integer,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
@@ -204,23 +182,20 @@ pub enum ValueType {
     Ip,
 }
 
+/// A longest-prefix-match key: a probe address finds the narrowest stored
+/// prefix containing it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct Range {
-    #[serde(default)]
-    pub range_type: RangeType,
+pub struct Prefix {
+    /// the column holding the prefix as CIDR text (`10.1.0.0/16`,
+    /// `2001:db8::/32`); a bare address is a host route. A prefix with host
+    /// bits set (`10.0.0.1/8`) is rejected. Consumed by the index, not stored
+    /// as a value column.
+    pub prefix_column: String,
+    /// columns that split the table into independent prefix sets (a VRF, a BGP
+    /// peer); a probe must name one
     #[serde(default)]
     pub partition_columns: Vec<String>,
-    pub start_column: String,
-    #[serde(default = "default_start_inclusive")]
-    pub start_inclusive: bool,
-    pub end_column: String,
-    #[serde(default)]
-    pub end_inclusive: bool,
-}
-
-fn default_start_inclusive() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
@@ -596,14 +571,10 @@ mod tests {
         })
     }
 
-    fn range(range_type: RangeType, partition: &[&str], start: &str, end: &str) -> Key {
-        Key::Range(Range {
-            range_type,
+    fn prefix(partition: &[&str], column: &str) -> Key {
+        Key::Prefix(Prefix {
+            prefix_column: column.into(),
             partition_columns: partition.iter().map(|s| s.to_string()).collect(),
-            start_column: start.into(),
-            start_inclusive: true,
-            end_column: end.into(),
-            end_inclusive: false,
         })
     }
 
@@ -614,29 +585,26 @@ mod tests {
         t.validate().unwrap();
     }
 
-    /// The bounds are consumed by the index, so a table made only of them has
-    /// no column left to return. `Table::build` rejects it, but for a processor
+    /// The prefix column is consumed by the index, so a table made only of it
+    /// has no column left to return. `Table::build` rejects it, but for a processor
     /// table that happens inside the all-or-nothing `LookupTable::replace`, so
     /// letting it through here would stop a backend node initializing at all.
     /// Both validation passes must catch it, since only the structural one runs
     /// against a row read from the database.
     #[test]
-    fn a_range_table_of_nothing_but_its_bounds_is_rejected() {
+    fn a_prefix_table_of_nothing_but_its_prefix_is_rejected() {
         let bounds_only = || LookupTable {
             id: Uuid::now_v7(),
-            name: "ranges".into(),
+            name: "prefixes".into(),
             source: Source::Processor(Processor {
-                columns: ["lo", "hi"]
-                    .iter()
-                    .map(|name| ColumnSpec {
-                        name: name.to_string(),
-                        value_type: ValueType::Integer,
-                    })
-                    .collect(),
+                columns: vec![ColumnSpec {
+                    name: "network".into(),
+                    value_type: ValueType::String,
+                }],
                 ttl: default_ttl(),
                 max_rows: default_max_rows(),
             }),
-            key: range(RangeType::Integer, &[], "lo", "hi"),
+            key: prefix(&[], "network"),
         };
         for (pass, mut t) in [
             ("validate", bounds_only()),
@@ -650,7 +618,7 @@ mod tests {
             assert!(err.contains("at least one column besides"), "{pass}: {err}");
         }
 
-        // one value column beside the bounds is enough, and it must still build
+        // one value column beside the prefix is enough, and it must still build
         let mut ok = bounds_only();
         let Source::Processor(processor) = &mut ok.source else {
             unreachable!()
@@ -844,40 +812,51 @@ mod tests {
     }
 
     #[test]
-    fn range_bounds_must_differ_and_stay_out_of_the_partition() {
+    fn the_prefix_column_stays_out_of_the_partition() {
         let f = fixture();
-        let c = || csv(&["lo", "hi", "vrf", "label"], true);
+        let c = || csv(&["network", "vrf", "label"], true);
 
-        let mut t = table(&f, c(), range(RangeType::Integer, &[], "lo", "lo"));
-        assert!(
-            t.validate()
-                .unwrap_err()
-                .to_string()
-                .contains("must differ")
-        );
-
-        let mut t = table(&f, c(), range(RangeType::Integer, &["lo"], "lo", "hi"));
+        let mut t = table(&f, c(), prefix(&["network"], "network"));
         let err = t.validate().unwrap_err().to_string();
-        assert!(err.contains("must not contain the range bound"), "{err}");
+        assert!(err.contains("must not contain the prefix column"), "{err}");
 
-        let mut t = table(&f, c(), range(RangeType::Integer, &["vrf"], "lo", "hi"));
+        let mut t = table(&f, c(), prefix(&["vrf", "vrf"], "network"));
+        let err = t.validate().unwrap_err().to_string();
+        assert!(err.contains("more than once"), "{err}");
+
+        let mut t = table(&f, c(), prefix(&["nope"], "network"));
+        let err = t.validate().unwrap_err().to_string();
+        assert!(err.contains("not a column"), "{err}");
+
+        let mut t = table(&f, c(), prefix(&[], "nope"));
+        let err = t.validate().unwrap_err().to_string();
+        assert!(err.contains("key.prefix_column"), "{err}");
+
+        let mut cc = c();
+        cc.type_cast.insert("vrf".into(), ValueType::Double);
+        let mut t = table(&f, cc, prefix(&["vrf"], "network"));
+        let err = t.validate().unwrap_err().to_string();
+        assert!(err.contains("double"), "{err}");
+
+        let mut t = table(&f, c(), prefix(&["vrf"], "network"));
         t.validate().unwrap();
     }
 
     #[test]
-    fn a_cast_that_contradicts_the_range_type_is_rejected() {
+    fn the_prefix_column_must_be_a_string() {
         let f = fixture();
-        let mut c = csv(&["lo", "hi", "label"], true);
-        c.type_cast.insert("lo".into(), ValueType::String);
-        let mut t = table(&f, c, range(RangeType::Ip, &[], "lo", "hi"));
-        let err = t.validate().unwrap_err().to_string();
-        assert!(err.contains("range_type"), "{err}");
+        for ty in [ValueType::Ip, ValueType::Integer] {
+            let mut c = csv(&["network", "label"], true);
+            c.type_cast.insert("network".into(), ty);
+            let mut t = table(&f, c, prefix(&[], "network"));
+            let err = t.validate().unwrap_err().to_string();
+            assert!(err.contains("must be String"), "{ty:?}: {err}");
+        }
 
         // and an agreeing cast is fine
-        let mut c = csv(&["lo", "hi", "label"], true);
-        c.type_cast.insert("lo".into(), ValueType::Ip);
-        c.type_cast.insert("hi".into(), ValueType::Ip);
-        let mut t = table(&f, c, range(RangeType::Ip, &[], "lo", "hi"));
+        let mut c = csv(&["network", "label"], true);
+        c.type_cast.insert("network".into(), ValueType::String);
+        let mut t = table(&f, c, prefix(&[], "network"));
         t.validate().unwrap();
     }
 
@@ -1079,10 +1058,7 @@ mod tests {
             assert_eq!(back, source, "source did not survive the tag/body split");
         }
 
-        let keys = [
-            hash(&["host", "site"]),
-            range(RangeType::Ip, &["site"], "from", "to"),
-        ];
+        let keys = [hash(&["host", "site"]), prefix(&["site"], "network")];
         for key in keys {
             let tag = KeyKind::from(&key).to_string();
             let embedded = merge(&tag, key.to_json_value().unwrap());
@@ -1153,14 +1129,14 @@ mod config_full_yaml {
         assert_eq!(file.paths.len(), 2);
         assert_eq!(file.compression, Compression::Gzip);
         assert_eq!(file.reload_interval, Duration::from_secs(3600));
-        assert!(matches!(&geo.key, Key::Range(r) if r.range_type == RangeType::Ip));
+        assert!(matches!(&geo.key, Key::Prefix(p) if p.prefix_column == "network"));
         let Format::Csv(geo_csv) = &file.format;
         assert_eq!(geo_csv.escape, Some('\\'));
         assert_eq!(geo_csv.null_values, ["", "\\N"]);
 
         assert!(matches!(
             &by_name("vrf_subnets").key,
-            Key::Range(r) if r.range_type == RangeType::Ip && r.partition_columns == ["vrf"]
+            Key::Prefix(p) if p.prefix_column == "subnet" && p.partition_columns == ["vrf"]
         ));
         let owners = by_name("host_owners");
         assert!(matches!(

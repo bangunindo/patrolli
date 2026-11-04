@@ -40,6 +40,8 @@ pub struct ProcessorMetrics {
     writes_updated: AtomicU64,
     writes_rejected: AtomicU64,
     writes_errored: AtomicU64,
+    /// rows removed, not remove calls: a partition delete adds every row it
+    /// dropped, and a delete that found nothing adds none
     removes: AtomicU64,
 }
 
@@ -105,6 +107,7 @@ pub(super) struct WriteCounts {
     pub updated: u64,
     pub rejected: u64,
     pub errored: u64,
+    /// rows removed; see `ProcessorMetrics::removes`
     pub removes: u64,
 }
 
@@ -114,36 +117,27 @@ pub(super) struct WriteCounts {
 struct SkipAtomics {
     arity: AtomicU64,
     bad_cell: AtomicU64,
-    bad_bound: AtomicU64,
+    bad_prefix: AtomicU64,
     null_key: AtomicU64,
     duplicate_key: AtomicU64,
-    overlap: AtomicU64,
-    empty_range: AtomicU64,
-    mismatch: AtomicU64,
 }
 
 impl SkipAtomics {
     fn add(&self, counts: &SkipCounts) {
         add(&self.arity, counts.arity);
         add(&self.bad_cell, counts.bad_cell);
-        add(&self.bad_bound, counts.bad_bound);
+        add(&self.bad_prefix, counts.bad_prefix);
         add(&self.null_key, counts.null_key);
         add(&self.duplicate_key, counts.duplicate_key);
-        add(&self.overlap, counts.overlap);
-        add(&self.empty_range, counts.empty_range);
-        add(&self.mismatch, counts.mismatch);
     }
 
     fn get(&self) -> SkipCounts {
         SkipCounts {
             arity: self.arity.load(Ordering::Relaxed),
             bad_cell: self.bad_cell.load(Ordering::Relaxed),
-            bad_bound: self.bad_bound.load(Ordering::Relaxed),
+            bad_prefix: self.bad_prefix.load(Ordering::Relaxed),
             null_key: self.null_key.load(Ordering::Relaxed),
             duplicate_key: self.duplicate_key.load(Ordering::Relaxed),
-            overlap: self.overlap.load(Ordering::Relaxed),
-            empty_range: self.empty_range.load(Ordering::Relaxed),
-            mismatch: self.mismatch.load(Ordering::Relaxed),
         }
     }
 }
@@ -493,7 +487,7 @@ mod tests {
             100,
             SkipCounts {
                 bad_cell: 3,
-                overlap: 1,
+                bad_prefix: 1,
                 ..Default::default()
             },
             40,
@@ -516,7 +510,7 @@ mod tests {
         assert_eq!(out.load_duration, Duration::from_millis(100));
         assert_eq!(out.rows_read, 150);
         assert_eq!(out.rows_skipped.bad_cell, 5);
-        assert_eq!(out.rows_skipped.overlap, 1);
+        assert_eq!(out.rows_skipped.bad_prefix, 1);
         assert_eq!(out.rows_skipped.total(), 6);
         assert_eq!(out.rows_expired, 9);
         assert_eq!(out.strings_released, 4);

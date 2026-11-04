@@ -3,20 +3,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::cell::{
-    CellOwned, CellRef, KeyOwned, KeyRef, Lookup, RangePoint, hash_key, hash_key_owned, keys_eq,
+    CellOwned, CellRef, Delete, KeyOwned, KeyRef, Lookup, hash_key, hash_key_owned, keys_eq,
 };
-use super::index::{RangeKey, RangeReject, normalize};
 use super::metrics::{ProcessorMetrics, WriteCounts};
+use super::prefix::PrefixSet;
 use super::schema::{ColumnIdx, KeyPlan, Schema};
-use crate::config::lookup_table::{RangeType, ValueType};
+use crate::config::lookup_table::ValueType;
 use anyhow::{Result, bail};
 use hashbrown::{HashSet, HashTable};
+use ipnet::IpNet;
 use parking_lot::RwLock;
-use rangemap::RangeInclusiveMap;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::cell::Cell;
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -63,200 +62,17 @@ impl MutableRow {
     }
 }
 
-/// `Arc<MutableRow>` compared by identity, which is exactly the coalescing rule
-/// `rangemap` needs: merge adjacent ranges only when they name the same row.
-#[derive(Debug, Clone)]
-struct RowSlot(Arc<MutableRow>);
-
-impl PartialEq for RowSlot {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-impl Eq for RowSlot {}
-
-#[derive(Debug)]
-enum RangeStore {
-    Integer(RangeInclusiveMap<i64, RowSlot>),
-    Ip {
-        v4: RangeInclusiveMap<u32, RowSlot>,
-        v6: RangeInclusiveMap<u128, RowSlot>,
-    },
-}
-
-impl RangeStore {
-    fn new(range_type: RangeType) -> Self {
-        match range_type {
-            RangeType::Integer => RangeStore::Integer(RangeInclusiveMap::new()),
-            RangeType::Ip => RangeStore::Ip {
-                v4: RangeInclusiveMap::new(),
-                v6: RangeInclusiveMap::new(),
-            },
-        }
-    }
-
-    fn len(&self) -> usize {
-        match self {
-            RangeStore::Integer(m) => m.len(),
-            RangeStore::Ip { v4, v6 } => v4.len() + v6.len(),
-        }
-    }
-
-    fn get(&self, point: RangePoint) -> Option<&RowSlot> {
-        match (self, point) {
-            (RangeStore::Integer(m), RangePoint::Integer(v)) => m.get(&v),
-            (RangeStore::Ip { v4, .. }, RangePoint::Ip(IpAddr::V4(v))) => v4.get(&v.to_bits()),
-            (RangeStore::Ip { v6, .. }, RangePoint::Ip(IpAddr::V6(v))) => v6.get(&v.to_bits()),
-            _ => None,
-        }
-    }
-
-    fn covers_exactly(&self, lo: RangePoint, hi: RangePoint) -> bool {
-        match (self, lo, hi) {
-            (RangeStore::Integer(m), RangePoint::Integer(a), RangePoint::Integer(b)) => m
-                .get_key_value(&a)
-                .is_some_and(|(r, _)| *r.start() == a && *r.end() == b),
-            (
-                RangeStore::Ip { v4, .. },
-                RangePoint::Ip(IpAddr::V4(a)),
-                RangePoint::Ip(IpAddr::V4(b)),
-            ) => v4
-                .get_key_value(&a.to_bits())
-                .is_some_and(|(r, _)| *r.start() == a.to_bits() && *r.end() == b.to_bits()),
-            (
-                RangeStore::Ip { v6, .. },
-                RangePoint::Ip(IpAddr::V6(a)),
-                RangePoint::Ip(IpAddr::V6(b)),
-            ) => v6
-                .get_key_value(&a.to_bits())
-                .is_some_and(|(r, _)| *r.start() == a.to_bits() && *r.end() == b.to_bits()),
-            _ => false,
-        }
-    }
-
-    /// The change in stored entry count when inserting a fresh `RowSlot`.
-    fn insert_delta(&self, lo: RangePoint, hi: RangePoint) -> i64 {
-        match (self, lo, hi) {
-            (RangeStore::Integer(m), RangePoint::Integer(a), RangePoint::Integer(b)) => {
-                range_insert_delta(m, a, b)
-            }
-            (
-                RangeStore::Ip { v4, .. },
-                RangePoint::Ip(IpAddr::V4(a)),
-                RangePoint::Ip(IpAddr::V4(b)),
-            ) => range_insert_delta(v4, a.to_bits(), b.to_bits()),
-            (
-                RangeStore::Ip { v6, .. },
-                RangePoint::Ip(IpAddr::V6(a)),
-                RangePoint::Ip(IpAddr::V6(b)),
-            ) => range_insert_delta(v6, a.to_bits(), b.to_bits()),
-            _ => unreachable!("normalized bounds must match the range store"),
-        }
-    }
-
-    fn insert(&mut self, lo: RangePoint, hi: RangePoint, row: RowSlot) {
-        match (self, lo, hi) {
-            (RangeStore::Integer(m), RangePoint::Integer(a), RangePoint::Integer(b)) => {
-                m.insert(a..=b, row)
-            }
-            (
-                RangeStore::Ip { v4, .. },
-                RangePoint::Ip(IpAddr::V4(a)),
-                RangePoint::Ip(IpAddr::V4(b)),
-            ) => v4.insert(a.to_bits()..=b.to_bits(), row),
-            (
-                RangeStore::Ip { v6, .. },
-                RangePoint::Ip(IpAddr::V6(a)),
-                RangePoint::Ip(IpAddr::V6(b)),
-            ) => v6.insert(a.to_bits()..=b.to_bits(), row),
-            _ => {}
-        }
-    }
-
-    /// Drops the range covering `point`. Returns how many stored ranges went
-    /// away (removal can also split, hence the signed accounting at the call
-    /// site).
-    fn remove_at(&mut self, point: RangePoint) -> i64 {
-        let before = self.len() as i64;
-        match (&mut *self, point) {
-            (RangeStore::Integer(m), RangePoint::Integer(v)) => {
-                if let Some((r, _)) = m.get_key_value(&v) {
-                    let r = r.clone();
-                    m.remove(r);
-                }
-            }
-            (RangeStore::Ip { v4, .. }, RangePoint::Ip(IpAddr::V4(v))) => {
-                if let Some((r, _)) = v4.get_key_value(&v.to_bits()) {
-                    let r = r.clone();
-                    v4.remove(r);
-                }
-            }
-            (RangeStore::Ip { v6, .. }, RangePoint::Ip(IpAddr::V6(v))) => {
-                if let Some((r, _)) = v6.get_key_value(&v.to_bits()) {
-                    let r = r.clone();
-                    v6.remove(r);
-                }
-            }
-            _ => {}
-        }
-        before - self.len() as i64
-    }
-
-    /// Drops every range whose row last changed before `cutoff`.
-    fn expire(&mut self, cutoff: u64) -> i64 {
-        let before = self.len() as i64;
-        match self {
-            RangeStore::Integer(m) => {
-                let stale: Vec<_> = m
-                    .iter()
-                    .filter(|(_, slot)| slot.0.last_seen() < cutoff)
-                    .map(|(r, _)| r.clone())
-                    .collect();
-                for r in stale {
-                    m.remove(r);
-                }
-            }
-            RangeStore::Ip { v4, v6 } => {
-                let stale: Vec<_> = v4
-                    .iter()
-                    .filter(|(_, slot)| slot.0.last_seen() < cutoff)
-                    .map(|(r, _)| r.clone())
-                    .collect();
-                for r in stale {
-                    v4.remove(r);
-                }
-                let stale: Vec<_> = v6
-                    .iter()
-                    .filter(|(_, slot)| slot.0.last_seen() < cutoff)
-                    .map(|(r, _)| r.clone())
-                    .collect();
-                for r in stale {
-                    v6.remove(r);
-                }
-            }
-        }
-        before - self.len() as i64
-    }
-}
-
-fn range_insert_delta<K: RangeKey>(map: &RangeInclusiveMap<K, RowSlot>, lo: K, hi: K) -> i64 {
-    // The new row has a fresh Arc identity, so it cannot coalesce with an
-    // existing interval. Count its entry, subtract every overwritten entry,
-    // and add back any surviving fragments at the two boundaries.
-    map.overlapping(lo..=hi).fold(1, |delta, (range, _)| {
-        delta - 1 + i64::from(*range.start() < lo) + i64::from(*range.end() > hi)
-    })
-}
-
 /// Keyed by the owned key tuple. A `HashTable` rather than a `HashMap` so a
 /// read can probe with borrowed `KeyRef`s and never allocate.
 type HashEntry = (Box<[KeyOwned]>, Arc<MutableRow>);
-type RangeEntry = (Box<[KeyOwned]>, RangeStore);
+/// One partition of a prefix table (the only one, under an empty key, when
+/// the table is unpartitioned).
+type PrefixEntry = (Box<[KeyOwned]>, PrefixSet<Arc<MutableRow>>);
 
 #[derive(Debug, Default)]
 struct Shard {
     hash_rows: HashTable<HashEntry>,
-    ranges: HashTable<RangeEntry>,
+    prefixes: HashTable<PrefixEntry>,
     /// long strings shared between rows; short ones live inline in `SmolStr`
     strings: HashSet<Arc<str>>,
     last_compact: Option<Instant>,
@@ -466,7 +282,7 @@ impl Mutable {
     /// from the row itself, using the table's key columns.
     pub fn upsert_hash(&self, cells: &[CellRef<'_>]) -> Result<Upsert> {
         let KeyPlan::Hash { columns } = &self.key else {
-            bail!("this table is range-keyed; use upsert_range");
+            bail!("this table is prefix-keyed; use upsert_prefix");
         };
         self.check_cells(cells)?;
         let parts = self.key_parts(cells, columns)?;
@@ -503,85 +319,65 @@ impl Mutable {
         Ok(Upsert::Inserted)
     }
 
-    /// Inserts or updates a range in a range-keyed table. The partition is
-    /// taken from the row; the bounds are supplied separately because they are
-    /// not stored as columns. `max_rows` limits the resulting stored intervals,
-    /// including fragments left by overwriting part of an existing range.
-    pub fn upsert_range(
-        &self,
-        cells: &[CellRef<'_>],
-        start: RangePoint,
-        start_inclusive: bool,
-        end: RangePoint,
-        end_inclusive: bool,
-    ) -> Result<Upsert> {
-        let KeyPlan::Range {
-            partition,
-            range_type,
-        } = &self.key
-        else {
+    /// Inserts or updates one prefix in a prefix-keyed table. The partition is
+    /// taken from the row; the prefix is supplied separately because it is
+    /// not stored as a column. Each stored prefix is one entry against
+    /// `max_rows`, however many others it nests in or covers.
+    pub fn upsert_prefix(&self, cells: &[CellRef<'_>], net: IpNet) -> Result<Upsert> {
+        let KeyPlan::Prefix { partition } = &self.key else {
             bail!("this table is hash-keyed; use upsert_hash");
         };
         self.check_cells(cells)?;
-        let (lo, hi) = normalize_point(start, start_inclusive, end, end_inclusive, *range_type)
-            .map_err(|e| anyhow::anyhow!("range bounds rejected: {e:?}"))?;
+        let net = super::prefix::canonical(net);
         let parts = self.key_parts(cells, partition)?;
         let hash = hash_key(parts.iter().copied());
         let now = now_millis();
 
+        // the lock is held across the capacity check and the write, so a
+        // concurrent writer cannot slip a prefix in between the two
         let mut shard = self.shard_of(hash).write();
-        let (is_update, delta) = shard
-            .ranges
+        let existing = shard
+            .prefixes
             .find(hash, |(k, _)| keys_eq(k, &parts))
-            .map_or((false, 1), |(_, store)| {
-                (store.covers_exactly(lo, hi), store.insert_delta(lo, hi))
-            });
-        // Reserve the full growth before changing the map. Splitting one
-        // interval into three needs two slots; shrinking needs none.
-        if delta > 0 && !self.reserve(delta as usize) {
+            .is_some_and(|(_, set)| set.contains(&net));
+        if !existing && !self.reserve(1) {
             self.rejected.fetch_add(1, Ordering::Relaxed);
             return Ok(Upsert::Rejected);
         }
 
         let owned: Vec<CellOwned> = cells.iter().map(|c| shard.own_cell(*c)).collect();
-        let row = RowSlot(Arc::new(MutableRow {
+        let row = Arc::new(MutableRow {
             cells: owned.into_boxed_slice(),
             last_seen: AtomicU64::new(now),
-        }));
+        });
         if shard
-            .ranges
+            .prefixes
             .find(hash, |(k, _)| keys_eq(k, &parts))
             .is_none()
         {
             let key: Box<[KeyOwned]> = parts.iter().map(|k| shard.own_key(*k)).collect();
             shard
-                .ranges
-                .insert_unique(hash, (key, RangeStore::new(*range_type)), |(k, _)| {
-                    hash_key_owned(k)
-                });
+                .prefixes
+                .insert_unique(hash, (key, PrefixSet::new()), |(k, _)| hash_key_owned(k));
         }
-        let store = &mut shard
-            .ranges
+        let set = &mut shard
+            .prefixes
             .find_mut(hash, |(k, _)| keys_eq(k, &parts))
             .expect("just inserted")
             .1;
-        let before = store.len() as i64;
-        store.insert(lo, hi, row);
-        debug_assert_eq!(store.len() as i64 - before, delta);
-
-        // Release capacity only after the old entries are gone, while still
-        // holding the shard lock. Positive deltas were already reserved.
-        if delta < 0 {
-            self.adjust_len(delta);
-        }
-        Ok(if is_update {
+        // rows are shared behind an `Arc`, so an update swaps in a new one
+        // rather than mutating what readers may already hold
+        let replaced = set.insert(net, row);
+        debug_assert_eq!(replaced.is_some(), existing);
+        Ok(if existing {
             Upsert::Updated
         } else {
             Upsert::Inserted
         })
     }
 
-    pub fn get(&self, key: Lookup<'_>) -> Option<Arc<MutableRow>> {
+    /// The row `key` names, and for a prefix table the prefix that matched.
+    pub fn get(&self, key: Lookup<'_>) -> Option<(Arc<MutableRow>, Option<IpNet>)> {
         match (&self.key, key) {
             (KeyPlan::Hash { columns }, Lookup::Hash(parts)) => {
                 if parts.len() != columns.len() {
@@ -592,34 +388,30 @@ impl Mutable {
                 shard
                     .hash_rows
                     .find(hash, |(k, _)| keys_eq(k, parts))
-                    .map(|(_, row)| Arc::clone(row))
+                    .map(|(_, row)| (Arc::clone(row), None))
             }
-            (
-                KeyPlan::Range { partition, .. },
-                Lookup::Range {
-                    partition: p,
-                    point,
-                },
-            ) => {
+            (KeyPlan::Prefix { partition }, Lookup::Prefix { partition: p, addr }) => {
                 if p.len() != partition.len() {
                     return None;
                 }
                 let hash = hash_key(p.iter().copied());
                 let shard = self.shard_of(hash).read();
                 shard
-                    .ranges
+                    .prefixes
                     .find(hash, |(k, _)| keys_eq(k, p))
-                    .and_then(|(_, store)| store.get(point))
-                    .map(|slot| Arc::clone(&slot.0))
+                    .and_then(|(_, set)| set.lpm(addr))
+                    .map(|(net, row)| (Arc::clone(row), Some(net)))
             }
             _ => None,
         }
     }
 
-    /// Drops the row (or the range covering the point) that `key` names.
-    pub fn remove(&self, key: Lookup<'_>) -> bool {
+    /// Drops the row stored under exactly `key`: a hash key, or a prefix in
+    /// one partition. A wider or narrower prefix is never touched, so removing
+    /// a /24 exposes the /16 it was nested in.
+    pub fn remove(&self, key: Delete<'_>) -> bool {
         match (&self.key, key) {
-            (KeyPlan::Hash { columns }, Lookup::Hash(parts)) => {
+            (KeyPlan::Hash { columns }, Delete::Hash(parts)) => {
                 if parts.len() != columns.len() {
                     return false;
                 }
@@ -635,35 +427,57 @@ impl Mutable {
                 }
                 removed
             }
-            (
-                KeyPlan::Range { partition, .. },
-                Lookup::Range {
-                    partition: p,
-                    point,
-                },
-            ) => {
+            (KeyPlan::Prefix { partition }, Delete::Prefix { partition: p, net }) => {
                 if p.len() != partition.len() {
                     return false;
                 }
+                let net = super::prefix::canonical(net);
                 let hash = hash_key(p.iter().copied());
                 let mut shard = self.shard_of(hash).write();
-                let removed =
-                    if let Ok(mut entry) = shard.ranges.find_entry(hash, |(k, _)| keys_eq(k, p)) {
-                        let removed = entry.get_mut().1.remove_at(point);
-                        // An empty partition must release its owned key too, or
-                        // the string pool cannot reclaim it on the next sweep.
-                        if entry.get().1.len() == 0 {
-                            let _ = entry.remove();
-                        }
-                        removed
-                    } else {
-                        0
-                    };
-                self.adjust_len(-removed);
-                removed > 0
+                let Ok(mut entry) = shard.prefixes.find_entry(hash, |(k, _)| keys_eq(k, p)) else {
+                    return false;
+                };
+                let removed = entry.get_mut().1.remove(&net).is_some();
+                // An empty partition must release its owned key too, or the
+                // string pool cannot reclaim it on the next sweep.
+                if entry.get().1.is_empty() {
+                    let _ = entry.remove();
+                }
+                if removed {
+                    self.adjust_len(-1);
+                }
+                removed
             }
             _ => false,
         }
+    }
+
+    /// Drops every row of one partition of a prefix table (a BGP peer going
+    /// down), returning how many went. Unlinking is O(1); the partition's
+    /// trie is freed as it drops. Zero for a missing partition, a hash table,
+    /// or a partition tuple of the wrong arity.
+    pub fn remove_partition(&self, partition: &[KeyRef<'_>]) -> usize {
+        let KeyPlan::Prefix { partition: cols } = &self.key else {
+            return 0;
+        };
+        if partition.len() != cols.len() {
+            return 0;
+        }
+        let hash = hash_key(partition.iter().copied());
+        let mut shard = self.shard_of(hash).write();
+        let Ok(entry) = shard
+            .prefixes
+            .find_entry(hash, |(k, _)| keys_eq(k, partition))
+        else {
+            return 0;
+        };
+        // removing the entry frees its owned key, so the pool can reclaim it
+        let ((_, set), _) = entry.remove();
+        let removed = set.len();
+        self.adjust_len(-(removed as i64));
+        drop(shard);
+        drop(set);
+        removed
     }
 
     /// Drops rows untouched for longer than the table's TTL. Returns how many
@@ -680,10 +494,13 @@ impl Mutable {
             let before = shard.hash_rows.len() as i64;
             shard.hash_rows.retain(|(_, row)| row.last_seen() >= cutoff);
             let mut shard_dropped = before - shard.hash_rows.len() as i64;
-            for (_, store) in shard.ranges.iter_mut() {
-                shard_dropped += store.expire(cutoff);
+            for (_, set) in shard.prefixes.iter_mut() {
+                let before = set.len();
+                set.retain(|_, row| row.last_seen() >= cutoff);
+                shard_dropped += (before - set.len()) as i64;
             }
-            shard.ranges.retain(|(_, store)| store.len() > 0);
+            // as in `remove`: an emptied partition releases its owned key
+            shard.prefixes.retain(|(_, set)| !set.is_empty());
             self.adjust_len(-shard_dropped);
             dropped += shard_dropped;
         }
@@ -707,10 +524,10 @@ impl Mutable {
         let mut shards: Vec<_> = self.shards.iter().map(|s| s.write()).collect();
         for shard in &mut shards {
             shard.hash_rows.clear();
-            shard.ranges.clear();
+            shard.prefixes.clear();
             shard.strings.clear();
         }
-        // hash rows and range entries alike, so zero rather than a decrement
+        // hash rows and prefix entries alike, so zero rather than a decrement
         self.len.store(0, Ordering::Release);
     }
 }
@@ -733,6 +550,7 @@ struct WriteTally {
     updated: Cell<u64>,
     rejected: Cell<u64>,
     errored: Cell<u64>,
+    /// rows removed, so a partition delete adds every row it dropped
     removes: Cell<u64>,
 }
 
@@ -784,24 +602,24 @@ impl<'a> TableWrite<'a> {
         self.record(self.table.upsert_hash(cells))
     }
 
-    pub fn upsert_range(
-        &self,
-        cells: &[CellRef<'_>],
-        start: RangePoint,
-        start_inclusive: bool,
-        end: RangePoint,
-        end_inclusive: bool,
-    ) -> Result<Upsert> {
-        self.record(
-            self.table
-                .upsert_range(cells, start, start_inclusive, end, end_inclusive),
-        )
+    pub fn upsert_prefix(&self, cells: &[CellRef<'_>], net: IpNet) -> Result<Upsert> {
+        self.record(self.table.upsert_prefix(cells, net))
     }
 
-    pub fn remove(&self, key: Lookup<'_>) -> bool {
+    /// Removes exactly `key`; see [`Mutable::remove`].
+    pub fn remove(&self, key: Delete<'_>) -> bool {
         let removed = self.table.remove(key);
         if removed && let Some(tally) = &self.tally {
             tally.record(&tally.removes);
+        }
+        removed
+    }
+
+    /// Removes a whole partition; see [`Mutable::remove_partition`].
+    pub fn remove_partition(&self, partition: &[KeyRef<'_>]) -> usize {
+        let removed = self.table.remove_partition(partition);
+        if let Some(tally) = &self.tally {
+            tally.removes.set(tally.removes.get() + removed as u64);
         }
         removed
     }
@@ -846,40 +664,6 @@ fn cell_matches(cell: CellRef<'_>, ty: ValueType) -> bool {
             | (CellRef::String(_), ValueType::String)
             | (CellRef::Ip(_), ValueType::Ip)
     )
-}
-
-/// Folds arbitrary inclusivity into a closed range, in the point domain.
-fn normalize_point(
-    start: RangePoint,
-    start_inclusive: bool,
-    end: RangePoint,
-    end_inclusive: bool,
-    range_type: RangeType,
-) -> Result<(RangePoint, RangePoint), RangeReject> {
-    match (range_type, start, end) {
-        (RangeType::Integer, RangePoint::Integer(s), RangePoint::Integer(e)) => {
-            let (lo, hi) =
-                normalize(s, start_inclusive, e, end_inclusive).ok_or(RangeReject::Empty)?;
-            Ok((RangePoint::Integer(lo), RangePoint::Integer(hi)))
-        }
-        (RangeType::Ip, RangePoint::Ip(IpAddr::V4(s)), RangePoint::Ip(IpAddr::V4(e))) => {
-            let (lo, hi) = normalize(s.to_bits(), start_inclusive, e.to_bits(), end_inclusive)
-                .ok_or(RangeReject::Empty)?;
-            Ok((
-                RangePoint::Ip(IpAddr::V4(lo.into())),
-                RangePoint::Ip(IpAddr::V4(hi.into())),
-            ))
-        }
-        (RangeType::Ip, RangePoint::Ip(IpAddr::V6(s)), RangePoint::Ip(IpAddr::V6(e))) => {
-            let (lo, hi) = normalize(s.to_bits(), start_inclusive, e.to_bits(), end_inclusive)
-                .ok_or(RangeReject::Empty)?;
-            Ok((
-                RangePoint::Ip(IpAddr::V6(lo.into())),
-                RangePoint::Ip(IpAddr::V6(hi.into())),
-            ))
-        }
-        _ => Err(RangeReject::Mismatch),
-    }
 }
 
 #[cfg(test)]
@@ -941,23 +725,15 @@ mod tests {
 
     #[test]
     fn shared_clear_preserves_accounting_under_concurrent_mutations() {
-        for range in [false, true] {
-            let t = if range {
+        for prefix in [false, true] {
+            let t = if prefix {
                 table(
                     &[
                         ("host", ValueType::String),
-                        ("start", ValueType::Integer),
-                        ("end", ValueType::Integer),
+                        ("network", ValueType::String),
                         ("site", ValueType::String),
                     ],
-                    cfg::Key::Range(cfg::Range {
-                        range_type: RangeType::Integer,
-                        partition_columns: vec!["host".into()],
-                        start_column: "start".into(),
-                        end_column: "end".into(),
-                        start_inclusive: true,
-                        end_inclusive: true,
-                    }),
+                    prefix_key(&["host"]),
                     Some(Duration::from_millis(1)),
                     64,
                 )
@@ -971,30 +747,26 @@ mod tests {
                         for i in 0..1000 {
                             let host = format!("{worker}-{}", i % 32);
                             let cells = [CellRef::String(&host), CellRef::String("value")];
-                            if range {
-                                let _ = t
-                                    .upsert_range(
-                                        &cells,
-                                        RangePoint::Integer(1),
-                                        true,
-                                        RangePoint::Integer(10),
-                                        true,
-                                    )
-                                    .unwrap();
+                            if prefix {
+                                // nested prefixes, so a partition holds several
+                                let n = net(["10.0.0.0/8", "10.1.0.0/16"][i % 2]);
+                                let _ = t.upsert_prefix(&cells, n).unwrap();
                             } else {
                                 let _ = t.upsert_hash(&cells).unwrap();
                             }
-                            if i % 3 == 0 {
-                                let parts = [KeyRef::String(&host)];
-                                let probe = if range {
-                                    Lookup::Range {
+                            let parts = [KeyRef::String(&host)];
+                            if prefix && i % 7 == 0 {
+                                t.remove_partition(&parts);
+                            } else if i % 3 == 0 {
+                                let key = if prefix {
+                                    Delete::Prefix {
                                         partition: &parts,
-                                        point: RangePoint::Integer(5),
+                                        net: net("10.1.0.0/16"),
                                     }
                                 } else {
-                                    Lookup::Hash(&parts)
+                                    Delete::Hash(&parts)
                                 };
-                                t.remove(probe);
+                                t.remove(key);
                             }
                         }
                     });
@@ -1019,9 +791,9 @@ mod tests {
                     let shard = shard.read();
                     shard.hash_rows.len()
                         + shard
-                            .ranges
+                            .prefixes
                             .iter()
-                            .map(|(_, ranges)| ranges.len())
+                            .map(|(_, set)| set.len())
                             .sum::<usize>()
                 })
                 .sum();
@@ -1045,7 +817,7 @@ mod tests {
             .unwrap();
         let cells = [CellRef::String(&host), CellRef::String("old")];
         let _ = t.upsert_hash(&cells).unwrap();
-        let snapshot = t.get(Lookup::Hash(&[KeyRef::String(&host)])).unwrap();
+        let (snapshot, _) = t.get(Lookup::Hash(&[KeyRef::String(&host)])).unwrap();
         std::thread::scope(|scope| {
             // Hold the last shard so clear has acquired the first but cannot finish.
             let last = t.shards.last().unwrap().write();
@@ -1067,30 +839,89 @@ mod tests {
         assert_eq!(snapshot.cell(1), CellRef::String("old"));
     }
 
-    fn range_table(max_rows: usize) -> Mutable {
+    fn prefix_key(partition: &[&str]) -> cfg::Key {
+        cfg::Key::Prefix(cfg::Prefix {
+            prefix_column: "network".into(),
+            partition_columns: partition.iter().map(|s| s.to_string()).collect(),
+        })
+    }
+
+    fn prefix_table(max_rows: usize, ttl: Option<Duration>) -> Mutable {
+        table(
+            &[("network", ValueType::String), ("label", ValueType::String)],
+            prefix_key(&[]),
+            ttl,
+            max_rows,
+        )
+    }
+
+    /// Routes per BGP peer: partitioned by `peer`.
+    fn peer_table(max_rows: usize) -> Mutable {
         table(
             &[
-                ("start", ValueType::Integer),
-                ("end", ValueType::Integer),
+                ("peer", ValueType::String),
+                ("network", ValueType::String),
                 ("label", ValueType::String),
             ],
-            cfg::Key::Range(cfg::Range {
-                range_type: RangeType::Integer,
-                partition_columns: vec![],
-                start_column: "start".into(),
-                start_inclusive: true,
-                end_column: "end".into(),
-                end_inclusive: true,
-            }),
+            prefix_key(&["peer"]),
             None,
             max_rows,
         )
     }
 
+    fn net(s: &str) -> IpNet {
+        super::super::prefix::parse_prefix(s).unwrap()
+    }
+
+    fn put(t: &Mutable, cidr: &str, label: &str) -> Upsert {
+        t.upsert_prefix(&[CellRef::String(label)], net(cidr))
+            .unwrap()
+    }
+
+    fn put_peer(t: &Mutable, peer: &str, cidr: &str, label: &str) -> Upsert {
+        t.upsert_prefix(&[CellRef::String(peer), CellRef::String(label)], net(cidr))
+            .unwrap()
+    }
+
+    /// The label and matched prefix for `addr`.
+    fn at(t: &Mutable, partition: &[KeyRef<'_>], addr: &str) -> Option<(SmolStr, IpNet)> {
+        let label = t.schema().index_of("label").unwrap();
+        t.get(Lookup::Prefix {
+            partition,
+            addr: addr.parse().unwrap(),
+        })
+        .map(|(r, n)| {
+            (
+                SmolStr::new(r.cell(label).as_str().unwrap()),
+                n.expect("a prefix match"),
+            )
+        })
+    }
+
+    fn at_label(t: &Mutable, addr: &str) -> Option<SmolStr> {
+        at(t, &[], addr).map(|(l, _)| l)
+    }
+
+    fn stored_prefixes(t: &Mutable) -> usize {
+        t.shards
+            .iter()
+            .map(|shard| {
+                shard
+                    .read()
+                    .prefixes
+                    .iter()
+                    .map(|(_, set)| set.len())
+                    .sum::<usize>()
+            })
+            .sum()
+    }
+
     fn row(t: &Mutable, host: &str) -> Option<SmolStr> {
         let site = t.schema().index_of("site").unwrap();
-        t.get(Lookup::Hash(&[KeyRef::String(host)]))
-            .map(|r| SmolStr::new(r.cell(site).as_str().unwrap()))
+        t.get(Lookup::Hash(&[KeyRef::String(host)])).map(|(r, n)| {
+            assert_eq!(n, None, "a hash match has no prefix");
+            SmolStr::new(r.cell(site).as_str().unwrap())
+        })
     }
 
     #[test]
@@ -1121,7 +952,7 @@ mod tests {
             .upsert_hash(&[CellRef::String("a"), CellRef::String("jkt")])
             .unwrap();
         let site = t.schema().index_of("site").unwrap();
-        let held = t.get(Lookup::Hash(&[KeyRef::String("a")])).unwrap();
+        let (held, _) = t.get(Lookup::Hash(&[KeyRef::String("a")])).unwrap();
         let _ = t
             .upsert_hash(&[CellRef::String("a"), CellRef::String("bdg")])
             .unwrap();
@@ -1135,10 +966,10 @@ mod tests {
         let _ = t
             .upsert_hash(&[CellRef::String("a"), CellRef::String("jkt")])
             .unwrap();
-        assert!(t.remove(Lookup::Hash(&[KeyRef::String("a")])));
+        assert!(t.remove(Delete::Hash(&[KeyRef::String("a")])));
         assert_eq!(t.len(), 0);
         assert!(
-            !t.remove(Lookup::Hash(&[KeyRef::String("a")])),
+            !t.remove(Delete::Hash(&[KeyRef::String("a")])),
             "already gone"
         );
         assert_eq!(row(&t, "a"), None);
@@ -1190,7 +1021,7 @@ mod tests {
                 .unwrap(),
             Upsert::Rejected
         );
-        t.remove(Lookup::Hash(&[KeyRef::String("a")]));
+        t.remove(Delete::Hash(&[KeyRef::String("a")]));
         assert_eq!(
             t.upsert_hash(&[CellRef::String("b"), CellRef::String("2")])
                 .unwrap(),
@@ -1266,374 +1097,230 @@ mod tests {
     }
 
     #[test]
-    fn range_upsert_and_point_lookup() {
-        let t = range_table(10);
-        let label = t.schema().index_of("label").unwrap();
+    fn prefix_upsert_and_longest_match() {
+        let t = prefix_table(10, None);
+        assert_eq!(put(&t, "10.0.0.0/8", "wide"), Upsert::Inserted);
         assert_eq!(
-            t.upsert_range(
-                &[CellRef::String("low")],
-                RangePoint::Integer(0),
-                true,
-                RangePoint::Integer(9),
-                true
-            )
-            .unwrap(),
-            Upsert::Inserted
+            at(&t, &[], "10.1.2.3"),
+            Some(("wide".into(), net("10.0.0.0/8")))
         );
-        let at = |p: i64| {
-            t.get(Lookup::Range {
-                partition: &[],
-                point: RangePoint::Integer(p),
-            })
-            .map(|r| SmolStr::new(r.cell(label).as_str().unwrap()))
-        };
-        assert_eq!(at(5).as_deref(), Some("low"));
-        assert_eq!(at(10), None);
+        assert_eq!(at(&t, &[], "11.0.0.0"), None);
 
-        // the same bounds again is an update, not a second row
-        assert_eq!(
-            t.upsert_range(
-                &[CellRef::String("still-low")],
-                RangePoint::Integer(0),
-                true,
-                RangePoint::Integer(9),
-                true
-            )
-            .unwrap(),
-            Upsert::Updated
-        );
+        // the same prefix again is an update, not a second row
+        assert_eq!(put(&t, "10.0.0.0/8", "still-wide"), Upsert::Updated);
         assert_eq!(t.len(), 1);
-        assert_eq!(at(5).as_deref(), Some("still-low"));
+        assert_eq!(at_label(&t, "10.1.2.3").as_deref(), Some("still-wide"));
+        // a host-bits-free v4-mapped spelling is the same prefix
+        assert_eq!(put(&t, "::ffff:10.0.0.0/104", "mapped"), Upsert::Updated);
+        assert_eq!(t.len(), 1);
     }
 
     #[test]
-    fn range_removal_and_cap_are_counted_per_range() {
-        let t = range_table(2);
-        for i in 0..2i64 {
-            assert_eq!(
-                t.upsert_range(
-                    &[CellRef::String("x")],
-                    RangePoint::Integer(i * 100),
-                    true,
-                    RangePoint::Integer(i * 100 + 10),
-                    true
-                )
-                .unwrap(),
-                Upsert::Inserted
-            );
+    fn nested_prefixes_resolve_to_the_narrowest_in_either_insert_order() {
+        let order = ["10.0.0.0/8", "10.1.0.0/16", "10.1.2.0/24"];
+        for reversed in [false, true] {
+            let t = prefix_table(10, None);
+            let mut cidrs = order.to_vec();
+            if reversed {
+                cidrs.reverse();
+            }
+            for cidr in cidrs {
+                assert_eq!(put(&t, cidr, cidr), Upsert::Inserted);
+            }
+            assert_eq!(t.len(), 3, "nesting neither splits nor merges");
+            assert_eq!(at_label(&t, "10.1.2.3").as_deref(), Some("10.1.2.0/24"));
+            assert_eq!(at_label(&t, "10.1.3.3").as_deref(), Some("10.1.0.0/16"));
+            assert_eq!(at_label(&t, "10.2.0.0").as_deref(), Some("10.0.0.0/8"));
         }
+    }
+
+    #[test]
+    fn an_exact_delete_exposes_the_parent_and_touches_nothing_else() {
+        let t = prefix_table(10, None);
+        let _ = put(&t, "10.0.0.0/8", "a");
+        let _ = put(&t, "10.1.0.0/16", "b");
+        let _ = put(&t, "10.1.2.0/24", "c");
+        let delete = |cidr| {
+            t.remove(Delete::Prefix {
+                partition: &[],
+                net: net(cidr),
+            })
+        };
+        // an address inside a stored prefix is not that prefix
+        assert!(!delete("10.1.2.3"));
+        assert!(!delete("10.1.0.0/17"));
+        assert_eq!(t.len(), 3);
+
+        assert!(delete("10.1.0.0/16"));
         assert_eq!(t.len(), 2);
         assert_eq!(
-            t.upsert_range(
-                &[CellRef::String("x")],
-                RangePoint::Integer(500),
-                true,
-                RangePoint::Integer(510),
-                true
-            )
-            .unwrap(),
+            at_label(&t, "10.1.9.9").as_deref(),
+            Some("a"),
+            "parent exposed"
+        );
+        assert_eq!(at_label(&t, "10.1.2.9").as_deref(), Some("c"), "child kept");
+        assert!(!delete("10.1.0.0/16"), "already gone");
+    }
+
+    #[test]
+    fn max_rows_counts_one_entry_per_prefix() {
+        let t = prefix_table(2, None);
+        assert_eq!(put(&t, "10.0.0.0/8", "x"), Upsert::Inserted);
+        assert_eq!(put(&t, "10.1.0.0/16", "x"), Upsert::Inserted);
+        assert_eq!(
+            put(&t, "10.1.2.0/24", "x"),
             Upsert::Rejected,
-            "one range is one row against the cap"
+            "one prefix is one row against the cap"
         );
-        assert!(t.remove(Lookup::Range {
+        assert_eq!(t.rejected(), 1);
+        // an existing prefix still updates at the cap
+        assert_eq!(put(&t, "10.1.0.0/16", "y"), Upsert::Updated);
+        assert_eq!(t.len(), 2);
+        assert_eq!(stored_prefixes(&t), 2);
+
+        assert!(t.remove(Delete::Prefix {
             partition: &[],
-            point: RangePoint::Integer(5)
+            net: net("10.0.0.0/8"),
         }));
-        assert_eq!(t.len(), 1);
-        assert!(
-            t.get(Lookup::Range {
-                partition: &[],
-                point: RangePoint::Integer(5)
-            })
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn range_insert_delta_matches_overlaps_gaps_and_domain_boundaries() {
-        let fresh_row = || {
-            RowSlot(Arc::new(MutableRow {
-                cells: Box::new([]),
-                last_seen: AtomicU64::new(0),
-            }))
-        };
-        let bounds = [i64::MIN, -6, -5, -4, -1, 0, 1, 4, 5, 6, 7, 10, 11, i64::MAX];
-        for populated in [false, true] {
-            let mut original = RangeInclusiveMap::new();
-            if populated {
-                let old = fresh_row();
-                for range in [i64::MIN..=-5, 0..=4, 6..=10, i64::MAX..=i64::MAX] {
-                    original.insert(range, old.clone());
-                }
-            }
-            for lo in bounds {
-                for hi in bounds.into_iter().filter(|&hi| hi >= lo) {
-                    let delta = range_insert_delta(&original, lo, hi);
-                    let mut updated = original.clone();
-                    updated.insert(lo..=hi, fresh_row());
-                    assert_eq!(
-                        delta,
-                        updated.len() as i64 - original.len() as i64,
-                        "populated={populated}, bounds={lo}..={hi}"
-                    );
-                }
-            }
-        }
-    }
-
-    fn upsert_integer_range(t: &Mutable, lo: i64, hi: i64, label: &str) -> Upsert {
-        t.upsert_range(
-            &[CellRef::String(label)],
-            RangePoint::Integer(lo),
-            true,
-            RangePoint::Integer(hi),
-            true,
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn range_splits_reserve_both_extra_entries_before_writing() {
-        let replacement = "a-new-long-label-that-must-not-be-pooled-on-rejection";
-        for cap in [2, 3] {
-            let t = range_table(cap);
-            assert_eq!(upsert_integer_range(&t, 0, 10, "old"), Upsert::Inserted);
-            let at = |point| {
-                t.get(Lookup::Range {
-                    partition: &[],
-                    point: RangePoint::Integer(point),
-                })
-                .unwrap()
-            };
-            let held = at(5);
-            let result = upsert_integer_range(&t, 3, 7, replacement);
-            if cap == 2 {
-                assert_eq!(result, Upsert::Rejected);
-                assert_eq!(t.len(), 1);
-                assert_eq!(t.rejected(), 1);
-                assert_eq!(t.pooled_strings(), 0);
-                assert!(Arc::ptr_eq(&held, &at(5)));
-            } else {
-                assert_eq!(result, Upsert::Inserted);
-                assert_eq!(t.len(), 3);
-                assert_eq!(t.rejected(), 0);
-                let label = t.schema().index_of("label").unwrap();
-                assert_eq!(at(5).cell(label).as_str(), Some(replacement));
-                // An exact replacement still succeeds when all three slots are used.
-                assert_eq!(upsert_integer_range(&t, 3, 7, "updated"), Upsert::Updated);
-                assert_eq!(t.len(), 3);
-            }
-            for point in [0, 2, 8, 10] {
-                assert!(Arc::ptr_eq(&held, &at(point)));
-            }
-        }
-    }
-
-    #[test]
-    fn range_overwrites_at_capacity_can_preserve_or_free_slots() {
-        let t = range_table(2);
-        assert_eq!(upsert_integer_range(&t, 0, 9, "first"), Upsert::Inserted);
-        assert_eq!(upsert_integer_range(&t, 20, 29, "second"), Upsert::Inserted);
-
-        // Extending an existing interval does not need another slot.
-        assert_eq!(
-            upsert_integer_range(&t, -5, 9, "extended"),
-            Upsert::Inserted
-        );
+        assert_eq!(put(&t, "10.1.2.0/24", "x"), Upsert::Inserted);
         assert_eq!(t.len(), 2);
+    }
 
-        // Covering both intervals replaces two entries with one at capacity.
+    #[test]
+    fn families_share_the_cap() {
+        let t = prefix_table(2, None);
+        assert_eq!(put(&t, "0.0.0.0/0", "v4"), Upsert::Inserted);
+        assert_eq!(put(&t, "::/0", "v6"), Upsert::Inserted);
+        assert_eq!(put(&t, "2001:db8::/32", "v6"), Upsert::Rejected);
+        assert_eq!(at_label(&t, "192.0.2.1").as_deref(), Some("v4"));
+        assert_eq!(at_label(&t, "2001:db8::1").as_deref(), Some("v6"));
+    }
+
+    #[test]
+    fn without_a_ttl_prefixes_never_expire_but_the_cap_still_holds() {
+        // `ttl: 0` in the config arrives as `None`
+        for ttl in [None, Some(Duration::ZERO)] {
+            let t = prefix_table(2, ttl);
+            let _ = put(&t, "10.0.0.0/8", "a");
+            let _ = put(&t, "10.1.0.0/16", "b");
+            assert_eq!(t.expire(now_millis() + 1_000_000_000), 0, "{ttl:?}");
+            assert_eq!(t.len(), 2);
+            assert_eq!(put(&t, "10.2.0.0/16", "c"), Upsert::Rejected, "{ttl:?}");
+            assert_eq!(t.len(), 2);
+        }
+    }
+
+    #[test]
+    fn expiry_drops_stale_prefixes_and_empty_partitions() {
+        let t = peer_table(10);
+        t.reconfigure(Some(Duration::from_millis(50)), 10);
+        let _ = put_peer(&t, "peer-a", "10.0.0.0/8", "a");
+        let _ = put_peer(&t, "peer-a", "10.1.0.0/16", "b");
+        let _ = put_peer(&t, "peer-b", "10.0.0.0/8", "c");
+        let now = now_millis();
+        assert_eq!(t.expire(now), 0);
+        assert_eq!(t.expire(now + 51), 3);
+        assert_eq!(t.len(), 0);
+        let partitions: usize = t.shards.iter().map(|s| s.read().prefixes.len()).sum();
+        assert_eq!(partitions, 0, "emptied partitions release their keys");
+    }
+
+    #[test]
+    fn removing_a_partition_drops_only_that_partition() {
+        let t = peer_table(5);
+        let a = [KeyRef::String("peer-a")];
+        let b = [KeyRef::String("peer-b")];
+        for cidr in ["10.0.0.0/8", "10.1.0.0/16", "192.0.2.0/24"] {
+            assert_eq!(put_peer(&t, "peer-a", cidr, "a"), Upsert::Inserted);
+        }
+        assert_eq!(put_peer(&t, "peer-b", "10.0.0.0/8", "b"), Upsert::Inserted);
+        assert_eq!(put_peer(&t, "peer-b", "10.1.0.0/16", "b"), Upsert::Inserted);
+        assert_eq!(t.len(), 5);
+        assert_eq!(put_peer(&t, "peer-b", "10.2.0.0/16", "b"), Upsert::Rejected);
+
+        assert_eq!(t.remove_partition(&a), 3);
+        assert_eq!(t.len(), 2);
+        assert_eq!(at(&t, &a, "10.1.2.3"), None);
         assert_eq!(
-            upsert_integer_range(&t, -5, 29, "combined"),
-            Upsert::Inserted
+            at(&t, &b, "10.1.2.3"),
+            Some(("b".into(), net("10.1.0.0/16")))
         );
-        assert_eq!(t.len(), 1);
-        let label = t.schema().index_of("label").unwrap();
-        for point in [-5, 0, 15, 29] {
-            let row = t
-                .get(Lookup::Range {
-                    partition: &[],
-                    point: RangePoint::Integer(point),
-                })
+        // the freed capacity is usable again
+        assert_eq!(put_peer(&t, "peer-b", "10.2.0.0/16", "b"), Upsert::Inserted);
+        assert_eq!(t.len(), 3);
+        assert_eq!(stored_prefixes(&t), 3);
+
+        // a missing partition, or one of the wrong arity, removes nothing
+        assert_eq!(t.remove_partition(&a), 0);
+        assert_eq!(t.remove_partition(&[KeyRef::String("peer-z")]), 0);
+        assert_eq!(t.remove_partition(&[]), 0);
+        assert_eq!(t.len(), 3);
+        // and a hash table has no partitions to remove
+        assert_eq!(hash_table(10, None).remove_partition(&a), 0);
+    }
+
+    #[test]
+    fn a_removed_partition_lets_its_key_strings_be_reclaimed() {
+        let t = peer_table(10);
+        let peer = "a-long-peer-name-that-must-be-pooled".repeat(4);
+        let label = "a-long-label-value-that-must-be-pooled".repeat(4);
+        for cidr in ["10.0.0.0/8", "10.1.0.0/16"] {
+            let _ = t
+                .upsert_prefix(
+                    &[CellRef::String(&peer), CellRef::String(&label)],
+                    net(cidr),
+                )
                 .unwrap();
-            assert_eq!(row.cell(label).as_str(), Some("combined"));
         }
-        assert_eq!(upsert_integer_range(&t, 40, 49, "new"), Upsert::Inserted);
-        assert_eq!(t.len(), 2);
-        assert_eq!(t.rejected(), 0);
+        assert_eq!(t.pooled_strings(), 2);
+        assert_eq!(t.compact(true), 0, "everything is still referenced");
+        assert_eq!(t.remove_partition(&[KeyRef::String(&peer)]), 2);
+        assert_eq!(
+            t.compact(true),
+            2,
+            "the key and the row strings are released"
+        );
+        assert_eq!(t.pooled_strings(), 0);
     }
 
     #[test]
-    fn ip_range_splits_share_the_cap_across_address_families() {
-        let t = table(
-            &[
-                ("start", ValueType::Ip),
-                ("end", ValueType::Ip),
-                ("label", ValueType::String),
-            ],
-            cfg::Key::Range(cfg::Range {
-                range_type: RangeType::Ip,
-                partition_columns: vec![],
-                start_column: "start".into(),
-                start_inclusive: true,
-                end_column: "end".into(),
-                end_inclusive: true,
-            }),
-            None,
-            3,
-        );
-        let put = |lo: &str, hi: &str, inclusive, label| {
-            t.upsert_range(
-                &[CellRef::String(label)],
-                RangePoint::Ip(lo.parse().unwrap()),
-                inclusive,
-                RangePoint::Ip(hi.parse().unwrap()),
-                inclusive,
-            )
-            .unwrap()
-        };
-        assert_eq!(
-            put("0.0.0.0", "255.255.255.255", true, "v4"),
-            Upsert::Inserted
-        );
-        assert_eq!(
-            put("::", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", true, "v6"),
-            Upsert::Inserted
-        );
-        // Exclusive bounds normalize to an interior interval, needing two slots.
-        assert_eq!(
-            put("0.0.0.0", "255.255.255.255", false, "inner-v4"),
-            Upsert::Rejected
-        );
-        assert_eq!(
-            put(
-                "::",
-                "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
-                false,
-                "inner-v6"
-            ),
-            Upsert::Rejected
-        );
-        assert_eq!(t.len(), 2);
-        assert_eq!(t.rejected(), 2);
-        for (point, expected) in [("127.0.0.1", "v4"), ("::1", "v6")] {
-            let row = t
-                .get(Lookup::Range {
-                    partition: &[],
-                    point: RangePoint::Ip(point.parse().unwrap()),
-                })
-                .unwrap();
-            assert_eq!(
-                row.cell(t.schema().index_of("label").unwrap()).as_str(),
-                Some(expected)
-            );
-        }
-    }
-
-    #[test]
-    fn concurrent_range_splits_never_exceed_the_cap() {
+    fn concurrent_prefix_writers_never_exceed_the_cap() {
         const WRITERS: usize = 8;
-        // Four splits fit, leaving one spare slot that cannot fit a fifth.
-        const CAP: usize = WRITERS + 2 * 4 + 1;
-        let t = table(
-            &[
-                ("partition", ValueType::Integer),
-                ("start", ValueType::Integer),
-                ("end", ValueType::Integer),
-            ],
-            cfg::Key::Range(cfg::Range {
-                range_type: RangeType::Integer,
-                partition_columns: vec!["partition".into()],
-                start_column: "start".into(),
-                start_inclusive: true,
-                end_column: "end".into(),
-                end_inclusive: true,
-            }),
-            None,
-            CAP,
-        );
-        let put = |partition, lo, hi| {
-            t.upsert_range(
-                &[CellRef::Integer(partition)],
-                RangePoint::Integer(lo),
-                true,
-                RangePoint::Integer(hi),
-                true,
-            )
-            .unwrap()
-        };
-        for partition in 0..WRITERS {
-            assert_eq!(put(partition as i64, 0, 10), Upsert::Inserted);
-        }
-        let barrier = std::sync::Barrier::new(WRITERS);
+        const CAP: usize = 20;
+        let t = peer_table(CAP);
         std::thread::scope(|scope| {
-            for partition in 0..WRITERS {
-                let put = &put;
-                let barrier = &barrier;
+            for w in 0..WRITERS {
                 let t = &t;
                 scope.spawn(move || {
-                    barrier.wait();
-                    let _ = put(partition as i64, 3, 7);
-                    assert!(t.len() <= CAP);
+                    let peer = format!("peer-{}", w % 3);
+                    for i in 0..64u32 {
+                        let cidr = format!("10.{}.0.0/16", (w as u32 * 64 + i) % 256);
+                        let _ = put_peer(t, &peer, &cidr, "x");
+                        assert!(t.len() <= CAP);
+                    }
                 });
             }
         });
-        assert_eq!(t.len(), CAP - 1);
-        assert_eq!(t.rejected(), 4);
-        let stored: usize = t
-            .shards
-            .iter()
-            .map(|shard| {
-                shard
-                    .read()
-                    .ranges
-                    .iter()
-                    .map(|(_, store)| store.len())
-                    .sum::<usize>()
-            })
-            .sum();
-        assert_eq!(stored, CAP - 1);
-    }
-
-    #[test]
-    fn exclusive_range_bounds_are_folded() {
-        let t = range_table(10);
-        let label = t.schema().index_of("label").unwrap();
-        let _ = t
-            .upsert_range(
-                &[CellRef::String("a")],
-                RangePoint::Integer(0),
-                true,
-                RangePoint::Integer(10),
-                false,
-            )
-            .unwrap();
-        let at = |p: i64| {
-            t.get(Lookup::Range {
-                partition: &[],
-                point: RangePoint::Integer(p),
-            })
-            .map(|r| SmolStr::new(r.cell(label).as_str().unwrap()))
-        };
-        assert_eq!(at(9).as_deref(), Some("a"));
-        assert_eq!(at(10), None, "end was exclusive");
+        assert_eq!(t.len(), CAP);
+        assert_eq!(stored_prefixes(&t), CAP);
     }
 
     #[test]
     fn the_wrong_upsert_method_is_an_error() {
         let hash = hash_table(10, None);
         assert!(
-            hash.upsert_range(
+            hash.upsert_prefix(
                 &[CellRef::String("a"), CellRef::String("b")],
-                RangePoint::Integer(0),
-                true,
-                RangePoint::Integer(1),
-                true
+                net("10.0.0.0/8")
             )
             .is_err()
         );
-        let range = range_table(10);
-        assert!(range.upsert_hash(&[CellRef::String("a")]).is_err());
+        let prefix = prefix_table(10, None);
+        assert!(prefix.upsert_hash(&[CellRef::String("a")]).is_err());
+        // and a delete of the wrong shape removes nothing
+        let _ = put(&prefix, "10.0.0.0/8", "a");
+        assert!(!prefix.remove(Delete::Hash(&[KeyRef::String("a")])));
+        assert_eq!(prefix.len(), 1);
     }
 
     #[test]
@@ -1681,7 +1368,7 @@ mod tests {
         assert!(t.pooled_strings() >= 1);
         for i in 0..5 {
             let host = format!("host-{i}");
-            t.remove(Lookup::Hash(&[KeyRef::String(&host)]));
+            t.remove(Delete::Hash(&[KeyRef::String(&host)]));
         }
         let released = t.compact(true);
         assert!(released >= 1, "released={released}");
@@ -1707,79 +1394,42 @@ mod tests {
     }
 
     #[test]
-    fn clearing_a_range_table_zeroes_the_row_count() {
-        let t = range_table(10);
-        for (lo, hi) in [(0, 9), (20, 29), (40, 49)] {
-            assert_eq!(
-                t.upsert_range(
-                    &[CellRef::String("z")],
-                    RangePoint::Integer(lo),
-                    true,
-                    RangePoint::Integer(hi),
-                    true,
-                )
-                .unwrap(),
-                Upsert::Inserted
-            );
+    fn clearing_a_prefix_table_zeroes_the_row_count() {
+        let t = prefix_table(10, None);
+        for cidr in ["10.0.0.0/8", "10.1.0.0/16", "2001:db8::/32"] {
+            assert_eq!(put(&t, cidr, "z"), Upsert::Inserted);
         }
         assert_eq!(t.len(), 3);
 
-        // range entries are not hash rows, so counting only the latter left
-        // `len` stuck at 3 here and the row gauge reporting a table that had
+        // prefix entries are not hash rows, so counting only the latter would
+        // leave `len` stuck at 3 and the row gauge reporting a table that had
         // just been emptied
         t.clear();
         assert_eq!(t.len(), 0);
         assert!(t.is_empty());
 
         // and the freed capacity is really usable again
-        assert_eq!(
-            t.upsert_range(
-                &[CellRef::String("z")],
-                RangePoint::Integer(0),
-                true,
-                RangePoint::Integer(9),
-                true,
-            )
-            .unwrap(),
-            Upsert::Inserted
-        );
+        assert_eq!(put(&t, "10.0.0.0/8", "z"), Upsert::Inserted);
         assert_eq!(t.len(), 1);
     }
 
     #[test]
     fn long_hash_and_partition_keys_share_the_row_string_pool() {
-        for range in [false, true] {
+        for prefix in [false, true] {
             let key = "a-long-key-that-must-be-allocated".repeat(100);
-            let t = if range {
+            let t = if prefix {
                 table(
-                    &[
-                        ("start", ValueType::Integer),
-                        ("end", ValueType::Integer),
-                        ("host", ValueType::String),
-                    ],
-                    cfg::Key::Range(cfg::Range {
-                        range_type: RangeType::Integer,
-                        partition_columns: vec!["host".into()],
-                        start_column: "start".into(),
-                        end_column: "end".into(),
-                        start_inclusive: true,
-                        end_inclusive: true,
-                    }),
+                    &[("network", ValueType::String), ("host", ValueType::String)],
+                    prefix_key(&["host"]),
                     None,
                     100,
                 )
             } else {
                 hash_table(100, None)
             };
-            if range {
+            if prefix {
                 let _ = t
-                    .upsert_range(
-                        &[CellRef::String(&key)],
-                        RangePoint::Integer(0),
-                        true,
-                        RangePoint::Integer(10),
-                        true,
-                    )
+                    .upsert_prefix(&[CellRef::String(&key)], net("10.0.0.0/8"))
                     .unwrap();
             } else {
                 let _ = t
@@ -1789,8 +1439,8 @@ mod tests {
             let hash = hash_key([KeyRef::String(&key)]);
             {
                 let shard = t.shard_of(hash).read();
-                let stored_key = if range {
-                    &shard.ranges.iter().next().unwrap().0[0]
+                let stored_key = if prefix {
+                    &shard.prefixes.iter().next().unwrap().0[0]
                 } else {
                     &shard.hash_rows.iter().next().unwrap().0[0]
                 };
@@ -1806,16 +1456,22 @@ mod tests {
                 assert_eq!(shard.strings.len(), 1);
             }
             let parts = [KeyRef::String(&key)];
-            let probe = if range {
-                Lookup::Range {
-                    partition: &parts,
-                    point: RangePoint::Integer(0),
-                }
+            let (probe, delete) = if prefix {
+                (
+                    Lookup::Prefix {
+                        partition: &parts,
+                        addr: "10.0.0.1".parse().unwrap(),
+                    },
+                    Delete::Prefix {
+                        partition: &parts,
+                        net: net("10.0.0.0/8"),
+                    },
+                )
             } else {
-                Lookup::Hash(&parts)
+                (Lookup::Hash(&parts), Delete::Hash(&parts))
             };
             assert!(t.get(probe).is_some());
-            assert!(t.remove(probe));
+            assert!(t.remove(delete));
             assert_eq!(
                 t.compact(true),
                 1,
@@ -1836,7 +1492,7 @@ mod tests {
         );
         // no processor to attribute to, so these are no-ops rather than panics
         write.note_key_error();
-        assert!(write.remove(Lookup::Hash(&[KeyRef::String("a")])));
+        assert!(write.remove(Delete::Hash(&[KeyRef::String("a")])));
         assert_eq!(write.table().len(), 0);
     }
 
@@ -1851,9 +1507,9 @@ mod tests {
                 .is_none()
         );
         assert!(
-            t.get(Lookup::Range {
+            t.get(Lookup::Prefix {
                 partition: &[],
-                point: RangePoint::Integer(1)
+                addr: "10.0.0.1".parse().unwrap(),
             })
             .is_none()
         );

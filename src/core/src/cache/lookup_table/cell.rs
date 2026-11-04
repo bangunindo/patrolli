@@ -2,9 +2,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use crate::config::lookup_table::{RangeType, ValueType};
+use crate::config::lookup_table::ValueType;
 use crate::payload::{Value, ZString};
 use anyhow::{Result, bail};
+use ipnet::IpNet;
 use smol_str::SmolStr;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use xxhash_rust::xxh3::Xxh3;
@@ -243,36 +244,28 @@ pub fn hash_key_owned(parts: &[KeyOwned]) -> u64 {
     hash_key(parts.iter().map(KeyOwned::as_ref))
 }
 
-/// The point being looked up in a range-keyed table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RangePoint {
-    Integer(i64),
-    Ip(IpAddr),
-}
-
-impl RangePoint {
-    /// The point a cell names in a `range_type` index, or `None` when the cell
-    /// is the wrong shape. Shared by the builder and both processors, so a
-    /// table cannot be built against one rule and probed against another.
-    #[inline]
-    pub fn from_cell(cell: CellRef<'_>, range_type: RangeType) -> Option<Self> {
-        match (range_type, cell) {
-            (RangeType::Integer, CellRef::Integer(v)) => Some(RangePoint::Integer(v)),
-            (RangeType::Ip, CellRef::Ip(v)) => Some(RangePoint::Ip(v)),
-            _ => None,
-        }
-    }
-}
-
 /// A probe against a table.
 #[derive(Debug, Clone, Copy)]
 pub enum Lookup<'a> {
     Hash(&'a [KeyRef<'a>]),
-    Range {
+    /// the longest stored prefix containing `addr`
+    Prefix {
         /// must match the table's `partition_columns`, in order; empty when the
         /// table is unpartitioned
         partition: &'a [KeyRef<'a>],
-        point: RangePoint,
+        addr: IpAddr,
+    },
+}
+
+/// An exact key to remove from a mutable table. Unlike [`Lookup::Prefix`], a
+/// prefix delete names the stored prefix itself, never an address inside it,
+/// so a wider or narrower prefix is never touched.
+#[derive(Debug, Clone, Copy)]
+pub enum Delete<'a> {
+    Hash(&'a [KeyRef<'a>]),
+    Prefix {
+        partition: &'a [KeyRef<'a>],
+        net: IpNet,
     },
 }
 

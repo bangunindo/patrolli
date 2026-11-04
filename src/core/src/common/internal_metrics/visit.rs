@@ -1115,23 +1115,20 @@ fn walk_processor_edges<V: Visitor>(v: &mut V, edges: &[ProcessorEdge]) -> Resul
     )
 }
 
-/// The seven row-rejection reasons, in the order [`SkipCounts`] declares them,
+/// The five row-rejection reasons, in the order [`SkipCounts`] declares them,
 /// paired with the label value each is spelled as. The label spellings match
 /// `SkipCounts::summary`, so a log line and a metric name the same reason.
 type SkipReason = (&'static str, fn(&SkipCounts) -> u64);
 
-pub(crate) const SKIP_REASONS: [SkipReason; 8] = [
+pub(crate) const SKIP_REASONS: [SkipReason; 5] = [
     ("field_count", |c| c.arity),
     ("cast", |c| c.bad_cell),
-    ("range_bound", |c| c.bad_bound),
+    ("prefix", |c| c.bad_prefix),
     ("null_key", |c| c.null_key),
     ("duplicate_key", |c| c.duplicate_key),
-    ("overlap", |c| c.overlap),
-    ("empty_range", |c| c.empty_range),
-    ("family_mismatch", |c| c.mismatch),
 ];
 
-/// One family per skip reason would multiply the catalogue by seven, so the
+/// One family per skip reason would multiply the catalogue by five, so the
 /// reason is a label instead. Emit zeros too: counters need a baseline before
 /// their first failure, and generation gauges must report clean reloads.
 fn skip_family<V, F>(

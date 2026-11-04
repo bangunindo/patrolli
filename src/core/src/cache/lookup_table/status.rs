@@ -118,8 +118,8 @@ pub struct LookupTableStatus {
     pub created_at: Option<DateTime<FixedOffset>>,
 
     pub rows: u64,
-    /// Index entries currently stored. Exceeds `rows` when several keys or
-    /// ranges resolve to one deduplicated row.
+    /// Index entries currently stored. Exceeds `rows` when several prefixes
+    /// resolve to one deduplicated row.
     pub index_entries: u64,
     /// Distinct strings held: the nearest available proxy for what they cost,
     /// there being no accurate byte estimate. The two kinds pool different
@@ -221,7 +221,7 @@ pub struct CapacityStatus {
 pub struct TableSchema {
     /// Materialized columns, in row order. **Empty until a file-backed table has
     /// loaded once**, because a CSV table's columns come from its header row.
-    /// A range table's bound columns are not here — they live in `key`.
+    /// A prefix table's prefix column is not here — it lives in `key`.
     pub columns: Vec<ColumnInfo>,
     pub key: KeyInfo,
 }
@@ -245,7 +245,7 @@ pub struct ColumnInfo {
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum KeyInfo {
     Hash(HashKeyInfo),
-    Range(RangeKeyInfo),
+    Prefix(PrefixKeyInfo),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -255,26 +255,16 @@ pub struct HashKeyInfo {
     pub columns: Vec<SmolStr>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct RangeKeyInfo {
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PrefixKeyInfo {
     /// Partition columns, empty for an unpartitioned table — which is also what
     /// an unresolved schema reports.
     #[schema(value_type = Vec<String>)]
     pub partition_columns: Vec<SmolStr>,
-    pub range_type: cfg::RangeType,
-    pub bounds: RangeBounds,
-}
-
-/// The range bound columns, and whether each end is inclusive.
-///
-/// The one part of a key taken from config rather than resolved data: the bounds
-/// never appear in [`TableSchema::columns`], so there is no runtime name.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct RangeBounds {
-    pub start_column: String,
-    pub start_inclusive: bool,
-    pub end_column: String,
-    pub end_inclusive: bool,
+    /// The CIDR column. The one part of a key taken from config rather than
+    /// resolved data: it never appears in [`TableSchema::columns`], so there is
+    /// no runtime name.
+    pub prefix_column: String,
 }
 
 /// Every processor's counters for one table, folded into one.
@@ -410,7 +400,7 @@ pub fn local_status(
 ///
 /// Split from [`local_status`] so the rules can be tested against a hand-built
 /// `Vec` — the same shape a fan-out's receive half will take. `Meta` rides along
-/// for the config-derived values (reload interval, TTL, range bound names) and
+/// for the config-derived values (reload interval, TTL, prefix column name) and
 /// the processor counters; reading those atomics is neither a lock nor I/O.
 ///
 /// The id filter is not re-applied: ids are a registry lookup rather than a
@@ -569,11 +559,11 @@ fn schema_of(schema: &Schema, plan: &KeyPlan, key: &cfg::Key) -> TableSchema {
     }
 }
 
-/// The materialized key columns. For a range key, the partition only.
+/// The materialized key columns. For a prefix key, the partition only.
 fn key_indices(plan: &KeyPlan) -> &[ColumnIdx] {
     match plan {
         KeyPlan::Hash { columns } => columns,
-        KeyPlan::Range { partition, .. } => partition,
+        KeyPlan::Prefix { partition } => partition,
     }
 }
 
@@ -582,22 +572,13 @@ fn key_of(schema: &Schema, plan: &KeyPlan, key: &cfg::Key) -> KeyInfo {
         KeyPlan::Hash { columns } => KeyInfo::Hash(HashKeyInfo {
             columns: names_of(schema, columns),
         }),
-        KeyPlan::Range {
-            partition,
-            range_type,
-        } => KeyInfo::Range(RangeKeyInfo {
+        KeyPlan::Prefix { partition } => KeyInfo::Prefix(PrefixKeyInfo {
             partition_columns: names_of(schema, partition),
-            range_type: *range_type,
-            bounds: match key {
-                cfg::Key::Range(range) => RangeBounds {
-                    start_column: range.start_column.clone(),
-                    start_inclusive: range.start_inclusive,
-                    end_column: range.end_column.clone(),
-                    end_inclusive: range.end_inclusive,
-                },
-                // Unreachable: a range plan is only built from a range key.
+            prefix_column: match key {
+                cfg::Key::Prefix(prefix) => prefix.prefix_column.clone(),
+                // Unreachable: a prefix plan is only built from a prefix key.
                 // Defaulted, not panicked: a panic is fatal (`common::panic`).
-                cfg::Key::Hash(_) => RangeBounds::default(),
+                cfg::Key::Hash(_) => String::new(),
             },
         }),
     }
@@ -645,7 +626,7 @@ fn after(at: DateTime<FixedOffset>, interval: Duration) -> Option<DateTime<Fixed
 mod tests {
     use super::*;
     use crate::cache::Cache;
-    use crate::cache::lookup_table::cell::{CellRef, KeyRef, Lookup, RangePoint};
+    use crate::cache::lookup_table::cell::{CellRef, KeyRef, Lookup};
     use crate::cache::lookup_table::loader;
     use std::path::Path;
 
@@ -1052,31 +1033,27 @@ mod tests {
         );
     }
 
-    // ---- the range-key trap ----
+    // ---- the prefix-key trap ----
 
-    /// The bound columns are consumed by the index and never materialized, so a
+    fn subnets_key() -> cfg::Key {
+        cfg::Key::Prefix(cfg::Prefix {
+            prefix_column: "network".into(),
+            partition_columns: vec!["zone".into()],
+        })
+    }
+
+    const SUBNET_COLUMNS: [(&str, cfg::ValueType); 3] = [
+        ("zone", cfg::ValueType::String),
+        ("network", cfg::ValueType::String),
+        ("name", cfg::ValueType::String),
+    ];
+
+    /// The prefix column is consumed by the index and never materialized, so a
     /// reader shown only `columns` would see no key at all.
     #[test]
-    fn a_range_keyed_table_names_its_bound_columns_even_though_they_are_not_columns() {
+    fn a_prefix_keyed_table_names_its_prefix_column_even_though_it_is_not_a_column() {
         let registry = LookupTable::new();
-        let conf = processor_table(
-            "vlans",
-            cfg::Key::Range(cfg::Range {
-                range_type: cfg::RangeType::Integer,
-                partition_columns: vec!["zone".into()],
-                start_column: "lo".into(),
-                start_inclusive: true,
-                end_column: "hi".into(),
-                end_inclusive: false,
-            }),
-            &[
-                ("zone", cfg::ValueType::String),
-                ("lo", cfg::ValueType::Integer),
-                ("hi", cfg::ValueType::Integer),
-                ("name", cfg::ValueType::String),
-            ],
-            100,
-        );
+        let conf = processor_table("subnets", subnets_key(), &SUBNET_COLUMNS, 100);
         registry.insert(&conf).unwrap();
 
         let schema = only(&registry).schema;
@@ -1084,23 +1061,19 @@ mod tests {
         assert_eq!(
             names,
             ["zone", "name"],
-            "`lo` and `hi` were consumed by the index"
+            "`network` was consumed by the index"
         );
-        let KeyInfo::Range(range) = schema.key else {
-            panic!("expected a range key");
+        let KeyInfo::Prefix(prefix) = schema.key else {
+            panic!("expected a prefix key");
         };
-        assert_eq!(range.partition_columns, [SmolStr::new("zone")]);
-        assert_eq!(range.range_type, cfg::RangeType::Integer);
+        assert_eq!(prefix.partition_columns, [SmolStr::new("zone")]);
         assert_eq!(
-            range.bounds,
-            RangeBounds {
-                start_column: "lo".into(),
-                start_inclusive: true,
-                end_column: "hi".into(),
-                end_inclusive: false,
-            },
-            "the only place the bound names survive is the config"
+            prefix.prefix_column, "network",
+            "the only place the prefix column's name survives is the config"
         );
+        // the tag is spelled as the config's
+        let json = serde_json::to_value(KeyInfo::Prefix(prefix)).unwrap();
+        assert_eq!(json["type"], "prefix");
     }
 
     /// `is_key` is derived convenience; if it drifts, a rendered table header
@@ -1108,24 +1081,7 @@ mod tests {
     #[test]
     fn column_is_key_agrees_with_the_key_info() {
         let registry = LookupTable::new();
-        let conf = processor_table(
-            "vlans",
-            cfg::Key::Range(cfg::Range {
-                range_type: cfg::RangeType::Integer,
-                partition_columns: vec!["zone".into()],
-                start_column: "lo".into(),
-                start_inclusive: true,
-                end_column: "hi".into(),
-                end_inclusive: false,
-            }),
-            &[
-                ("zone", cfg::ValueType::String),
-                ("lo", cfg::ValueType::Integer),
-                ("hi", cfg::ValueType::Integer),
-                ("name", cfg::ValueType::String),
-            ],
-            100,
-        );
+        let conf = processor_table("subnets", subnets_key(), &SUBNET_COLUMNS, 100);
         registry.insert(&conf).unwrap();
 
         let schema = only(&registry).schema;
@@ -1135,10 +1091,10 @@ mod tests {
             .filter(|c| c.is_key)
             .map(|c| c.name.as_str())
             .collect();
-        let KeyInfo::Range(range) = &schema.key else {
-            panic!("expected a range key");
+        let KeyInfo::Prefix(prefix) = &schema.key else {
+            panic!("expected a prefix key");
         };
-        let named: Vec<&str> = range
+        let named: Vec<&str> = prefix
             .partition_columns
             .iter()
             .map(SmolStr::as_str)
@@ -1516,29 +1472,17 @@ mod tests {
         let counts = super::super::immutable::SkipCounts {
             arity: 1,
             bad_cell: 2,
-            bad_bound: 3,
+            bad_prefix: 3,
             null_key: 4,
             duplicate_key: 5,
-            overlap: 6,
-            empty_range: 7,
-            mismatch: 8,
         };
         let json: serde_json::Value = serde_json::to_value(counts).unwrap();
         let object = json.as_object().unwrap();
         // the spellings `SkipCounts::summary` and `visit::SKIP_REASONS` use
-        for reason in [
-            "field_count",
-            "cast",
-            "range_bound",
-            "null_key",
-            "duplicate_key",
-            "overlap",
-            "empty_range",
-            "family_mismatch",
-        ] {
+        for reason in ["field_count", "cast", "prefix", "null_key", "duplicate_key"] {
             assert!(object.contains_key(reason), "missing `{reason}`");
         }
-        assert_eq!(object.len(), 8, "and nothing else");
+        assert_eq!(object.len(), 5, "and nothing else");
     }
 
     /// The flat-with-`Option` shape can represent an impossible pairing; this is
@@ -1730,48 +1674,30 @@ mod tests {
         assert_eq!(only(&registry).capacity.unwrap().ttl_seconds, None);
     }
 
-    /// A range point probe is the other half of the read API; the counters must
+    /// A prefix probe is the other half of the read API; the counters must
     /// attribute it the same way a hash probe is attributed.
     #[test]
-    fn a_range_probe_is_counted_like_any_other_lookup() {
+    fn a_prefix_probe_is_counted_like_any_other_lookup() {
         let registry = LookupTable::new();
-        let conf = processor_table(
-            "vlans",
-            cfg::Key::Range(cfg::Range {
-                range_type: cfg::RangeType::Integer,
-                partition_columns: vec![],
-                start_column: "lo".into(),
-                start_inclusive: true,
-                end_column: "hi".into(),
-                end_inclusive: true,
-            }),
-            &[
-                ("lo", cfg::ValueType::Integer),
-                ("hi", cfg::ValueType::Integer),
-                ("zone", cfg::ValueType::String),
-            ],
-            100,
-        );
+        let conf = processor_table("subnets", subnets_key(), &SUBNET_COLUMNS, 100);
         let table = registry.insert(&conf).unwrap();
         let _ = table
             .as_mutable()
             .unwrap()
             .table()
-            .upsert_range(
-                &[CellRef::String("dmz")],
-                RangePoint::Integer(100),
-                true,
-                RangePoint::Integer(199),
-                true,
+            .upsert_prefix(
+                &[CellRef::String("dmz"), CellRef::String("web")],
+                "10.1.0.0/16".parse().unwrap(),
             )
             .unwrap();
 
         {
             let read = table.read_as(NODE());
+            let zone = [KeyRef::String("dmz")];
             assert!(
-                read.lookup(Lookup::Range {
-                    partition: &[],
-                    point: RangePoint::Integer(150),
+                read.lookup(Lookup::Prefix {
+                    partition: &zone,
+                    addr: "10.1.5.5".parse().unwrap(),
                 })
                 .is_some()
             );
@@ -1779,6 +1705,7 @@ mod tests {
 
         let status = only(&registry);
         assert_eq!(status.usage.lookups_hit, 1);
+        assert_eq!(status.index_entries, 1);
         assert_eq!(status.health, TableHealth::Ready);
     }
 }

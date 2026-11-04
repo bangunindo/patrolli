@@ -72,25 +72,59 @@ pub struct AttributeCollectRule {
     /// rule's source table.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pivot: Option<AttributeCollectPivot>,
-    /// Lookup-table column name -> source binding. Must bind every declared
-    /// column exactly once, hash keys and range partition/start/end columns
-    /// included; an unknown column is rejected when the table resolves. YAML
-    /// map order determines neither schema nor composite-key order.
+    /// What each eligible parent does to the table. Default `upsert`.
+    #[serde(default, skip_serializing_if = "AttributeCollectAction::is_upsert")]
+    pub action: AttributeCollectAction,
+    /// Lookup-table column name -> source binding. For `upsert`, must bind
+    /// every declared column exactly once, hash keys and the prefix and
+    /// partition columns included; for `delete`, exactly the key columns; for
+    /// `delete_partition`, exactly the partition columns. An unknown column is
+    /// rejected when the table resolves. YAML map order determines neither
+    /// schema nor composite-key order.
     ///
     /// A binding with a `key` reads that exact attribute. A `null` binding, or
     /// one without `key`, is *pivoted*: it reads the `pivot.value` field of the
     /// array element whose normalized name equals the column name (or the
     /// binding's `name`), and requires `pivot` on the rule.
     ///
-    /// A hash key is taken from the resulting row. In a range table the bound
-    /// columns supply the interval, whose type and inclusive ends the table
-    /// defines; bounds are consumed by the index, not stored as readable
-    /// values. There is no match block and no per-processor key, TTL or
-    /// capacity setting.
+    /// A hash key is taken from the resulting row. In a prefix table the prefix
+    /// column supplies the CIDR (a string attribute such as `10.1.0.0/16`, or a
+    /// bare address for a host route; host bits set is an error), which is
+    /// consumed by the index, not stored as a readable value. There is no match
+    /// block and no per-processor key, TTL or capacity setting.
     ///
     /// A missing input or failed cast skips the whole candidate row, leaving
     /// any existing row untouched. No partial updates, no fallback values.
     pub columns: BTreeMap<String, AttributeCollectBinding>,
+}
+
+/// What a collection rule does with each row it builds.
+///
+/// Within one batch, rules run in config order and records in batch order, so
+/// an upsert and a delete of the same key in one batch apply in that order.
+/// Batches handled by different processor workers are not ordered against
+/// each other, as for upserts alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AttributeCollectAction {
+    /// Insert the row, or replace the one stored under the same key.
+    #[default]
+    Upsert,
+    /// Remove the row stored under exactly this key: the hash key, or the
+    /// prefix and partition of a prefix table. Never a wider or narrower
+    /// prefix. Binds exactly the key columns.
+    Delete,
+    /// Remove every row of one partition of a prefix table, such as all the
+    /// routes of a BGP peer that went down. Binds exactly the table's
+    /// `partition_columns`; a hash or unpartitioned prefix table has no
+    /// partition to name.
+    DeletePartition,
+}
+
+impl AttributeCollectAction {
+    pub fn is_upsert(&self) -> bool {
+        *self == Self::Upsert
+    }
 }
 
 /// One entry of `columns`: `null` for a pivoted binding with every option
@@ -241,7 +275,7 @@ pub struct AttributeCollectInput {
     /// whole candidate row; there is no implicit stringification.
     ///
     /// `double` is allowed for a value column, never a hash or partition key.
-    /// A range bound must use `integer` or `ip`, matching the table's range.
+    /// A prefix column is CIDR text: no cast, or `string`.
     ///
     /// An `ip` column always needs `cast: ip`, bound or not, because the input
     /// arrives as a string and would otherwise fail the column's type check and
@@ -257,7 +291,7 @@ pub struct AttributeCollectInput {
 #[serde(rename_all = "snake_case")]
 pub enum AttributeCollectCast {
     Bool,
-    /// Not valid for index keys or bounds.
+    /// Not valid for index keys.
     Double,
     Integer,
     String,
@@ -474,21 +508,26 @@ mod tests {
     }
 
     #[test]
-    fn exact_index_star_and_range_column_bindings_are_supported() {
+    fn exact_index_star_and_prefix_column_bindings_are_supported() {
         let mut scalar = rule();
         // `*` is an ordinary key character with no special meaning.
         scalar["columns"] = json!({
             "id": {"key": "sessions.0.id"}, "value": {"key": "sessions.*.value"}
         });
-        let mut range = rule();
-        range["columns"] = json!({
+        let mut prefix = rule();
+        prefix["columns"] = json!({
             "vrf": {"key": "vrf"},
-            "start": {"key": "range.start", "cast": "ip"},
-            "end": {"key": "range.end", "cast": "ip"},
-            "owner": {"key": "range.owner"}
+            "network": {"key": "route.prefix"},
+            "owner": {"key": "route.owner"}
         });
+        let mut delete = rule();
+        delete["action"] = json!("delete");
+        delete["columns"] = json!({"vrf": {"key": "vrf"}, "network": {"key": "route.prefix"}});
+        let mut withdraw = rule();
+        withdraw["action"] = json!("delete_partition");
+        withdraw["columns"] = json!({"vrf": {"key": "vrf"}});
         // Repeated targets are legal: each rule contributes complete rows.
-        config(vec![scalar, range.clone(), range])
+        config(vec![scalar, prefix.clone(), prefix, delete, withdraw])
             .validate()
             .unwrap();
         for table in ["record", "resource", "scope"] {
@@ -757,7 +796,17 @@ mod tests {
         let Config::AttributeCollect(config) = &processors[0].config else {
             panic!("the documented type tag must select AttributeCollect");
         };
-        assert_eq!(config.collections.len(), 1);
+        assert_eq!(config.collections.len(), 4);
+        let actions: Vec<_> = config.collections.iter().map(|c| c.action).collect();
+        assert_eq!(
+            actions,
+            [
+                AttributeCollectAction::Upsert,
+                AttributeCollectAction::Delete,
+                AttributeCollectAction::Upsert,
+                AttributeCollectAction::DeletePartition,
+            ]
+        );
         assert!(config.when.is_some());
         assert!(config.collections[0].when.is_some());
         assert_eq!(config.collections[0].columns.len(), 5);

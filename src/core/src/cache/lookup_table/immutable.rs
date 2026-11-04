@@ -2,13 +2,15 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use super::cell::{CellRef, KeyRef, Lookup, RangePoint, hash_key};
+use super::cell::{CellRef, KeyRef, Lookup, hash_key};
 use super::column::{Column, ColumnBuilder, Interner, StagedCell};
-use super::index::{HashIndex, Index, RangeIndexBuilder, RangeReject};
+use super::index::{HashIndex, Index, PrefixIndexBuilder, PrefixReject};
+use super::prefix::parse_prefix;
 use super::schema::{ColumnIdx, ColumnLayout, KeyPlan, RowId, Schema};
 use crate::config::lookup_table as cfg;
 use anyhow::{Result, bail};
 use hashbrown::HashTable;
+use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
@@ -25,18 +27,13 @@ pub enum RowReject {
     Arity,
     /// a cell could not be cast to its column type
     BadCell,
-    /// a range bound was null, or not the type `range_type` calls for
-    BadBound,
+    /// the prefix column was null, not a CIDR, or had host bits set
+    BadPrefix,
     /// a key or partition column was null, which no probe can name
     NullKey,
-    /// another row already claims this exact key
+    /// another row already claims this exact key (for a prefix table, this
+    /// exact prefix in this partition)
     DuplicateKey,
-    /// the range collides with one already indexed
-    Overlap,
-    /// the range is reversed, or exclusive bounds left nothing between them
-    EmptyRange,
-    /// start and end are different IP families
-    Mismatch,
 }
 
 impl RowReject {
@@ -44,22 +41,17 @@ impl RowReject {
         match self {
             RowReject::Arity => "field count",
             RowReject::BadCell => "cast",
-            RowReject::BadBound => "range bound",
+            RowReject::BadPrefix => "prefix",
             RowReject::NullKey => "null key",
             RowReject::DuplicateKey => "duplicate key",
-            RowReject::Overlap => "overlapping range",
-            RowReject::EmptyRange => "empty range",
-            RowReject::Mismatch => "mixed address families",
         }
     }
 }
 
-impl From<RangeReject> for RowReject {
-    fn from(r: RangeReject) -> Self {
+impl From<PrefixReject> for RowReject {
+    fn from(r: PrefixReject) -> Self {
         match r {
-            RangeReject::Empty => RowReject::EmptyRange,
-            RangeReject::Overlap => RowReject::Overlap,
-            RangeReject::Mismatch => RowReject::Mismatch,
+            PrefixReject::Duplicate => RowReject::DuplicateKey,
         }
     }
 }
@@ -86,14 +78,10 @@ pub struct SkipCounts {
     pub arity: u64,
     #[serde(rename = "cast")]
     pub bad_cell: u64,
-    #[serde(rename = "range_bound")]
-    pub bad_bound: u64,
+    #[serde(rename = "prefix")]
+    pub bad_prefix: u64,
     pub null_key: u64,
     pub duplicate_key: u64,
-    pub overlap: u64,
-    pub empty_range: u64,
-    #[serde(rename = "family_mismatch")]
-    pub mismatch: u64,
 }
 
 impl SkipCounts {
@@ -101,25 +89,15 @@ impl SkipCounts {
         let slot = match reject {
             RowReject::Arity => &mut self.arity,
             RowReject::BadCell => &mut self.bad_cell,
-            RowReject::BadBound => &mut self.bad_bound,
+            RowReject::BadPrefix => &mut self.bad_prefix,
             RowReject::NullKey => &mut self.null_key,
             RowReject::DuplicateKey => &mut self.duplicate_key,
-            RowReject::Overlap => &mut self.overlap,
-            RowReject::EmptyRange => &mut self.empty_range,
-            RowReject::Mismatch => &mut self.mismatch,
         };
         *slot += 1;
     }
 
     pub fn total(&self) -> u64 {
-        self.arity
-            + self.bad_cell
-            + self.bad_bound
-            + self.null_key
-            + self.duplicate_key
-            + self.overlap
-            + self.empty_range
-            + self.mismatch
+        self.arity + self.bad_cell + self.bad_prefix + self.null_key + self.duplicate_key
     }
 
     /// A compact `reason=count` summary of the non-zero reasons.
@@ -127,12 +105,9 @@ impl SkipCounts {
         let parts = [
             ("field_count", self.arity),
             ("cast", self.bad_cell),
-            ("range_bound", self.bad_bound),
+            ("prefix", self.bad_prefix),
             ("null_key", self.null_key),
             ("duplicate_key", self.duplicate_key),
-            ("overlap", self.overlap),
-            ("empty_range", self.empty_range),
-            ("family_mismatch", self.mismatch),
         ];
         parts
             .iter()
@@ -188,10 +163,9 @@ impl ImmutableData {
             .into_boxed_slice();
         let index = match &key {
             KeyPlan::Hash { .. } => Index::Hash(HashIndex::default()),
-            KeyPlan::Range {
-                partition,
-                range_type,
-            } => Index::Range(RangeIndexBuilder::new(*range_type, !partition.is_empty()).finish()),
+            KeyPlan::Prefix { partition } => {
+                Index::Prefix(PrefixIndexBuilder::new(!partition.is_empty()).finish())
+            }
         };
         Self {
             schema,
@@ -212,9 +186,8 @@ impl ImmutableData {
             cfg::Key::Hash(_) => KeyPlan::Hash {
                 columns: Box::new([]),
             },
-            cfg::Key::Range(range) => KeyPlan::Range {
+            cfg::Key::Prefix(_) => KeyPlan::Prefix {
                 partition: Box::new([]),
-                range_type: range.range_type,
             },
         };
         Self::empty(Arc::new(Schema::default()), plan)
@@ -266,7 +239,8 @@ impl ImmutableData {
         }
     }
 
-    pub fn lookup(&self, key: Lookup<'_>) -> Option<RowId> {
+    /// The matching row, and for a prefix table the prefix that matched.
+    pub fn lookup(&self, key: Lookup<'_>) -> Option<(RowId, Option<IpNet>)> {
         match (&self.index, key) {
             (Index::Hash(index), Lookup::Hash(parts)) => {
                 let KeyPlan::Hash { columns } = &self.key else {
@@ -276,26 +250,27 @@ impl ImmutableData {
                     return None;
                 }
                 let hash = hash_key(parts.iter().copied());
-                index.find(hash, |row| {
-                    columns
-                        .iter()
-                        .zip(parts)
-                        .all(|(col, part)| cell_matches_key(self.cell(row, *col), *part))
-                })
+                index
+                    .find(hash, |row| {
+                        columns
+                            .iter()
+                            .zip(parts)
+                            .all(|(col, part)| cell_matches_key(self.cell(row, *col), *part))
+                    })
+                    .map(|row| (row, None))
             }
-            (Index::Range(index), Lookup::Range { partition, point }) => {
-                let KeyPlan::Range {
-                    partition: cols, ..
-                } = &self.key
-                else {
+            (Index::Prefix(index), Lookup::Prefix { partition, addr }) => {
+                let KeyPlan::Prefix { partition: cols } = &self.key else {
                     return None;
                 };
                 if partition.len() != cols.len() {
                     return None;
                 }
-                index.get(partition, point)
+                index
+                    .get(partition, addr)
+                    .map(|(row, net)| (row, Some(net)))
             }
-            // a hash probe against a range table, or the reverse
+            // a hash probe against a prefix table, or the reverse
             _ => None,
         }
     }
@@ -312,31 +287,25 @@ fn cell_matches_key(cell: CellRef<'_>, key: KeyRef<'_>) -> bool {
     }
 }
 
-/// Resolves the source columns, forcing the range bound columns to the type
-/// `range_type` demands regardless of any configured cast — they are parsed as
-/// bounds, not as values.
+/// Resolves the source columns, forcing the prefix column to `String`
+/// regardless of any configured cast: it is CIDR text parsed by the index, not
+/// a value.
 pub fn source_columns(
     names: &[SmolStr],
     key: &cfg::Key,
     type_of: impl Fn(&str) -> cfg::ValueType,
 ) -> Vec<(SmolStr, cfg::ValueType)> {
-    let bound_type = match key {
-        cfg::Key::Range(range) => Some((
-            range.start_column.as_str(),
-            range.end_column.as_str(),
-            match range.range_type {
-                cfg::RangeType::Ip => cfg::ValueType::Ip,
-                cfg::RangeType::Integer => cfg::ValueType::Integer,
-            },
-        )),
+    let prefix_column = match key {
+        cfg::Key::Prefix(prefix) => Some(prefix.prefix_column.as_str()),
         cfg::Key::Hash(_) => None,
     };
     names
         .iter()
         .map(|name| {
-            let ty = match bound_type {
-                Some((start, end, ty)) if name == start || name == end => ty,
-                _ => type_of(name),
+            let ty = if Some(name.as_str()) == prefix_column {
+                cfg::ValueType::String
+            } else {
+                type_of(name)
             };
             (name.clone(), ty)
         })
@@ -393,7 +362,7 @@ struct RowsBuilder {
 /// Each variant owns its resolved key and the state needed to build its index.
 enum BuilderState {
     Hash(HashBuilder),
-    Range(RangeBuilder),
+    Prefix(PrefixBuilder),
 }
 
 struct HashBuilder {
@@ -401,21 +370,13 @@ struct HashBuilder {
     index: HashIndex,
 }
 
-struct RangeBuilder {
+struct PrefixBuilder {
     partition: Box<[ColumnIdx]>,
-    spec: RangeSpec,
-    index: RangeIndexBuilder,
-    /// row fingerprint -> row id; only range tables can share materialized rows
+    /// source index of the prefix column
+    prefix_column: usize,
+    index: PrefixIndexBuilder,
+    /// row fingerprint -> row id; only prefix tables can share materialized rows
     dedup: HashTable<RowId>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct RangeSpec {
-    start: usize,
-    end: usize,
-    start_inclusive: bool,
-    end_inclusive: bool,
-    range_type: cfg::RangeType,
 }
 
 impl ImmutableBuilder {
@@ -426,33 +387,19 @@ impl ImmutableBuilder {
             bail!("table has no columns");
         }
         let (layout, schema, plan) = ColumnLayout::build(source, key)?;
-        let state = match (key, plan, layout.range_start, layout.range_end) {
-            (cfg::Key::Hash(_), KeyPlan::Hash { columns }, None, None) => {
-                BuilderState::Hash(HashBuilder {
-                    key_columns: columns,
-                    index: HashIndex::default(),
+        let state = match (plan, layout.key_column) {
+            (KeyPlan::Hash { columns }, None) => BuilderState::Hash(HashBuilder {
+                key_columns: columns,
+                index: HashIndex::default(),
+            }),
+            (KeyPlan::Prefix { partition }, Some(prefix_column)) => {
+                BuilderState::Prefix(PrefixBuilder {
+                    index: PrefixIndexBuilder::new(!partition.is_empty()),
+                    partition,
+                    prefix_column,
+                    dedup: HashTable::new(),
                 })
             }
-            (
-                cfg::Key::Range(range),
-                KeyPlan::Range {
-                    partition,
-                    range_type,
-                },
-                Some(start),
-                Some(end),
-            ) => BuilderState::Range(RangeBuilder {
-                index: RangeIndexBuilder::new(range_type, !partition.is_empty()),
-                partition,
-                spec: RangeSpec {
-                    start,
-                    end,
-                    start_inclusive: range.start_inclusive,
-                    end_inclusive: range.end_inclusive,
-                    range_type,
-                },
-                dedup: HashTable::new(),
-            }),
             _ => bail!("inconsistent lookup table key and column layout"),
         };
         let columns = schema
@@ -475,7 +422,7 @@ impl ImmutableBuilder {
     }
 
     /// Adds one source row. The row must have one field per source column,
-    /// including the range bound columns.
+    /// including the prefix column.
     pub fn push_row(&mut self, source: &impl RowSource) -> RowOutcome {
         let rows = &mut self.rows;
         rows.stats.rows_read += 1;
@@ -490,7 +437,7 @@ impl ImmutableBuilder {
 
         match &mut self.state {
             BuilderState::Hash(hash) => hash.push_row(rows, source),
-            BuilderState::Range(range) => range.push_row(rows, source),
+            BuilderState::Prefix(prefix) => prefix.push_row(rows, source),
         }
     }
 
@@ -589,12 +536,11 @@ impl BuilderState {
                 },
                 Index::Hash(hash.index),
             ),
-            BuilderState::Range(range) => (
-                KeyPlan::Range {
-                    partition: range.partition,
-                    range_type: range.spec.range_type,
+            BuilderState::Prefix(prefix) => (
+                KeyPlan::Prefix {
+                    partition: prefix.partition,
                 },
-                Index::Range(range.index.finish()),
+                Index::Prefix(prefix.index.finish()),
             ),
         }
     }
@@ -637,35 +583,29 @@ impl HashBuilder {
     }
 }
 
-impl RangeBuilder {
+impl PrefixBuilder {
     fn push_row(&mut self, rows: &mut RowsBuilder, source: &impl RowSource) -> RowOutcome {
         let row_no = rows.stats.rows_read;
-        // Parse bounds before materialized cells so unusable bounds are cheap
-        // to reject. A range builder always has its spec and index together.
-        let spec = self.spec;
-        let ty = match spec.range_type {
-            cfg::RangeType::Ip => cfg::ValueType::Ip,
-            cfg::RangeType::Integer => cfg::ValueType::Integer,
+        // Parse the prefix before materialized cells so an unusable one is
+        // cheap to reject.
+        let net = match source.cell(self.prefix_column, cfg::ValueType::String) {
+            Ok(CellRef::String(raw)) => parse_prefix(raw).map_err(|e| e.to_string()),
+            Ok(CellRef::Null) => Err("is null".to_owned()),
+            Ok(_) => Err("is not text".to_owned()),
+            Err(e) => Err(e.to_string()),
         };
-        let start = source
-            .cell(spec.start, ty)
-            .ok()
-            .and_then(|c| RangePoint::from_cell(c, spec.range_type));
-        let end = source
-            .cell(spec.end, ty)
-            .ok()
-            .and_then(|c| RangePoint::from_cell(c, spec.range_type));
-        let (Some(start), Some(end)) = (start, end) else {
-            return rows.reject(RowReject::BadBound, || {
-                format!("row {row_no} has an unusable range bound")
-            });
+        let net = match net {
+            Ok(net) => net,
+            Err(e) => {
+                return rows.reject(RowReject::BadPrefix, || format!("row {row_no} prefix: {e}"));
+            }
         };
         let staged = match rows.stage(source) {
             Ok(staged) => staged,
             Err(outcome) => return outcome,
         };
 
-        // Only ranges can share a materialized row while naming distinct keys.
+        // Only prefixes can share a materialized row while naming distinct keys.
         let hash = fingerprint(staged.iter().copied());
         let existing = self
             .dedup
@@ -686,14 +626,7 @@ impl RangeBuilder {
                 }
             }
         }
-        if let Err(reject) = self.index.insert(
-            &parts,
-            start,
-            spec.start_inclusive,
-            end,
-            spec.end_inclusive,
-            row_id,
-        ) {
+        if let Err(reject) = self.index.insert(&parts, net, row_id) {
             let reject = RowReject::from(reject);
             return rows.reject(reject, || format!("row {row_no} {}", reject.as_str()));
         }
@@ -818,7 +751,7 @@ fn row_key_hash(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::lookup_table::{Hash as HashKey, Range as RangeKey, RangeType, ValueType};
+    use crate::config::lookup_table::{Hash as HashKey, Prefix as PrefixKey, ValueType};
 
     fn hash_key_cfg(columns: &[&str]) -> cfg::Key {
         cfg::Key::Hash(HashKey {
@@ -869,13 +802,12 @@ mod tests {
     }
 
     #[test]
-    fn rejected_ranges_retain_neither_strings_nor_empty_partitions() {
-        let key = range_key_cfg(RangeType::Integer, &["host"], true, true);
+    fn rejected_prefixes_retain_neither_strings_nor_empty_partitions() {
+        let key = prefix_key_cfg(&["host"]);
         let columns = source(
             &[
                 ("host", ValueType::String),
-                ("start", ValueType::Integer),
-                ("end", ValueType::Integer),
+                ("network", ValueType::String),
                 ("site", ValueType::String),
             ],
             &key,
@@ -883,8 +815,7 @@ mod tests {
         let mut builder = ImmutableBuilder::new(&columns, &key).unwrap();
         builder.push_row(&Cells(&[
             CellRef::String("a"),
-            CellRef::Integer(1),
-            CellRef::Integer(10),
+            CellRef::String("10.0.0.0/8"),
             CellRef::String("kept"),
         ]));
         for i in 0..1000 {
@@ -892,47 +823,54 @@ mod tests {
             assert_eq!(
                 builder.push_row(&Cells(&[
                     CellRef::String("a"),
-                    CellRef::Integer(2),
-                    CellRef::Integer(3),
+                    CellRef::String("10.0.0.0/8"),
                     CellRef::String(&text)
                 ])),
-                RowOutcome::Rejected(RowReject::Overlap)
+                RowOutcome::Rejected(RowReject::DuplicateKey)
             );
             assert_eq!(
                 builder.push_row(&Cells(&[
                     CellRef::String(&text),
-                    CellRef::Integer(20),
-                    CellRef::Integer(10),
+                    CellRef::String("10.0.0.1/8"),
                     CellRef::String(&text)
                 ])),
-                RowOutcome::Rejected(RowReject::EmptyRange)
+                RowOutcome::Rejected(RowReject::BadPrefix)
             );
         }
         let data = builder.finish(Duration::ZERO).unwrap();
         assert_eq!(data.interned_strings(), 2);
-        let Index::Range(index) = &data.index else {
+        let Index::Prefix(index) = &data.index else {
             unreachable!()
         };
         assert_eq!(index.partitions(), 1);
     }
 
-    fn range_key_cfg(
-        range_type: RangeType,
-        partition: &[&str],
-        start_inclusive: bool,
-        end_inclusive: bool,
-    ) -> cfg::Key {
-        cfg::Key::Range(RangeKey {
-            range_type,
+    fn prefix_key_cfg(partition: &[&str]) -> cfg::Key {
+        cfg::Key::Prefix(PrefixKey {
+            prefix_column: "network".into(),
             partition_columns: partition.iter().map(|s| s.to_string()).collect(),
-            start_column: "start".into(),
-            start_inclusive,
-            end_column: "end".into(),
-            end_inclusive,
         })
     }
 
-    /// Resolves source columns the way the loader does, so the range bound
+    fn at_prefix<'d>(
+        data: &'d ImmutableData,
+        partition: &[KeyRef<'_>],
+        addr: &str,
+        column: &str,
+    ) -> Option<(CellRef<'d>, IpNet)> {
+        let col = data.schema().index_of(column).unwrap();
+        data.lookup(Lookup::Prefix {
+            partition,
+            addr: addr.parse().unwrap(),
+        })
+        .map(|(row, net)| (data.cell(row, col), net.expect("a prefix match")))
+    }
+
+    fn net(s: &str) -> IpNet {
+        s.parse().unwrap()
+    }
+
+    /// Resolves source columns the way the loader does, so the prefix column
     /// override is exercised too.
     fn source(names: &[(&str, ValueType)], key: &cfg::Key) -> Vec<(SmolStr, ValueType)> {
         let casts: Vec<(SmolStr, ValueType)> =
@@ -994,7 +932,10 @@ mod tests {
         let city = data.schema().index_of("city").unwrap();
         let probe = |t, c| {
             data.lookup(Lookup::Hash(&[KeyRef::String(t), KeyRef::Integer(c)]))
-                .map(|row| data.cell(row, city))
+                .map(|(row, net)| {
+                    assert_eq!(net, None, "a hash match has no prefix");
+                    data.cell(row, city)
+                })
         };
         assert_eq!(probe("a", 1), Some(CellRef::String("jakarta")));
         assert_eq!(probe("a", 2), Some(CellRef::String("bandung")));
@@ -1036,7 +977,7 @@ mod tests {
         )
         .unwrap();
         let v = empty.schema().index_of("v").unwrap();
-        let row = empty.lookup(Lookup::Hash(&[KeyRef::String("")])).unwrap();
+        let (row, _) = empty.lookup(Lookup::Hash(&[KeyRef::String("")])).unwrap();
         assert_eq!(empty.cell(row, v), CellRef::String("blank"));
     }
 
@@ -1058,7 +999,7 @@ mod tests {
         assert_eq!(data.stats().skipped.duplicate_key, 1);
         assert_eq!(data.rows(), 1);
         let v = data.schema().index_of("v").unwrap();
-        let row = data.lookup(Lookup::Hash(&[KeyRef::String("a")])).unwrap();
+        let (row, _) = data.lookup(Lookup::Hash(&[KeyRef::String("a")])).unwrap();
         assert_eq!(data.cell(row, v), CellRef::String("first"));
     }
 
@@ -1080,277 +1021,196 @@ mod tests {
         assert_eq!(data.index_entries(), 1);
         assert_eq!(data.stats().skipped.duplicate_key, 1);
         let v = data.schema().index_of("v").unwrap();
-        let row = data.lookup(Lookup::Hash(&[KeyRef::String("a")])).unwrap();
+        let (row, _) = data.lookup(Lookup::Hash(&[KeyRef::String("a")])).unwrap();
         assert_eq!(data.cell(row, v), CellRef::String("first"));
     }
 
     #[test]
-    fn range_bounds_are_consumed_rather_than_stored() {
-        let key = range_key_cfg(RangeType::Integer, &[], true, true);
-        let names = [
-            ("start", ValueType::Integer),
-            ("end", ValueType::Integer),
-            ("label", ValueType::String),
-        ];
+    fn the_prefix_column_is_consumed_rather_than_stored() {
+        let key = prefix_key_cfg(&[]);
+        let names = [("network", ValueType::String), ("label", ValueType::String)];
         let data = build(
             &names,
             &key,
-            &[vec![
-                CellRef::Integer(1),
-                CellRef::Integer(10),
-                CellRef::String("low"),
-            ]],
+            &[vec![CellRef::String("10.0.0.0/8"), CellRef::String("low")]],
         )
         .unwrap();
         assert_eq!(data.schema().len(), 1);
-        assert!(data.schema().index_of("start").is_none());
-        assert!(data.schema().index_of("end").is_none());
+        assert!(data.schema().index_of("network").is_none());
         assert!(data.schema().index_of("label").is_some());
     }
 
     #[test]
-    fn many_ranges_collapse_onto_one_deduplicated_row() {
-        let key = range_key_cfg(RangeType::Integer, &[], true, true);
+    fn many_prefixes_collapse_onto_one_deduplicated_row() {
+        let key = prefix_key_cfg(&[]);
         let names = [
-            ("start", ValueType::Integer),
-            ("end", ValueType::Integer),
+            ("network", ValueType::String),
             ("country", ValueType::String),
         ];
         let src = source(&names, &key);
         let mut b = ImmutableBuilder::new(&src, &key).unwrap();
-        // 50 disjoint ranges with a one-value gap between them, all naming the
-        // same country. The gap keeps them from coalescing, so this isolates
-        // row deduplication from range coalescing.
-        for i in 0..50i64 {
-            let outcome = b.push_row(&Cells(&[
-                CellRef::Integer(i * 10),
-                CellRef::Integer(i * 10 + 8),
-                CellRef::String("ID"),
-            ]));
+        for i in 0..50u8 {
+            let cidr = format!("10.{i}.0.0/16");
+            let outcome = b.push_row(&Cells(&[CellRef::String(&cidr), CellRef::String("ID")]));
             let want = if i == 0 {
                 RowOutcome::Inserted
             } else {
                 RowOutcome::Deduplicated
             };
-            assert_eq!(outcome, want, "range {i}");
+            assert_eq!(outcome, want, "prefix {i}");
         }
         let data = b.finish(Duration::ZERO).unwrap();
-        assert_eq!(data.rows(), 1, "all 50 ranges share one row");
+        assert_eq!(data.rows(), 1, "all 50 prefixes share one row");
         assert_eq!(data.stats().unique_rows, 1);
         assert_eq!(data.stats().index_entries, 50);
         assert_eq!(data.stats().rows_read, 50);
-
-        let country = data.schema().index_of("country").unwrap();
-        for i in 0..50i64 {
-            let row = data
-                .lookup(Lookup::Range {
-                    partition: &[],
-                    point: RangePoint::Integer(i * 10 + 5),
-                })
-                .unwrap();
-            assert_eq!(data.cell(row, country), CellRef::String("ID"));
+        for i in 0..50u8 {
+            assert_eq!(
+                at_prefix(&data, &[], &format!("10.{i}.3.4"), "country"),
+                Some((CellRef::String("ID"), net(&format!("10.{i}.0.0/16"))))
+            );
         }
-        assert_eq!(
-            data.lookup(Lookup::Range {
-                partition: &[],
-                point: RangePoint::Integer(-1)
-            }),
-            None
-        );
-        // and the gaps really are gaps
-        assert_eq!(
-            data.lookup(Lookup::Range {
-                partition: &[],
-                point: RangePoint::Integer(9)
-            }),
-            None
-        );
+        assert_eq!(at_prefix(&data, &[], "10.50.0.1", "country"), None);
     }
 
     #[test]
-    fn adjacent_ranges_naming_the_same_row_coalesce() {
-        // consecutive geoip blocks assigned to one country collapse into a
-        // single index entry, on top of sharing a single stored row
-        let key = range_key_cfg(RangeType::Integer, &[], true, true);
-        let names = [
-            ("start", ValueType::Integer),
-            ("end", ValueType::Integer),
-            ("country", ValueType::String),
-        ];
+    fn nested_prefixes_match_the_narrowest() {
+        let key = prefix_key_cfg(&[]);
+        let names = [("network", ValueType::String), ("label", ValueType::String)];
         let data = build(
             &names,
             &key,
             &[
-                vec![
-                    CellRef::Integer(0),
-                    CellRef::Integer(9),
-                    CellRef::String("ID"),
-                ],
-                vec![
-                    CellRef::Integer(10),
-                    CellRef::Integer(19),
-                    CellRef::String("ID"),
-                ],
-                vec![
-                    CellRef::Integer(20),
-                    CellRef::Integer(29),
-                    CellRef::String("ID"),
-                ],
+                // wider after narrower: insertion order must not matter
+                vec![CellRef::String("10.1.2.0/24"), CellRef::String("c")],
+                vec![CellRef::String("10.0.0.0/8"), CellRef::String("a")],
+                vec![CellRef::String("10.1.0.0/16"), CellRef::String("b")],
             ],
         )
         .unwrap();
-        assert_eq!(data.rows(), 1);
+        assert_eq!(data.rows(), 3);
+        let at = |addr| at_prefix(&data, &[], addr, "label");
         assert_eq!(
-            data.stats().index_entries,
-            1,
-            "three adjacent ranges merged"
+            at("10.1.2.3"),
+            Some((CellRef::String("c"), net("10.1.2.0/24")))
         );
-        let country = data.schema().index_of("country").unwrap();
-        for point in [0, 15, 29] {
-            let row = data
-                .lookup(Lookup::Range {
-                    partition: &[],
-                    point: RangePoint::Integer(point),
-                })
-                .unwrap();
-            assert_eq!(data.cell(row, country), CellRef::String("ID"));
-        }
         assert_eq!(
-            data.lookup(Lookup::Range {
-                partition: &[],
-                point: RangePoint::Integer(30)
-            }),
-            None
+            at("10.1.3.3"),
+            Some((CellRef::String("b"), net("10.1.0.0/16")))
         );
+        assert_eq!(
+            at("10.2.0.0"),
+            Some((CellRef::String("a"), net("10.0.0.0/8")))
+        );
+        assert_eq!(at("11.0.0.0"), None);
     }
 
     #[test]
-    fn distinct_rows_are_kept_apart() {
-        let key = range_key_cfg(RangeType::Integer, &[], true, true);
-        let names = [
-            ("start", ValueType::Integer),
-            ("end", ValueType::Integer),
-            ("country", ValueType::String),
-        ];
-        let data = build(
-            &names,
-            &key,
-            &[
-                vec![
-                    CellRef::Integer(0),
-                    CellRef::Integer(9),
-                    CellRef::String("ID"),
-                ],
-                vec![
-                    CellRef::Integer(10),
-                    CellRef::Integer(19),
-                    CellRef::String("MY"),
-                ],
-                vec![
-                    CellRef::Integer(20),
-                    CellRef::Integer(29),
-                    CellRef::String("ID"),
-                ],
-            ],
-        )
-        .unwrap();
-        assert_eq!(data.rows(), 2);
-        let country = data.schema().index_of("country").unwrap();
-        let at = |p: i64| {
-            data.lookup(Lookup::Range {
-                partition: &[],
-                point: RangePoint::Integer(p),
-            })
-            .map(|r| data.cell(r, country))
-        };
-        assert_eq!(at(5), Some(CellRef::String("ID")));
-        assert_eq!(at(15), Some(CellRef::String("MY")));
-        assert_eq!(at(25), Some(CellRef::String("ID")));
-    }
-
-    #[test]
-    fn overlapping_ranges_are_skipped_without_leaving_an_orphan_row() {
-        let key = range_key_cfg(RangeType::Integer, &[], true, true);
-        let names = [
-            ("start", ValueType::Integer),
-            ("end", ValueType::Integer),
-            ("label", ValueType::String),
-        ];
+    fn duplicate_prefixes_are_skipped_without_leaving_an_orphan_row() {
+        let key = prefix_key_cfg(&[]);
+        let names = [("network", ValueType::String), ("label", ValueType::String)];
         let src = source(&names, &key);
         let mut b = ImmutableBuilder::new(&src, &key).unwrap();
         b.push_row(&Cells(&[
-            CellRef::Integer(0),
-            CellRef::Integer(10),
+            CellRef::String("10.0.0.0/8"),
             CellRef::String("a"),
         ]));
         assert_eq!(
             b.push_row(&Cells(&[
-                CellRef::Integer(5),
-                CellRef::Integer(15),
+                CellRef::String("10.0.0.0/8"),
                 CellRef::String("b")
             ])),
-            RowOutcome::Rejected(RowReject::Overlap)
+            RowOutcome::Rejected(RowReject::DuplicateKey)
         );
         let data = b.finish(Duration::ZERO).unwrap();
         assert_eq!(data.rows(), 1, "the rejected row was never materialized");
-        assert_eq!(data.stats().skipped.overlap, 1);
-        let label = data.schema().index_of("label").unwrap();
-        let row = data
-            .lookup(Lookup::Range {
-                partition: &[],
-                point: RangePoint::Integer(7),
-            })
-            .unwrap();
-        assert_eq!(data.cell(row, label), CellRef::String("a"));
+        assert_eq!(data.stats().skipped.duplicate_key, 1);
+        assert_eq!(
+            at_prefix(&data, &[], "10.0.0.7", "label"),
+            Some((CellRef::String("a"), net("10.0.0.0/8")))
+        );
     }
 
     #[test]
-    fn ip_ranges_cover_both_families_and_ignore_the_configured_cast() {
-        let key = range_key_cfg(RangeType::Ip, &[], true, true);
-        // the bound columns are declared as strings; `source_columns` must
-        // still parse them as addresses
-        let names = [
-            ("start", ValueType::String),
-            ("end", ValueType::String),
-            ("asn", ValueType::Integer),
-        ];
+    fn unusable_prefixes_are_rejected() {
+        let key = prefix_key_cfg(&[]);
+        let names = [("network", ValueType::String), ("label", ValueType::String)];
         let src = source(&names, &key);
-        assert_eq!(src[0].1, ValueType::Ip, "bound column type is overridden");
-        let ip = |s: &str| CellRef::Ip(s.parse().unwrap());
+        let mut b = ImmutableBuilder::new(&src, &key).unwrap();
+        for bad in [
+            CellRef::Null,
+            CellRef::String("not a prefix"),
+            CellRef::String("10.0.0.1/8"),
+            CellRef::String("10.0.0.0/33"),
+        ] {
+            assert_eq!(
+                b.push_row(&Cells(&[bad, CellRef::String("x")])),
+                RowOutcome::Rejected(RowReject::BadPrefix),
+                "{bad:?}"
+            );
+        }
+        b.push_row(&Cells(&[
+            CellRef::String("192.0.2.1"),
+            CellRef::String("host"),
+        ]));
+        let data = b.finish(Duration::ZERO).unwrap();
+        assert_eq!(data.stats().skipped.bad_prefix, 4);
+        assert!(
+            data.stats()
+                .first_error
+                .as_deref()
+                .is_some_and(|e| e.contains("prefix")),
+            "{:?}",
+            data.stats().first_error
+        );
+        // a bare address is a host route
+        assert_eq!(
+            at_prefix(&data, &[], "192.0.2.1", "label"),
+            Some((CellRef::String("host"), net("192.0.2.1/32")))
+        );
+        assert_eq!(at_prefix(&data, &[], "192.0.2.2", "label"), None);
+    }
+
+    #[test]
+    fn prefixes_cover_both_families_and_ignore_the_configured_cast() {
+        let key = prefix_key_cfg(&[]);
+        // the prefix column is declared as an IP; `source_columns` must still
+        // read it as text
+        let names = [("network", ValueType::Ip), ("asn", ValueType::Integer)];
+        let src = source(&names, &key);
+        assert_eq!(
+            src[0].1,
+            ValueType::String,
+            "prefix column type is overridden"
+        );
         let data = build(
             &names,
             &key,
             &[
-                vec![ip("10.0.0.0"), ip("10.0.0.255"), CellRef::Integer(64500)],
+                vec![CellRef::String("10.0.0.0/24"), CellRef::Integer(64500)],
+                vec![CellRef::String("2001:db8::/32"), CellRef::Integer(64501)],
                 vec![
-                    ip("2001:db8::"),
-                    ip("2001:db8::ffff"),
-                    CellRef::Integer(64501),
+                    CellRef::String("::ffff:10.9.0.0/112"),
+                    CellRef::Integer(64502),
                 ],
             ],
         )
         .unwrap();
-        let asn = data.schema().index_of("asn").unwrap();
-        let at = |s: &str| {
-            data.lookup(Lookup::Range {
-                partition: &[],
-                point: RangePoint::Ip(s.parse().unwrap()),
-            })
-            .map(|r| data.cell(r, asn))
-        };
+        let at = |addr| at_prefix(&data, &[], addr, "asn").map(|(c, _)| c);
         assert_eq!(at("10.0.0.7"), Some(CellRef::Integer(64500)));
         assert_eq!(at("2001:db8::5"), Some(CellRef::Integer(64501)));
+        // a v4-mapped prefix is stored as v4
+        assert_eq!(at("10.9.1.1"), Some(CellRef::Integer(64502)));
         assert_eq!(at("11.0.0.1"), None);
         assert_eq!(at("2001:dbf::1"), None);
     }
 
     #[test]
-    fn partitioned_ranges_do_not_collide() {
-        let key = range_key_cfg(RangeType::Integer, &["vrf"], true, true);
+    fn partitioned_prefixes_do_not_collide() {
+        let key = prefix_key_cfg(&["vrf"]);
         let names = [
             ("vrf", ValueType::String),
-            ("start", ValueType::Integer),
-            ("end", ValueType::Integer),
+            ("network", ValueType::String),
             ("label", ValueType::String),
         ];
         let data = build(
@@ -1359,131 +1219,58 @@ mod tests {
             &[
                 vec![
                     CellRef::String("red"),
-                    CellRef::Integer(1),
-                    CellRef::Integer(10),
-                    CellRef::String("red-low"),
+                    CellRef::String("10.0.0.0/8"),
+                    CellRef::String("red-net"),
                 ],
                 vec![
                     CellRef::String("blue"),
-                    CellRef::Integer(1),
-                    CellRef::Integer(10),
-                    CellRef::String("blue-low"),
+                    CellRef::String("10.0.0.0/8"),
+                    CellRef::String("blue-net"),
                 ],
             ],
         )
         .unwrap();
-        let label = data.schema().index_of("label").unwrap();
         let at = |vrf: &str| {
-            data.lookup(Lookup::Range {
-                partition: &[KeyRef::String(vrf)],
-                point: RangePoint::Integer(5),
-            })
-            .map(|r| data.cell(r, label))
+            at_prefix(&data, &[KeyRef::String(vrf)], "10.0.0.5", "label").map(|(c, _)| c)
         };
-        assert_eq!(at("red"), Some(CellRef::String("red-low")));
-        assert_eq!(at("blue"), Some(CellRef::String("blue-low")));
+        assert_eq!(at("red"), Some(CellRef::String("red-net")));
+        assert_eq!(at("blue"), Some(CellRef::String("blue-net")));
         assert_eq!(at("green"), None);
         // the partition column stays readable
-        let vrf = data.schema().index_of("vrf").unwrap();
-        let row = data
-            .lookup(Lookup::Range {
-                partition: &[KeyRef::String("red")],
-                point: RangePoint::Integer(5),
-            })
-            .unwrap();
-        assert_eq!(data.cell(row, vrf), CellRef::String("red"));
-    }
-
-    #[test]
-    fn exclusive_bounds_are_honoured_end_to_end() {
-        // the common half-open convention: [start, end)
-        let key = range_key_cfg(RangeType::Integer, &[], true, false);
-        let names = [
-            ("start", ValueType::Integer),
-            ("end", ValueType::Integer),
-            ("label", ValueType::String),
-        ];
-        let data = build(
-            &names,
-            &key,
-            &[
-                vec![
-                    CellRef::Integer(0),
-                    CellRef::Integer(10),
-                    CellRef::String("a"),
-                ],
-                vec![
-                    CellRef::Integer(10),
-                    CellRef::Integer(20),
-                    CellRef::String("b"),
-                ],
-            ],
-        )
-        .unwrap();
-        let label = data.schema().index_of("label").unwrap();
-        let at = |p: i64| {
-            data.lookup(Lookup::Range {
-                partition: &[],
-                point: RangePoint::Integer(p),
-            })
-            .map(|r| data.cell(r, label))
-        };
-        assert_eq!(at(9), Some(CellRef::String("a")));
-        assert_eq!(at(10), Some(CellRef::String("b")), "end is exclusive");
-        assert_eq!(at(19), Some(CellRef::String("b")));
-        assert_eq!(at(20), None);
+        assert_eq!(
+            at_prefix(&data, &[KeyRef::String("red")], "10.0.0.5", "vrf").map(|(c, _)| c),
+            Some(CellRef::String("red"))
+        );
+        // and a probe naming no partition misses
+        assert_eq!(at_prefix(&data, &[], "10.0.0.5", "label"), None);
     }
 
     #[test]
     fn probing_with_the_wrong_key_shape_is_a_miss() {
-        let key = range_key_cfg(RangeType::Integer, &[], true, true);
-        let names = [
-            ("start", ValueType::Integer),
-            ("end", ValueType::Integer),
-            ("label", ValueType::String),
-        ];
+        let key = prefix_key_cfg(&[]);
+        let names = [("network", ValueType::String), ("label", ValueType::String)];
         let data = build(
             &names,
             &key,
-            &[vec![
-                CellRef::Integer(0),
-                CellRef::Integer(10),
-                CellRef::String("a"),
-            ]],
+            &[vec![CellRef::String("10.0.0.0/8"), CellRef::String("a")]],
         )
         .unwrap();
         assert_eq!(data.lookup(Lookup::Hash(&[KeyRef::Integer(5)])), None);
-        // and a range probe with the wrong point type
-        assert_eq!(
-            data.lookup(Lookup::Range {
-                partition: &[],
-                point: RangePoint::Ip("10.0.0.1".parse().unwrap())
-            }),
-            None
-        );
     }
 
     #[test]
     fn a_load_where_every_row_fails_is_an_error() {
-        let key = range_key_cfg(RangeType::Integer, &[], true, true);
-        let names = [
-            ("start", ValueType::Integer),
-            ("end", ValueType::Integer),
-            ("label", ValueType::String),
-        ];
+        let key = prefix_key_cfg(&[]);
+        let names = [("network", ValueType::String), ("label", ValueType::String)];
         let src = source(&names, &key);
         let mut b = ImmutableBuilder::new(&src, &key).unwrap();
-        // every bound is null
+        // every prefix is null
         for _ in 0..3 {
-            b.push_row(&Cells(&[
-                CellRef::Null,
-                CellRef::Null,
-                CellRef::String("x"),
-            ]));
+            b.push_row(&Cells(&[CellRef::Null, CellRef::String("x")]));
         }
         let err = b.finish(Duration::ZERO).unwrap_err().to_string();
         assert!(err.contains("every row was rejected"), "{err}");
-        assert!(err.contains("range_bound=3"), "{err}");
+        assert!(err.contains("prefix=3"), "{err}");
     }
 
     #[test]

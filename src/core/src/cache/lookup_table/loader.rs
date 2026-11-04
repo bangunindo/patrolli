@@ -400,7 +400,7 @@ async fn sweep_loop(cache: Cache, shutdown: CancellationToken) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::lookup_table::cell::{CellRef, KeyRef, Lookup, RangePoint};
+    use crate::cache::lookup_table::cell::{CellRef, KeyRef, Lookup};
     use std::io::Write;
     use uuid::Uuid;
 
@@ -528,6 +528,7 @@ mod tests {
             old_reader
                 .lookup(Lookup::Hash(&[KeyRef::String("a")]))
                 .unwrap()
+                .row
                 .cell(old_reader.column("site").unwrap()),
             CellRef::String("jkt")
         );
@@ -604,7 +605,7 @@ mod tests {
             immutable
                 .data()
                 .lookup(Lookup::Hash(&[KeyRef::String("a")])),
-            Some(0),
+            Some((0, None)),
             "and it must still answer"
         );
         let error = immutable.last_error().expect("the refusal is recorded");
@@ -799,7 +800,7 @@ mod tests {
         let read = table.read();
         let column = read.column("site")?;
         read.lookup(Lookup::Hash(&[KeyRef::String(host)]))
-            .map(|row| row.cell(column).as_str().unwrap_or_default().to_string())
+            .map(|m| m.row.cell(column).as_str().unwrap_or_default().to_string())
     }
 
     fn generation(cache: &Cache, id: &Uuid) -> u64 {
@@ -966,20 +967,16 @@ mod tests {
     #[tokio::test]
     async fn a_file_where_every_row_is_bad_fails_the_reload() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ranges.csv");
-        write(&path, "start,end,label\n1,10,low\n");
+        let path = dir.path().join("subnets.csv");
+        write(&path, "network,label\n10.0.0.0/8,low\n");
 
-        let key = cfg::Key::Range(cfg::Range {
-            range_type: cfg::RangeType::Integer,
+        let key = cfg::Key::Prefix(cfg::Prefix {
+            prefix_column: "network".into(),
             partition_columns: vec![],
-            start_column: "start".into(),
-            start_inclusive: true,
-            end_column: "end".into(),
-            end_inclusive: true,
         });
         let cache = Cache::new();
         let conf = config(
-            "ranges",
+            "subnets",
             vec![path.display().to_string()],
             key,
             cfg::Compression::None,
@@ -988,22 +985,26 @@ mod tests {
 
         let table = cache.lookup_table.get(&conf.id).unwrap();
         let label = table.read().column("label").unwrap();
-        let at = |p: i64| {
+        let at = |addr: &str| {
             table
                 .read()
-                .lookup(Lookup::Range {
+                .lookup(Lookup::Prefix {
                     partition: &[],
-                    point: RangePoint::Integer(p),
+                    addr: addr.parse().unwrap(),
                 })
-                .map(|r| r.cell(label).as_str().unwrap_or_default().to_string())
+                .map(|m| m.row.cell(label).as_str().unwrap_or_default().to_string())
         };
-        assert_eq!(at(5).as_deref(), Some("low"));
+        assert_eq!(at("10.0.0.5").as_deref(), Some("low"));
 
-        // every bound is unparseable now
-        write(&path, "start,end,label\nx,y,low\nz,w,high\n");
+        // every prefix is unparseable now
+        write(&path, "network,label\nx,low\n10.0.0.1/8,high\n");
         check_once(&cache).await;
         assert_eq!(generation(&cache, &conf.id), 1);
-        assert_eq!(at(5).as_deref(), Some("low"), "old generation still serves");
+        assert_eq!(
+            at("10.0.0.5").as_deref(),
+            Some("low"),
+            "old generation still serves"
+        );
         let error = table.as_immutable().unwrap().last_error().unwrap();
         assert!(error.contains("every row was rejected"), "{error}");
     }
@@ -1111,16 +1112,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let v4 = dir.path().join("v4.csv");
         let v6 = dir.path().join("v6.csv");
-        write(&v4, "start,end,country\n1.0.0.0,1.0.0.255,AU\n");
-        write(&v6, "start,end,country\n2001:db8::,2001:db8::ffff,ID\n");
+        write(&v4, "network,country\n1.0.0.0/24,AU\n");
+        write(&v6, "network,country\n2001:db8::/32,ID\n");
 
-        let key = cfg::Key::Range(cfg::Range {
-            range_type: cfg::RangeType::Ip,
+        let key = cfg::Key::Prefix(cfg::Prefix {
+            prefix_column: "network".into(),
             partition_columns: vec![],
-            start_column: "start".into(),
-            start_inclusive: true,
-            end_column: "end".into(),
-            end_inclusive: true,
         });
         let cache = Cache::new();
         let conf = config(
@@ -1135,11 +1132,11 @@ mod tests {
         let read = table.read();
         let country = read.column("country").unwrap();
         let at = |s: &str| {
-            read.lookup(Lookup::Range {
+            read.lookup(Lookup::Prefix {
                 partition: &[],
-                point: RangePoint::Ip(s.parse().unwrap()),
+                addr: s.parse().unwrap(),
             })
-            .map(|r| r.cell(country).as_str().unwrap_or_default().to_string())
+            .map(|m| m.row.cell(country).as_str().unwrap_or_default().to_string())
         };
         assert_eq!(at("1.0.0.9").as_deref(), Some("AU"));
         assert_eq!(at("2001:db8::1").as_deref(), Some("ID"));

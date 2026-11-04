@@ -349,5 +349,7 @@ pub struct LookupTableProcessor {
     /// would have exceeded `max_rows`
     pub writes_rejected: u64,
     pub writes_errored: u64,
+    /// rows removed, not remove calls: a partition delete counts every row it
+    /// dropped, and a delete that found nothing counts none
     pub removes: u64,
 }

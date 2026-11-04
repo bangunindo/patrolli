@@ -71,6 +71,11 @@ impl Patrolli {
         self.stdout.lock().iter().any(|l| l.contains(needle))
     }
 
+    /// Every stdout line so far.
+    pub fn stdout_lines(&self) -> Vec<String> {
+        self.stdout.lock().clone()
+    }
+
     /// Whether any stderr line so far contains `needle` (where the log goes).
     pub fn stderr_contains(&self, needle: &str) -> bool {
         self.stderr.lock().iter().any(|l| l.contains(needle))

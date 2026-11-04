@@ -4,7 +4,7 @@
 
 [package]
 name = "patrolli"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -78,8 +78,9 @@ petgraph = "0.8.3"
 priority-queue = "2.7.0"
 prometheus-scraper = { version = "0.2.0", features = ["client"] }
 prometheus-client = "0.25.0"
+prefix-trie = { version = "0.10.1", features = ["ipnet"] }
 prost = "0.14.4"
-rangemap = "1.8.0"
+ipnet = "2.12.0"
 regex = "1.12"
 rdkafka = { version = "^0.39.0", features = [
     "gssapi",
@@ -243,4 +244,8 @@ harness = false
 
 [[bench]]
 name = "bench_json"
+harness = false
+
+[[bench]]
+name = "bench_lookup_prefix"
 harness = false
