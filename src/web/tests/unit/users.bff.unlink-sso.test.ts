@@ -101,17 +101,17 @@ describe('BFF POST /api/users/:userId/unlink-sso - Multi-Cluster Unlink SSO', ()
 
 		const res = await unlinkSsoHandler(event)
 
-		// Alpha had alice -> POST /api/users/alpha-1/unlink-sso
+		// Alpha had alice -> POST /api/v1/users/alpha-1/unlink-sso
 		expect(clusterService.forwardToCluster).toHaveBeenCalledWith(
 			clusterAlpha,
-			'/api/users/alpha-1/unlink-sso',
+			'/api/v1/users/alpha-1/unlink-sso',
 			expect.objectContaining({ method: 'POST' })
 		)
 
-		// Beta had alice -> POST /api/users/beta-1/unlink-sso
+		// Beta had alice -> POST /api/v1/users/beta-1/unlink-sso
 		expect(clusterService.forwardToCluster).toHaveBeenCalledWith(
 			clusterBeta,
-			'/api/users/beta-1/unlink-sso',
+			'/api/v1/users/beta-1/unlink-sso',
 			expect.objectContaining({ method: 'POST' })
 		)
 

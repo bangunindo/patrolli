@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { usePipelineStore } from '@/stores/pipeline.store'
-import type { IHostSelectorItem } from '@@/shared/types/pipeline.management.type'
+import type { IHostSelectorItem } from '@@/shared/types/pipeline.type'
 
 const props = withDefaults(
 	defineProps<{

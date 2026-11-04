@@ -4,13 +4,15 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import * as apiBaseService from '@@/server/services/apibase.service'
 import {
+	forwardToCluster,
 	getClustersConfig,
 	getKeycloakConfig,
 	parseClustersConfig,
 	resolveClusterTargets
 } from '@@/server/services/cluster.service'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 describe('Cluster Config Parser', () => {
 	const originalEnv = process.env
@@ -103,17 +105,23 @@ describe('Cluster Config Parser', () => {
 	})
 
 	it('should read from custom CONFIG_FILE environment variable', () => {
-		const tempConfigPath = path.resolve(process.cwd(), 'tests/unit/temp-config-test.yaml')
-		fs.writeFileSync(
-			tempConfigPath,
-			`
+		const customConfigPath = path.resolve(process.cwd(), 'custom-config-test.yaml')
+		const customYaml = `
 clusters:
   - name: 'custom-file-node'
     url: 'http://custom-file:8080'
 `
-		)
+		const existsSpy = vi.spyOn(fs, 'existsSync').mockImplementation((p) => {
+			if (p === customConfigPath) return true
+			return false
+		})
+		const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...args) => {
+			if (p === customConfigPath) return customYaml
+			return (fs.readFileSync as any).getMockImplementation()?.(p, ...args)
+		})
+
 		try {
-			process.env.CONFIG_FILE = tempConfigPath
+			process.env.CONFIG_FILE = customConfigPath
 			const clusters = getClustersConfig()
 			expect(clusters).toHaveLength(1)
 			expect(clusters[0]).toMatchObject({
@@ -122,9 +130,8 @@ clusters:
 				clientPath: '/custom-file-node'
 			})
 		} finally {
-			if (fs.existsSync(tempConfigPath)) {
-				fs.unlinkSync(tempConfigPath)
-			}
+			existsSpy.mockRestore()
+			readSpy.mockRestore()
 		}
 	})
 
@@ -221,6 +228,50 @@ clusters:
 			const attack3 = resolveClusterTargets('http://evil-attacker.com', clusters)
 			expect(attack3).toEqual(clusters)
 			expect(attack3.some((c) => c.url.includes('evil-attacker.com'))).toBe(false)
+		})
+	})
+
+	describe('forwardToCluster 1:1 upstream path forwarding', () => {
+		it('should forward request to cluster with 1:1 target path', async () => {
+			const reqSpy = vi.spyOn(apiBaseService, 'executeHttpRequest').mockResolvedValue({
+				status: 200,
+				headers: {},
+				data: { success: true }
+			} as any)
+
+			const cluster = { name: 'c1', url: 'http://c1:8080' }
+			const res = await forwardToCluster(cluster, '/api/v1/items', {
+				method: 'GET'
+			})
+
+			expect(reqSpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					url: 'http://c1:8080/api/v1/items',
+					method: 'GET'
+				})
+			)
+			expect(res.status).toBe(200)
+		})
+
+		it('should preserve cluster base path when forwarding 1:1 target path', async () => {
+			const reqSpy = vi.spyOn(apiBaseService, 'executeHttpRequest').mockResolvedValue({
+				status: 200,
+				headers: {},
+				data: { success: true }
+			} as any)
+
+			const cluster = { name: 'c1', url: 'http://c1:8080/prefix' }
+			const res = await forwardToCluster(cluster, '/api/v1/nodes', {
+				method: 'GET'
+			})
+
+			expect(reqSpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					url: 'http://c1:8080/prefix/api/v1/nodes',
+					method: 'GET'
+				})
+			)
+			expect(res.status).toBe(200)
 		})
 	})
 })

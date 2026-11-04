@@ -4,7 +4,7 @@
 
 import { defineStore } from 'pinia'
 import { computed, reactive, ref } from 'vue'
-import pipelineManagementApi from '@/app/api/pipeline.management.api'
+import pipelinesApi from '@/app/api/pipelines.api'
 import hostsApi from '@/app/api/hosts.api'
 import sinksApi from '@/app/api/sinks.api'
 import itemsApi from '@/app/api/items.api'
@@ -18,10 +18,10 @@ import { MarkerType } from '@vue-flow/core'
 import dagre from '@dagrejs/dagre'
 import type { INode } from '@@/shared/types/canvas.type'
 import type {
-	GetPipelineManagementGraphResponse,
-	PipelineManagementDetail,
-	UpdatePipelineManagementGraphRequest,
-	UpdatePipelineManagementNodeRequest
+	GetPipelineGraphResponse,
+	PipelineDetail,
+	UpdatePipelineGraphRequest,
+	UpdatePipelineNodeRequest
 } from '@@/shared/generated/patrolliAPI.schemas.type'
 
 export function getProcessorModuleBadgeClass(moduleName: string, withBorder: boolean = true) {
@@ -113,8 +113,8 @@ export const usePipelineBuildStore = defineStore(
 		const canvasId = ref<string | null>(null)
 		const clusterUrl = ref<string | null>(null)
 
-		const pipelineDetail = ref<PipelineManagementDetail | null>(null)
-		const canvasGraph = ref<GetPipelineManagementGraphResponse | null>(null)
+		const pipelineDetail = ref<PipelineDetail | null>(null)
+		const canvasGraph = ref<GetPipelineGraphResponse | null>(null)
 
 		const nodes = ref<any[]>([])
 		const edges = ref<any[]>([])
@@ -162,9 +162,7 @@ export const usePipelineBuildStore = defineStore(
 			loadingItems.value = true
 			const cUrls = clusterUrl.value ? [clusterUrl.value] : undefined
 			try {
-				const res = await itemsApi
-					.getItems({ host_ids: hostIds, limit: 100 }, cUrls)
-					.catch(() => undefined)
+				const res = await itemsApi.getItems({ host_ids: hostIds, limit: 100 }, cUrls)
 				pipelineItems.value = res?.data?.items || []
 			} catch (err) {
 				console.error('Failed to fetch pipeline items:', err)
@@ -189,102 +187,106 @@ export const usePipelineBuildStore = defineStore(
 			const cUrls = clusterUrl.value ? [clusterUrl.value] : undefined
 
 			try {
-				// 1. Fetch Pipeline Detail
-				const detailRes = await pipelineManagementApi.getPipelineById(pId, cUrls)
-				if (detailRes?.success && detailRes.data) {
-					pipelineDetail.value = detailRes.data
-					await fetchPipelineItems()
-				}
+				const shouldFetchGraph = Boolean(cId && cId !== 'default')
 
-				// Fetch host & sink metadata for display
-				const [hostsRes, sinksRes] = await Promise.all([
+				const [detailRes, hostsRes, sinksRes, graphRes] = await Promise.all([
+					pipelinesApi.getPipelineById(pId, cUrls),
 					hostsApi.getHosts({ limit: 100 }, cUrls).catch(() => undefined),
-					sinksApi.getSinks({ limit: 100 }, cUrls).catch(() => undefined)
+					sinksApi.getSinks({ limit: 100 }, cUrls).catch(() => undefined),
+					shouldFetchGraph
+						? pipelinesApi.getPipelineGraph({ pipeline_id: pId, canvas_id: cId }, cUrls)
+						: Promise.resolve(undefined)
 				])
+
 				availableHosts.value = hostsRes?.data?.hosts || []
 				availableSinks.value = sinksRes?.data?.sinks || []
 
-				// 2. Fetch Canvas Graph
-				if (cId && cId !== 'default') {
-					const graphRes = await pipelineManagementApi.getPipelineGraph(
-						{ pipeline_management_id: pId, canvas_id: cId },
-						cUrls
-					)
-					if (graphRes?.success && graphRes.data) {
-						canvasGraph.value = graphRes.data
+				const nodeTasks: Promise<unknown>[] = []
 
-						// Fetch source node items so edge connections and source node reflect saved items
-						const sourceNode = graphRes.data.graph?.nodes?.find(
-							(n: any) => n.kind === 'source'
-						)
-						if (sourceNode?.node_id) {
-							try {
-								const sourceNodeRes = await pipelineManagementApi.getPipelineNode(
+				if (detailRes?.success && detailRes.data) {
+					pipelineDetail.value = detailRes.data
+					nodeTasks.push(fetchPipelineItems())
+				}
+
+				if (graphRes?.success && graphRes.data) {
+					canvasGraph.value = graphRes.data
+					const graphNodes = graphRes.data.graph?.nodes || []
+
+					const sourceNode = graphNodes.find((n: any) => n.kind === 'source')
+					if (sourceNode?.node_id) {
+						nodeTasks.push(
+							pipelinesApi
+								.getPipelineNode(
 									{
-										pipeline_management_id: pId,
+										pipeline_id: pId,
 										canvas_id: cId,
 										node_id: sourceNode.node_id,
 										query: { limit: 100 }
 									},
 									cUrls
 								)
-								const sourceItems =
-									(sourceNodeRes?.data as any)?.content?.data?.items ||
-									(sourceNodeRes?.data as any)?.data?.items ||
-									[]
-								if (!sourceNode.data) (sourceNode as any).data = {}
-								;(sourceNode.data as any).items = sourceItems
-								if (
-									typeof (sourceNodeRes?.data as any)?.content?.data?.total ===
-									'number'
-								) {
-									;(sourceNode.data as any).item_count = (
-										sourceNodeRes?.data as any
-									).content.data.total
-								} else if (sourceItems.length > 0) {
-									;(sourceNode.data as any).item_count = sourceItems.length
-								}
-							} catch (e) {
-								console.error('Failed to fetch source node items in loadCanvas:', e)
-							}
-						}
-
-						// Fetch processor group details so processor status (adm_status) and config are loaded
-						const procNodes =
-							graphRes.data.graph?.nodes?.filter(
-								(n: any) => n.kind === 'processor_group'
-							) || []
-						if (procNodes.length > 0) {
-							await Promise.allSettled(
-								procNodes.map(async (pn: any) => {
-									if (!pn?.node_id) return
-									try {
-										const pnRes = await pipelineManagementApi.getPipelineNode(
-											{
-												pipeline_management_id: pId,
-												canvas_id: cId,
-												node_id: pn.node_id
-											},
-											cUrls
-										)
-										const procList =
-											(pnRes?.data as any)?.data?.processors ||
-											(pnRes?.data as any)?.content?.data?.processors ||
-											(pnRes?.data as any)?.processors
-										if (procList && Array.isArray(procList)) {
-											if (!pn.data) pn.data = {}
-											;(pn.data as any).processors = procList
-										}
-									} catch (e) {
-										console.error(
-											'Failed to fetch processor group node content in loadCanvas:',
-											e
-										)
+								.then((sourceNodeRes) => {
+									const sourceItems =
+										(sourceNodeRes?.data as any)?.content?.data?.items ||
+										(sourceNodeRes?.data as any)?.data?.items ||
+										[]
+									if (!sourceNode.data) (sourceNode as any).data = {}
+									;(sourceNode.data as any).items = sourceItems
+									if (
+										typeof (sourceNodeRes?.data as any)?.content?.data
+											?.total === 'number'
+									) {
+										;(sourceNode.data as any).item_count = (
+											sourceNodeRes?.data as any
+										).content.data.total
+									} else if (sourceItems.length > 0) {
+										;(sourceNode.data as any).item_count = sourceItems.length
 									}
 								})
-							)
-						}
+								.catch((e) => {
+									console.error(
+										'Failed to fetch source node items in loadCanvas:',
+										e
+									)
+								})
+						)
 					}
+
+					const procNodes = graphNodes.filter((n: any) => n.kind === 'processor_group')
+					for (const pn of procNodes) {
+						if (!pn?.node_id) continue
+						nodeTasks.push(
+							pipelinesApi
+								.getPipelineNode(
+									{
+										pipeline_id: pId,
+										canvas_id: cId,
+										node_id: pn.node_id
+									},
+									cUrls
+								)
+								.then((pnRes) => {
+									const procList =
+										(pnRes?.data as any)?.data?.processors ||
+										(pnRes?.data as any)?.content?.data?.processors ||
+										(pnRes?.data as any)?.processors
+									if (procList && Array.isArray(procList)) {
+										if (!pn.data) pn.data = {}
+										;(pn.data as any).processors = procList
+									}
+								})
+								.catch((e) => {
+									console.error(
+										'Failed to fetch processor group node content in loadCanvas:',
+										e
+									)
+								})
+						)
+					}
+				}
+
+				if (nodeTasks.length > 0) {
+					await Promise.allSettled(nodeTasks)
 				}
 
 				// 3. Reconcile Nodes & Edges from Backend Graph or Fallback Empty States
@@ -699,7 +701,7 @@ export const usePipelineBuildStore = defineStore(
 						}
 					})
 
-					// Trigger PUT /api/pipeline_management/{id}/canvases/{cId}/nodes/{nodeId} only if node already exists in backend graph
+					// Trigger PUT /api/pipelines/{id}/canvases/{cId}/nodes/{nodeId} only if node already exists in backend graph
 					const existsInBackend = canvasGraph.value?.graph?.nodes?.some(
 						(gn: any) => gn.node_id === (sourceNode.node_id || sourceNode.id)
 					)
@@ -1145,9 +1147,9 @@ export const usePipelineBuildStore = defineStore(
 			const nodeId = (node as any).node_id || node.id
 
 			// Fetch fresh node state from backend to retrieve the current last_updated timestamp and existing items
-			const nodeRes = await pipelineManagementApi.getPipelineNode(
+			const nodeRes = await pipelinesApi.getPipelineNode(
 				{
-					pipeline_management_id: pId,
+					pipeline_id: pId,
 					canvas_id: cId,
 					node_id: nodeId,
 					query: { limit: 100 }
@@ -1161,7 +1163,7 @@ export const usePipelineBuildStore = defineStore(
 
 			const lastUpdated =
 				nodeRes.data.last_updated || (nodeRes.data as any)?.data?.last_updated
-			let updatePayload: UpdatePipelineManagementNodeRequest
+			let updatePayload: UpdatePipelineNodeRequest
 
 			if (node.type === 'source') {
 				const backendItems: any[] =
@@ -1272,9 +1274,9 @@ export const usePipelineBuildStore = defineStore(
 				} as any
 			}
 
-			const updateRes = await pipelineManagementApi.updatePipelineNode(
+			const updateRes = await pipelinesApi.updatePipelineNode(
 				{
-					pipeline_management_id: pId,
+					pipeline_id: pId,
 					canvas_id: cId,
 					node_id: nodeId
 				},
@@ -1306,9 +1308,9 @@ export const usePipelineBuildStore = defineStore(
 							return p
 						}
 					)
-					const retryRes = await pipelineManagementApi.updatePipelineNode(
+					const retryRes = await pipelinesApi.updatePipelineNode(
 						{
-							pipeline_management_id: pId,
+							pipeline_id: pId,
 							canvas_id: cId,
 							node_id: nodeId
 						},
@@ -1397,7 +1399,7 @@ export const usePipelineBuildStore = defineStore(
 						return rel
 					})
 
-				const payload: UpdatePipelineManagementGraphRequest = {
+				const payload: UpdatePipelineGraphRequest = {
 					graph: {
 						nodes: backendNodes as any,
 						relations: backendRelations
@@ -1406,9 +1408,9 @@ export const usePipelineBuildStore = defineStore(
 				}
 
 				// Stage 1: Save graph structure
-				const res = await pipelineManagementApi.updatePipelineGraph(
+				const res = await pipelinesApi.updatePipelineGraph(
 					{
-						pipeline_management_id: pipelineId.value,
+						pipeline_id: pipelineId.value,
 						canvas_id: canvasId.value
 					},
 					payload,

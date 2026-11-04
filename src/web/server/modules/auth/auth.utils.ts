@@ -36,9 +36,5 @@ export function extractAuthRefreshParams(event: H3Event, body?: any) {
  * Checks whether a path parameter corresponds to a logout request
  */
 export function isLogoutPath(pathParam: string, fullAuthPath: string): boolean {
-	return (
-		pathParam === 'logout' ||
-		pathParam.replace(/\/$/, '') === 'logout' ||
-		fullAuthPath.startsWith('/auth/logout')
-	)
+	return pathParam.replace(/\/$/, '') === 'logout' || fullAuthPath.includes('/auth/logout')
 }

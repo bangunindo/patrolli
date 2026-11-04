@@ -85,7 +85,7 @@ describe('NodeConfigDrawer', () => {
 	it('renders empty state warning when pipeline has no registered sinks', () => {
 		const store = usePipelineBuildStore()
 		store.pipelineDetail = {
-			pipeline_management_id: 'pipe-1',
+			pipeline_id: 'pipe-1',
 			sink_ids: []
 		} as any
 
@@ -113,7 +113,7 @@ describe('NodeConfigDrawer', () => {
 	it('renders AppInputSink constrained to pipeline registered sinks when sink node is selected', async () => {
 		const store = usePipelineBuildStore()
 		store.pipelineDetail = {
-			pipeline_management_id: 'pipe-1',
+			pipeline_id: 'pipe-1',
 			sink_ids: ['sink-1', 'sink-2']
 		} as any
 
@@ -173,7 +173,7 @@ describe('NodeConfigDrawer', () => {
 
 		const store = usePipelineBuildStore()
 		store.pipelineDetail = {
-			pipeline_management_id: 'pipe-1',
+			pipeline_id: 'pipe-1',
 			sink_ids: ['sink-1']
 		} as any
 

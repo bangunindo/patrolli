@@ -124,12 +124,12 @@ describe('User Summary / Stats Feature', () => {
 
 			expect(clusterService.forwardToCluster).toHaveBeenCalledWith(
 				mockClusters[0],
-				'/api/users/summary',
+				'/api/v1/users/summary',
 				expect.objectContaining({ method: 'GET' })
 			)
 			expect(clusterService.forwardToCluster).toHaveBeenCalledWith(
 				mockClusters[1],
-				'/api/users/summary',
+				'/api/v1/users/summary',
 				expect.objectContaining({ method: 'GET' })
 			)
 
@@ -173,7 +173,7 @@ describe('User Summary / Stats Feature', () => {
 			expect(clusterService.forwardToCluster).toHaveBeenCalledTimes(1)
 			expect(clusterService.forwardToCluster).toHaveBeenCalledWith(
 				mockClusters[1],
-				'/api/users/summary',
+				'/api/v1/users/summary',
 				expect.objectContaining({ method: 'GET' })
 			)
 

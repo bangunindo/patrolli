@@ -56,7 +56,7 @@ describe('BFF POST /api/users - Multi-Cluster User Creation', () => {
 
 		expect(clusterService.forwardToCluster).toHaveBeenCalledWith(
 			clusterAlpha,
-			'/api/users',
+			'/api/v1/users',
 			expect.objectContaining({
 				method: 'POST',
 				body: expect.objectContaining({ username: 'newuser' })
@@ -117,12 +117,12 @@ describe('BFF POST /api/users - Multi-Cluster User Creation', () => {
 
 		expect(clusterService.forwardToCluster).toHaveBeenCalledWith(
 			clusterAlpha,
-			'/api/users',
+			'/api/v1/users',
 			expect.objectContaining({ method: 'POST' })
 		)
 		expect(clusterService.forwardToCluster).toHaveBeenCalledWith(
 			clusterBeta,
-			'/api/users',
+			'/api/v1/users',
 			expect.objectContaining({ method: 'POST' })
 		)
 
@@ -201,14 +201,14 @@ describe('BFF POST /api/users - Multi-Cluster User Creation', () => {
 		// Alpha should NOT have called POST since user already exists
 		expect(clusterService.forwardToCluster).not.toHaveBeenCalledWith(
 			clusterAlpha,
-			'/api/users',
+			'/api/v1/users',
 			expect.objectContaining({ method: 'POST' })
 		)
 
 		// Beta SHOULD have called POST to create user
 		expect(clusterService.forwardToCluster).toHaveBeenCalledWith(
 			clusterBeta,
-			'/api/users',
+			'/api/v1/users',
 			expect.objectContaining({ method: 'POST' })
 		)
 

@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { usePipelineBuildStore } from '@/stores/pipeline.builder.store'
-import pipelineManagementApi from '@/app/api/pipeline.management.api'
+import pipelinesApi from '@/app/api/pipelines.api'
 import hostsApi from '@/app/api/hosts.api'
 import sinksApi from '@/app/api/sinks.api'
 
@@ -31,7 +31,7 @@ describe('Pipeline Builder Store & Canvas Integration', () => {
 			}
 		} as any)
 
-		vi.spyOn(pipelineManagementApi, 'getPipelineNode').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineNode').mockResolvedValue({
 			success: true,
 			data: {
 				last_updated: '2026-10-21T00:00:00Z',
@@ -39,7 +39,7 @@ describe('Pipeline Builder Store & Canvas Integration', () => {
 			}
 		} as any)
 
-		vi.spyOn(pipelineManagementApi, 'updatePipelineNode').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'updatePipelineNode').mockResolvedValue({
 			success: true,
 			data: {}
 		} as any)
@@ -47,7 +47,7 @@ describe('Pipeline Builder Store & Canvas Integration', () => {
 
 	const mockSavedGraph = {
 		canvas_id: 'canvas-02',
-		pipeline_management_id: 'pipe-02',
+		pipeline_id: 'pipe-02',
 		graph: {
 			nodes: [
 				{
@@ -77,10 +77,10 @@ describe('Pipeline Builder Store & Canvas Integration', () => {
 	}
 
 	it('sets canvas to empty state when response api graph.nodes is empty', async () => {
-		vi.spyOn(pipelineManagementApi, 'getPipelineById').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineById').mockResolvedValue({
 			success: true,
 			data: {
-				pipeline_management_id: 'pipe-01',
+				pipeline_id: 'pipe-01',
 				name: 'Telemetry Pipeline',
 				adm_status: 1,
 				visibility: 1,
@@ -90,11 +90,11 @@ describe('Pipeline Builder Store & Canvas Integration', () => {
 			}
 		} as any)
 
-		vi.spyOn(pipelineManagementApi, 'getPipelineGraph').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineGraph').mockResolvedValue({
 			success: true,
 			data: {
 				canvas_id: 'canvas-01',
-				pipeline_management_id: 'pipe-01',
+				pipeline_id: 'pipe-01',
 				graph: { nodes: [], relations: [] },
 				last_updated: '2026-10-21T00:00:00Z'
 			}
@@ -117,10 +117,10 @@ describe('Pipeline Builder Store & Canvas Integration', () => {
 	})
 
 	it('loads saved graph nodes and relations when response api graph.nodes is populated', async () => {
-		vi.spyOn(pipelineManagementApi, 'getPipelineById').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineById').mockResolvedValue({
 			success: true,
 			data: {
-				pipeline_management_id: 'pipe-02',
+				pipeline_id: 'pipe-02',
 				name: 'Full Pipeline',
 				adm_status: 1,
 				visibility: 1,
@@ -130,7 +130,7 @@ describe('Pipeline Builder Store & Canvas Integration', () => {
 			}
 		} as any)
 
-		vi.spyOn(pipelineManagementApi, 'getPipelineGraph').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineGraph').mockResolvedValue({
 			success: true,
 			data: mockSavedGraph
 		} as any)
@@ -152,10 +152,10 @@ describe('Pipeline Builder Store & Canvas Integration', () => {
 	})
 
 	it('supports drag-and-drop node addition and saves graph to API', async () => {
-		vi.spyOn(pipelineManagementApi, 'getPipelineById').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineById').mockResolvedValue({
 			success: true,
 			data: {
-				pipeline_management_id: 'pipe-02',
+				pipeline_id: 'pipe-02',
 				name: 'Full Pipeline',
 				adm_status: 1,
 				visibility: 1,
@@ -165,16 +165,16 @@ describe('Pipeline Builder Store & Canvas Integration', () => {
 			}
 		} as any)
 
-		vi.spyOn(pipelineManagementApi, 'getPipelineGraph').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineGraph').mockResolvedValue({
 			success: true,
 			data: mockSavedGraph
 		} as any)
 
-		const updateSpy = vi.spyOn(pipelineManagementApi, 'updatePipelineGraph').mockResolvedValue({
+		const updateSpy = vi.spyOn(pipelinesApi, 'updatePipelineGraph').mockResolvedValue({
 			success: true,
 			data: {
 				canvas_id: 'canvas-02',
-				pipeline_management_id: 'pipe-02',
+				pipeline_id: 'pipe-02',
 				graph: { nodes: [], relations: [] },
 				last_updated: '2026-10-21T00:01:00Z'
 			}
@@ -200,7 +200,7 @@ describe('Pipeline Builder Store & Canvas Integration', () => {
 		expect(saved).toBe(true)
 		expect(updateSpy).toHaveBeenCalledWith(
 			{
-				pipeline_management_id: 'pipe-02',
+				pipeline_id: 'pipe-02',
 				canvas_id: 'canvas-02'
 			},
 			expect.objectContaining({
@@ -315,7 +315,7 @@ describe('Pipeline Builder Store & Canvas Integration', () => {
 
 	it('displays item_count on the edge from source to processor group from api graph response', async () => {
 		const apiGraphResponse = {
-			pipeline_management_id: '01a15d16-7882-7d92-a821-29e595d65c6b',
+			pipeline_id: '01a15d16-7882-7d92-a821-29e595d65c6b',
 			canvas_id: '01a15d16-7886-7da2-8dae-842d241f3a85',
 			last_updated: '2026-10-21T10:53:31.979464Z',
 			graph: {
@@ -350,10 +350,10 @@ describe('Pipeline Builder Store & Canvas Integration', () => {
 			cluster_name: 'patrolli'
 		}
 
-		vi.spyOn(pipelineManagementApi, 'getPipelineById').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineById').mockResolvedValue({
 			success: true,
 			data: {
-				pipeline_management_id: '01a15d16-7882-7d92-a821-29e595d65c6b',
+				pipeline_id: '01a15d16-7882-7d92-a821-29e595d65c6b',
 				name: 'Patrolli Pipeline',
 				adm_status: 1,
 				visibility: 1,
@@ -368,7 +368,7 @@ describe('Pipeline Builder Store & Canvas Integration', () => {
 			}
 		} as any)
 
-		vi.spyOn(pipelineManagementApi, 'getPipelineGraph').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineGraph').mockResolvedValue({
 			success: true,
 			data: apiGraphResponse
 		} as any)

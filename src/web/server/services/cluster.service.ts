@@ -5,8 +5,9 @@
 import { logClusterError, logClusterForward, logClusterResponse } from './logger.service'
 import { handleSingleClusterResponse, mergeDynamicResponses } from '@@/server/utils/response'
 import { executeHttpRequest } from '@@/server/services/apibase.service'
+import { extractProxyContext } from '@@/server/modules/proxy/proxy.utils'
 import type { ICluster, IKeycloakConfig } from '@@/shared/types/cluster.type'
-import { type H3Event, getQuery, getRequestHeaders, readBody, setResponseStatus } from 'h3'
+import { type H3Event, readBody, setResponseStatus } from 'h3'
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
@@ -29,6 +30,21 @@ declare const useRuntimeConfig: (event?: H3Event) => any
  * - JSON string: [ { name: 'patrolli1', url: 'http://patrolli1:8080' } ]
  * - Object / Map: { patrolli1: 'http://patrolli1:8080' }
  */
+function createClusterEntry(item: Record<string, any>, fallbackKey?: string): ICluster {
+	const cleanName = item.name ? String(item.name).trim() : String(fallbackKey || '').trim()
+	const cleanKey = item.key ? String(item.key).trim() : String(fallbackKey || cleanName).trim()
+	const cleanUrl = String(item.url).trim().replace(/\/+$/, '')
+
+	return {
+		key: cleanKey,
+		name: cleanName,
+		url: cleanUrl,
+		clientPath: item.clientPath
+			? String(item.clientPath).trim()
+			: `/${cleanName.replace(/^\//, '')}`
+	}
+}
+
 export function parseClustersConfig(raw: any): ICluster[] {
 	if (!raw) return []
 
@@ -64,16 +80,7 @@ export function parseClustersConfig(raw: any): ICluster[] {
 			} else if (item.clusters && typeof item.clusters === 'object') {
 				entries.push(...parseClustersConfig(item.clusters))
 			} else if (item.name && item.url) {
-				const cleanName = String(item.name).trim()
-				const cleanUrl = String(item.url).trim().replace(/\/+$/, '')
-				entries.push({
-					key: item.key ? String(item.key).trim() : cleanName,
-					name: cleanName,
-					url: cleanUrl,
-					clientPath: item.clientPath
-						? String(item.clientPath).trim()
-						: `/${cleanName.replace(/^\//, '')}`
-				})
+				entries.push(createClusterEntry(item))
 			}
 		}
 		return entries
@@ -88,25 +95,9 @@ export function parseClustersConfig(raw: any): ICluster[] {
 		for (const [key, value] of Object.entries(raw)) {
 			const cleanKey = key.trim()
 			if (typeof value === 'string' && value.trim()) {
-				result.push({
-					key: cleanKey,
-					name: cleanKey,
-					url: value.trim().replace(/\/+$/, ''),
-					clientPath: `/${cleanKey.replace(/^\//, '')}`
-				})
+				result.push(createClusterEntry({ url: value }, cleanKey))
 			} else if (typeof value === 'object' && value !== null && (value as any).url) {
-				const name = (value as any).name ? String((value as any).name).trim() : cleanKey
-				const url = String((value as any).url)
-					.trim()
-					.replace(/\/+$/, '')
-				result.push({
-					key: (value as any).key ? String((value as any).key).trim() : cleanKey,
-					name,
-					url,
-					clientPath: (value as any).clientPath
-						? String((value as any).clientPath).trim()
-						: `/${name.replace(/^\//, '')}`
-				})
+				result.push(createClusterEntry(value as Record<string, any>, cleanKey))
 			}
 		}
 		return result
@@ -243,10 +234,11 @@ export async function forwardToCluster(
 		body?: any
 	}
 ): Promise<{ status: number; headers: Headers; data: any }> {
-	const targetUrl = new URL(
-		targetPath.startsWith('/') ? targetPath : `/${targetPath}`,
-		cluster.url
-	)
+	const rawPath = targetPath.startsWith('/') ? targetPath : `/${targetPath}`
+	const baseUrl = new URL(cluster.url)
+	const basePath = baseUrl.pathname.replace(/\/+$/, '')
+	const finalPath = `${basePath}${rawPath}`
+	const targetUrl = new URL(finalPath, cluster.url)
 	if (options.query) {
 		Object.entries(options.query).forEach(([k, v]) => {
 			if (v !== undefined && v !== null && k !== 'cluster') {
@@ -351,17 +343,8 @@ export async function forwardToCluster(
 }
 
 export async function handleClusterMutation(event: H3Event) {
-	const method = event.method
-	const pathParam = event.context.params?.path || ''
-	const fullApiPath = `/api/${pathParam}`
+	const { method, fullApiPath, reqHeaders, query, clusterHeader } = extractProxyContext(event)
 	const allClusters = getClustersConfig(event)
-	const reqHeaders = getRequestHeaders(event)
-	const query = getQuery(event)
-	const clusterHeader =
-		(reqHeaders['x-cluster-url'] as string | undefined) ||
-		(query.cluster as string | undefined) ||
-		null
-
 	const targetClusters = resolveClusterTargets(clusterHeader, allClusters)
 
 	if (targetClusters.length === 0) {

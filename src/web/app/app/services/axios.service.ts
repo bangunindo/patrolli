@@ -31,6 +31,9 @@ interface ApiError {
 	data?: any
 }
 
+const AUTH_PATH_RE = /^\/?(?:api\/)?auth(?:\/|$)/
+const SILENT_AUTH_RE = /\/?(?:api\/)?auth\/(?:logout|refresh)/
+
 export class AxiosService {
 	public readonly instance: AxiosInstance
 	public cluster: string
@@ -104,9 +107,7 @@ export class AxiosService {
 				| undefined
 
 			if (error.response?.status === 401 && originalRequest) {
-				const isAuthPath =
-					originalRequest.url?.startsWith('/auth') ||
-					originalRequest.url?.startsWith('auth')
+				const isAuthPath = AUTH_PATH_RE.test(originalRequest.url ?? '')
 
 				if (!isAuthPath && !originalRequest._retry) {
 					originalRequest._retry = true
@@ -174,8 +175,7 @@ export class AxiosService {
 			const response = await this.instance.post<T>(url, data, config)
 			return response
 		} catch (error) {
-			const isLogout = url.includes('/auth/logout') || url.includes('auth/logout')
-			if (!isLogout) {
+			if (!SILENT_AUTH_RE.test(url)) {
 				handleErrorMessage(error as any)
 			}
 			throw error
@@ -261,18 +261,12 @@ export const handleErrorMessage = useDebounceFn((error: ApiError) => {
 
 export const showSuccessMessage = useDebounceFn((response?: AxiosResponse) => {
 	const messagefor = ['post', 'put', 'delete']
-	const apiExcludePath = ['/auth/login', '/auth/logout']
 	const method = response?.config?.method ?? 'get'
 	const url = response?.config?.url ?? '/'
 
-	if (messagefor.includes(method) && !apiExcludePath.includes(url)) {
-		let methodstr = 'Add'
-		if (method == 'post') methodstr = 'Add'
-		if (method == 'put') methodstr = 'Update'
-		if (method == 'delete') methodstr = 'Delete'
-
-		const payload = { title: `Success ${methodstr} Data`, message: '' }
+	if (messagefor.includes(method) && !AUTH_PATH_RE.test(url)) {
+		const methodstr = method === 'put' ? 'Update' : method === 'delete' ? 'Delete' : 'Add'
 		const appStore = useAppStore()
-		appStore.showSuccess(payload.title, payload.message)
+		appStore.showSuccess(`Success ${methodstr} Data`, '')
 	}
 }, 500)

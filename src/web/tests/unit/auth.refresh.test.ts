@@ -109,7 +109,7 @@ describe('Nitro Auth Refresh Endpoint (/api/auth/refresh)', () => {
 
 		expect(forwardSpy).toHaveBeenCalledWith(
 			clusters[0],
-			'/auth/refresh',
+			'/api/v1/auth/refresh',
 			expect.objectContaining({
 				method: 'POST',
 				body: { refresh_token: 'old-refresh-token' }

@@ -44,7 +44,7 @@ export default defineEventHandler(async (event) => {
 	// 1. Single cluster target (standard flow like Host)
 	if (targetClusters.length === 1 && targetClusters[0]) {
 		const targetCluster = targetClusters[0]
-		const patchRes = await forwardToCluster(targetCluster, `/api/users/${userId}`, {
+		const patchRes = await forwardToCluster(targetCluster, `/api/v1/users/${userId}`, {
 			method: 'PATCH',
 			headers: reqHeaders,
 			body
@@ -69,7 +69,7 @@ export default defineEventHandler(async (event) => {
 	const clusterResults = await Promise.all(
 		targetClusters.map(async (cluster) => {
 			try {
-				const patchRes = await forwardToCluster(cluster, `/api/users/${userId}`, {
+				const patchRes = await forwardToCluster(cluster, `/api/v1/users/${userId}`, {
 					method: 'PATCH',
 					headers: reqHeaders,
 					body

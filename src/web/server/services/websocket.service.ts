@@ -160,7 +160,7 @@ export function resolveWebSocketUpstreamUrl(
 
 	const targetUrl = new URL(targetCluster.url)
 	const basePath = targetUrl.pathname.replace(/\/+$/, '')
-	const fullUpstreamPath = `${basePath ? `${basePath}${upstreamPath}` : upstreamPath}${cleanSearch}`
+	const fullUpstreamPath = `${basePath}${upstreamPath}${cleanSearch}`
 
 	const isSecure = targetUrl.protocol === 'https:' || targetUrl.protocol === 'wss:'
 	const upstreamProtocol: 'ws:' | 'wss:' = isSecure ? 'wss:' : 'ws:'

@@ -8,8 +8,8 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import PipelineTable from '@/components/pipeline/Table.vue'
 import { usePipelineStore } from '@/stores/pipeline.store'
-import type { IPipelineItem } from '@@/shared/types/pipeline.management.type'
-import pipelineManagementApi from '@/app/api/pipeline.management.api'
+import type { IPipelineItem } from '@@/shared/types/pipeline.type'
+import pipelinesApi from '@/app/api/pipelines.api'
 
 describe('Pipeline Table & Host Selector Enhancements', () => {
 	const dummyPipelines: IPipelineItem[] = [
@@ -99,7 +99,7 @@ describe('Pipeline Table & Host Selector Enhancements', () => {
 		const store = usePipelineStore()
 		store.pipelines = JSON.parse(JSON.stringify(dummyPipelines))
 
-		vi.spyOn(pipelineManagementApi, 'getPipelineById').mockResolvedValue({
+		vi.spyOn(pipelinesApi, 'getPipelineById').mockResolvedValue({
 			success: true,
 			data: {
 				name: 'Test',
@@ -109,7 +109,7 @@ describe('Pipeline Table & Host Selector Enhancements', () => {
 				last_updated: '2026-10-22'
 			}
 		} as any)
-		const updateSpy = vi.spyOn(pipelineManagementApi, 'updatePipeline').mockResolvedValue({
+		const updateSpy = vi.spyOn(pipelinesApi, 'updatePipeline').mockResolvedValue({
 			success: true
 		} as any)
 

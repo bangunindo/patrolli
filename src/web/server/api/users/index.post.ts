@@ -47,7 +47,7 @@ export default defineEventHandler(async (event) => {
 	// 1. Single cluster target: forward POST directly
 	if (targetClusters.length === 1 && targetClusters[0]) {
 		const singleCluster = targetClusters[0]
-		const res = await forwardToCluster(singleCluster, '/api/users', {
+		const res = await forwardToCluster(singleCluster, '/api/v1/users', {
 			method: 'POST',
 			headers: reqHeaders,
 			body
@@ -81,7 +81,7 @@ export default defineEventHandler(async (event) => {
 				// Check if user already exists in this cluster
 				if (username) {
 					try {
-						const searchRes = await forwardToCluster(cluster, '/api/users', {
+						const searchRes = await forwardToCluster(cluster, '/api/v1/users', {
 							method: 'GET',
 							headers: reqHeaders,
 							query: { username }
@@ -108,7 +108,7 @@ export default defineEventHandler(async (event) => {
 				}
 
 				// Create user in this cluster
-				const createRes = await forwardToCluster(cluster, '/api/users', {
+				const createRes = await forwardToCluster(cluster, '/api/v1/users', {
 					method: 'POST',
 					headers: reqHeaders,
 					body

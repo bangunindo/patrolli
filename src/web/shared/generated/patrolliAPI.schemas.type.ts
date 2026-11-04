@@ -3,7 +3,7 @@
  * Do not edit manually.
  * Patrolli API
  * RESTful API for Patrolli monitoring system
- * OpenAPI spec version: 0.6.2
+ * OpenAPI spec version: 0.1.0-beta.1
  */
 import * as zod from 'zod'
 
@@ -459,6 +459,20 @@ export const AttributeLookup = zod
 export type AttributeLookup = zod.input<typeof AttributeLookup>
 export type AttributeLookupOutput = zod.output<typeof AttributeLookup>
 
+export const Sensitive = zod
+	.union([
+		zod.string(),
+		zod.object({
+			set: zod.string()
+		})
+	])
+	.describe(
+		'Write-only secret. Send the value as a string. Responses return {\"set\": \"<handle>\"}; send that object back unchanged in an update to keep the stored value.'
+	)
+
+export type Sensitive = zod.input<typeof Sensitive>
+export type SensitiveOutput = zod.output<typeof Sensitive>
+
 export const AuthenticationProtocol = zod.enum([
 	'md5',
 	'sha1',
@@ -472,7 +486,7 @@ export type AuthenticationProtocol = zod.input<typeof AuthenticationProtocol>
 export type AuthenticationProtocolOutput = zod.output<typeof AuthenticationProtocol>
 
 export const Authentication = zod.object({
-	passphrase: zod.string(),
+	passphrase: Sensitive,
 	protocol: AuthenticationProtocol
 })
 
@@ -815,7 +829,7 @@ export const Tls = zod.object({
 	ca_cert_path: zod.string().nullish(),
 	cert_path: zod.string().nullish(),
 	insecure_skip_verify: zod.boolean().optional(),
-	key_password: zod.string().nullish(),
+	key_password: zod.union([zod.null(), Sensitive]).optional(),
 	key_path: zod.string().nullish()
 })
 
@@ -862,7 +876,7 @@ export const Clickhouse = zod.object({
 		.describe(
 			"Inserts in flight to one endpoint at once, across the sink's workers.\nA batch sends one insert per table, so this counts inserts, not\nbatches. Past it, a worker waits with its batch ready (the wait does\nnot count toward `write_timeout`). 0 (default) means no limit."
 		),
-	password: zod.string().nullish(),
+	password: zod.union([zod.null(), Sensitive]).optional(),
 	settings: zod
 		.record(zod.string(), zod.string())
 		.optional()
@@ -923,7 +937,7 @@ export type PrivacyProtocol = zod.input<typeof PrivacyProtocol>
 export type PrivacyProtocolOutput = zod.output<typeof PrivacyProtocol>
 
 export const Privacy = zod.object({
-	passphrase: zod.string(),
+	passphrase: Sensitive,
 	protocol: PrivacyProtocol
 })
 
@@ -963,12 +977,12 @@ export type SnmpV3Output = zod.output<typeof SnmpV3>
 export const HttpAuth = zod.union([
 	zod.object({
 		Basic: zod.object({
-			password: zod.string(),
+			password: Sensitive,
 			username: zod.string()
 		})
 	}),
 	zod.object({
-		Bearer: zod.string()
+		Bearer: Sensitive
 	})
 ])
 
@@ -1865,24 +1879,22 @@ export const CreateListenerResponse = zod.object({
 export type CreateListenerResponse = zod.input<typeof CreateListenerResponse>
 export type CreateListenerResponseOutput = zod.output<typeof CreateListenerResponse>
 
-export const createPipelineManagementRequestAdmStatusDefault = 1
-export const createPipelineManagementRequestVisibilityDefault = 0
+export const createPipelineRequestAdmStatusDefault = 1
+export const createPipelineRequestVisibilityDefault = 0
 
-export const CreatePipelineManagementRequest = zod.object({
-	adm_status: zod.number().int().default(createPipelineManagementRequestAdmStatusDefault),
+export const CreatePipelineRequest = zod.object({
+	adm_status: zod.number().int().default(createPipelineRequestAdmStatusDefault),
 	host_ids: zod
 		.array(zod.string().uuid())
 		.optional()
 		.describe('Hosts whose items the canvas may use.'),
 	name: zod.string(),
 	sink_ids: zod.array(zod.string().uuid()).optional().describe('Sinks the canvas may use.'),
-	visibility: zod.number().int().default(createPipelineManagementRequestVisibilityDefault)
+	visibility: zod.number().int().default(createPipelineRequestVisibilityDefault)
 })
 
-export type CreatePipelineManagementRequest = zod.input<typeof CreatePipelineManagementRequest>
-export type CreatePipelineManagementRequestOutput = zod.output<
-	typeof CreatePipelineManagementRequest
->
+export type CreatePipelineRequest = zod.input<typeof CreatePipelineRequest>
+export type CreatePipelineRequestOutput = zod.output<typeof CreatePipelineRequest>
 
 export const DropAttributes = zod.object({
 	keys: zod.record(zod.string(), zod.array(zod.string()))
@@ -2036,7 +2048,7 @@ export type KafkaSaslMechanismOutput = zod.output<typeof KafkaSaslMechanism>
 
 export const KafkaSasl = zod.object({
 	mechanism: KafkaSaslMechanism,
-	password: zod.string(),
+	password: Sensitive,
 	username: zod.string()
 })
 
@@ -2553,22 +2565,18 @@ export const PipelineGraph = zod
 export type PipelineGraph = zod.input<typeof PipelineGraph>
 export type PipelineGraphOutput = zod.output<typeof PipelineGraph>
 
-export const GetPipelineManagementGraphResponse = zod.object({
+export const GetPipelineGraphResponse = zod.object({
 	canvas_id: zod.string().uuid(),
 	graph: PipelineGraph,
 	last_updated: zod
 		.string()
 		.datetime({ offset: true })
 		.describe('Send it back when saving the graph.'),
-	pipeline_management_id: zod.string().uuid()
+	pipeline_id: zod.string().uuid()
 })
 
-export type GetPipelineManagementGraphResponse = zod.input<
-	typeof GetPipelineManagementGraphResponse
->
-export type GetPipelineManagementGraphResponseOutput = zod.output<
-	typeof GetPipelineManagementGraphResponse
->
+export type GetPipelineGraphResponse = zod.input<typeof GetPipelineGraphResponse>
+export type GetPipelineGraphResponseOutput = zod.output<typeof GetPipelineGraphResponse>
 
 export const ItemKind = zod
 	.enum(['listener', 'snmp', 'snmp_walk', 'dummy', 'prometheus_scrape'])
@@ -2663,7 +2671,7 @@ export const GraphNodeContent = zod.union([
 export type GraphNodeContent = zod.input<typeof GraphNodeContent>
 export type GraphNodeContentOutput = zod.output<typeof GraphNodeContent>
 
-export const GetPipelineManagementNodeResponse = GraphNodeContent.and(
+export const GetPipelineNodeResponse = GraphNodeContent.and(
 	zod.object({
 		canvas_id: zod.string().uuid(),
 		last_updated: zod
@@ -2671,14 +2679,12 @@ export const GetPipelineManagementNodeResponse = GraphNodeContent.and(
 			.datetime({ offset: true })
 			.describe("Send it back when saving the node's content."),
 		node_id: zod.string().uuid(),
-		pipeline_management_id: zod.string().uuid()
+		pipeline_id: zod.string().uuid()
 	})
 )
 
-export type GetPipelineManagementNodeResponse = zod.input<typeof GetPipelineManagementNodeResponse>
-export type GetPipelineManagementNodeResponseOutput = zod.output<
-	typeof GetPipelineManagementNodeResponse
->
+export type GetPipelineNodeResponse = zod.input<typeof GetPipelineNodeResponse>
+export type GetPipelineNodeResponseOutput = zod.output<typeof GetPipelineNodeResponse>
 
 export const getSinkResponseAdmStatusDefault = 1
 export const getSinkResponseWorkerCountMin = 0
@@ -3497,32 +3503,28 @@ export const ListNodesResponse = zod.object({
 export type ListNodesResponse = zod.input<typeof ListNodesResponse>
 export type ListNodesResponseOutput = zod.output<typeof ListNodesResponse>
 
-export const ListPipelineManagementResponseInner = zod.object({
+export const ListPipelineResponseInner = zod.object({
 	adm_status: zod.number().int(),
 	created_at: zod.string().datetime({ offset: true }),
 	last_updated: zod.string().datetime({ offset: true }),
 	name: zod.string(),
 	owner_user_id: zod.string().uuid().nullish(),
-	pipeline_management_id: zod.string().uuid(),
+	pipeline_id: zod.string().uuid(),
 	visibility: zod.number().int()
 })
 
-export type ListPipelineManagementResponseInner = zod.input<
-	typeof ListPipelineManagementResponseInner
->
-export type ListPipelineManagementResponseInnerOutput = zod.output<
-	typeof ListPipelineManagementResponseInner
->
+export type ListPipelineResponseInner = zod.input<typeof ListPipelineResponseInner>
+export type ListPipelineResponseInnerOutput = zod.output<typeof ListPipelineResponseInner>
 
-export const listPipelineManagementResponseTotalMin = 0
+export const listPipelineResponseTotalMin = 0
 
-export const ListPipelineManagementResponse = zod.object({
-	pipeline_managements: zod.array(ListPipelineManagementResponseInner),
-	total: zod.number().int().min(listPipelineManagementResponseTotalMin)
+export const ListPipelineResponse = zod.object({
+	pipelines: zod.array(ListPipelineResponseInner),
+	total: zod.number().int().min(listPipelineResponseTotalMin)
 })
 
-export type ListPipelineManagementResponse = zod.input<typeof ListPipelineManagementResponse>
-export type ListPipelineManagementResponseOutput = zod.output<typeof ListPipelineManagementResponse>
+export type ListPipelineResponse = zod.input<typeof ListPipelineResponse>
+export type ListPipelineResponseOutput = zod.output<typeof ListPipelineResponse>
 
 export const ListProcessorResponseInner = zod.object({
 	adm_status: zod.number().int(),
@@ -3675,6 +3677,34 @@ export const OrderByDirection = zod.enum(['asc', 'desc'])
 export type OrderByDirection = zod.input<typeof OrderByDirection>
 export type OrderByDirectionOutput = zod.output<typeof OrderByDirection>
 
+export const PipelineCanvas = zod.object({
+	canvas_id: zod.string().uuid(),
+	last_updated: zod.string().datetime({ offset: true })
+})
+
+export type PipelineCanvas = zod.input<typeof PipelineCanvas>
+export type PipelineCanvasOutput = zod.output<typeof PipelineCanvas>
+
+export const PipelineDetail = zod.object({
+	adm_status: zod.number().int(),
+	canvases: zod.array(PipelineCanvas),
+	created_at: zod.string().datetime({ offset: true }),
+	host_ids: zod.array(zod.string().uuid()),
+	last_updated: zod.string().datetime({ offset: true }),
+	name: zod.string(),
+	owner_user_id: zod
+		.string()
+		.uuid()
+		.nullish()
+		.describe('Null when the owner was deleted. Such a pipeline is always public.'),
+	pipeline_id: zod.string().uuid(),
+	sink_ids: zod.array(zod.string().uuid()),
+	visibility: zod.number().int()
+})
+
+export type PipelineDetail = zod.input<typeof PipelineDetail>
+export type PipelineDetailOutput = zod.output<typeof PipelineDetail>
+
 export const PipelineGraphInput = zod
 	.object({
 		nodes: zod.array(GraphNodeInput),
@@ -3687,44 +3717,16 @@ export const PipelineGraphInput = zod
 export type PipelineGraphInput = zod.input<typeof PipelineGraphInput>
 export type PipelineGraphInputOutput = zod.output<typeof PipelineGraphInput>
 
-export const PipelineManagementCanvas = zod.object({
-	canvas_id: zod.string().uuid(),
-	last_updated: zod.string().datetime({ offset: true })
-})
+export const PipelineOrderBy = zod.enum(['name', 'created_at', 'last_updated'])
 
-export type PipelineManagementCanvas = zod.input<typeof PipelineManagementCanvas>
-export type PipelineManagementCanvasOutput = zod.output<typeof PipelineManagementCanvas>
+export type PipelineOrderBy = zod.input<typeof PipelineOrderBy>
+export type PipelineOrderByOutput = zod.output<typeof PipelineOrderBy>
 
-export const PipelineManagementDetail = zod.object({
-	adm_status: zod.number().int(),
-	canvases: zod.array(PipelineManagementCanvas),
-	created_at: zod.string().datetime({ offset: true }),
-	host_ids: zod.array(zod.string().uuid()),
-	last_updated: zod.string().datetime({ offset: true }),
-	name: zod.string(),
-	owner_user_id: zod
-		.string()
-		.uuid()
-		.nullish()
-		.describe('Null when the owner was deleted. Such a pipeline is always public.'),
-	pipeline_management_id: zod.string().uuid(),
-	sink_ids: zod.array(zod.string().uuid()),
-	visibility: zod.number().int()
-})
+export const pipelineSubsetInUseItemCountMin = 0
 
-export type PipelineManagementDetail = zod.input<typeof PipelineManagementDetail>
-export type PipelineManagementDetailOutput = zod.output<typeof PipelineManagementDetail>
-
-export const PipelineManagementOrderBy = zod.enum(['name', 'created_at', 'last_updated'])
-
-export type PipelineManagementOrderBy = zod.input<typeof PipelineManagementOrderBy>
-export type PipelineManagementOrderByOutput = zod.output<typeof PipelineManagementOrderBy>
-
-export const pipelineManagementSubsetInUseItemCountMin = 0
-
-export const PipelineManagementSubsetInUse = zod
+export const PipelineSubsetInUse = zod
 	.object({
-		item_count: zod.number().int().min(pipelineManagementSubsetInUseItemCountMin),
+		item_count: zod.number().int().min(pipelineSubsetInUseItemCountMin),
 		item_ids: zod
 			.array(zod.string().uuid())
 			.describe('The first items of dropped hosts, at most 100.'),
@@ -3736,8 +3738,8 @@ export const PipelineManagementSubsetInUse = zod
 	})
 	.describe('What still uses the hosts and sinks a request drops.')
 
-export type PipelineManagementSubsetInUse = zod.input<typeof PipelineManagementSubsetInUse>
-export type PipelineManagementSubsetInUseOutput = zod.output<typeof PipelineManagementSubsetInUse>
+export type PipelineSubsetInUse = zod.input<typeof PipelineSubsetInUse>
+export type PipelineSubsetInUseOutput = zod.output<typeof PipelineSubsetInUse>
 
 export const ProcessorOrderBy = zod.enum(['name', 'last_updated'])
 
@@ -4025,9 +4027,9 @@ export const ResponseDataCreateUserResponse = zod
 export type ResponseDataCreateUserResponse = zod.input<typeof ResponseDataCreateUserResponse>
 export type ResponseDataCreateUserResponseOutput = zod.output<typeof ResponseDataCreateUserResponse>
 
-export const responseDataGetPipelineManagementGraphResponseStatusCodeMin = 0
+export const responseDataGetPipelineGraphResponseStatusCodeMin = 0
 
-export const ResponseDataGetPipelineManagementGraphResponse = zod
+export const ResponseDataGetPipelineGraphResponse = zod
 	.object({
 		data: zod
 			.object({
@@ -4037,27 +4039,24 @@ export const ResponseDataGetPipelineManagementGraphResponse = zod
 					.string()
 					.datetime({ offset: true })
 					.describe('Send it back when saving the graph.'),
-				pipeline_management_id: zod.string().uuid()
+				pipeline_id: zod.string().uuid()
 			})
 			.optional(),
-		status_code: zod
-			.number()
-			.int()
-			.min(responseDataGetPipelineManagementGraphResponseStatusCodeMin),
+		status_code: zod.number().int().min(responseDataGetPipelineGraphResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
 
-export type ResponseDataGetPipelineManagementGraphResponse = zod.input<
-	typeof ResponseDataGetPipelineManagementGraphResponse
+export type ResponseDataGetPipelineGraphResponse = zod.input<
+	typeof ResponseDataGetPipelineGraphResponse
 >
-export type ResponseDataGetPipelineManagementGraphResponseOutput = zod.output<
-	typeof ResponseDataGetPipelineManagementGraphResponse
+export type ResponseDataGetPipelineGraphResponseOutput = zod.output<
+	typeof ResponseDataGetPipelineGraphResponse
 >
 
-export const responseDataGetPipelineManagementNodeResponseStatusCodeMin = 0
+export const responseDataGetPipelineNodeResponseStatusCodeMin = 0
 
-export const ResponseDataGetPipelineManagementNodeResponse = zod
+export const ResponseDataGetPipelineNodeResponse = zod
 	.object({
 		data: GraphNodeContent.and(
 			zod.object({
@@ -4067,22 +4066,19 @@ export const ResponseDataGetPipelineManagementNodeResponse = zod
 					.datetime({ offset: true })
 					.describe("Send it back when saving the node's content."),
 				node_id: zod.string().uuid(),
-				pipeline_management_id: zod.string().uuid()
+				pipeline_id: zod.string().uuid()
 			})
 		).optional(),
-		status_code: zod
-			.number()
-			.int()
-			.min(responseDataGetPipelineManagementNodeResponseStatusCodeMin),
+		status_code: zod.number().int().min(responseDataGetPipelineNodeResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
 
-export type ResponseDataGetPipelineManagementNodeResponse = zod.input<
-	typeof ResponseDataGetPipelineManagementNodeResponse
+export type ResponseDataGetPipelineNodeResponse = zod.input<
+	typeof ResponseDataGetPipelineNodeResponse
 >
-export type ResponseDataGetPipelineManagementNodeResponseOutput = zod.output<
-	typeof ResponseDataGetPipelineManagementNodeResponse
+export type ResponseDataGetPipelineNodeResponseOutput = zod.output<
+	typeof ResponseDataGetPipelineNodeResponse
 >
 
 export const responseDataGetSinkResponseDataAdmStatusDefault = 1
@@ -4338,34 +4334,26 @@ export const ResponseDataListNodesResponse = zod
 export type ResponseDataListNodesResponse = zod.input<typeof ResponseDataListNodesResponse>
 export type ResponseDataListNodesResponseOutput = zod.output<typeof ResponseDataListNodesResponse>
 
-export const responseDataListPipelineManagementResponseDataTotalMin = 0
+export const responseDataListPipelineResponseDataTotalMin = 0
 
-export const responseDataListPipelineManagementResponseStatusCodeMin = 0
+export const responseDataListPipelineResponseStatusCodeMin = 0
 
-export const ResponseDataListPipelineManagementResponse = zod
+export const ResponseDataListPipelineResponse = zod
 	.object({
 		data: zod
 			.object({
-				pipeline_managements: zod.array(ListPipelineManagementResponseInner),
-				total: zod
-					.number()
-					.int()
-					.min(responseDataListPipelineManagementResponseDataTotalMin)
+				pipelines: zod.array(ListPipelineResponseInner),
+				total: zod.number().int().min(responseDataListPipelineResponseDataTotalMin)
 			})
 			.optional(),
-		status_code: zod
-			.number()
-			.int()
-			.min(responseDataListPipelineManagementResponseStatusCodeMin),
+		status_code: zod.number().int().min(responseDataListPipelineResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
 
-export type ResponseDataListPipelineManagementResponse = zod.input<
-	typeof ResponseDataListPipelineManagementResponse
->
-export type ResponseDataListPipelineManagementResponseOutput = zod.output<
-	typeof ResponseDataListPipelineManagementResponse
+export type ResponseDataListPipelineResponse = zod.input<typeof ResponseDataListPipelineResponse>
+export type ResponseDataListPipelineResponseOutput = zod.output<
+	typeof ResponseDataListPipelineResponse
 >
 
 export const responseDataListProcessorResponseDataTotalMin = 0
@@ -4469,14 +4457,14 @@ export const ResponseDataLogoutResponse = zod
 export type ResponseDataLogoutResponse = zod.input<typeof ResponseDataLogoutResponse>
 export type ResponseDataLogoutResponseOutput = zod.output<typeof ResponseDataLogoutResponse>
 
-export const responseDataPipelineManagementDetailStatusCodeMin = 0
+export const responseDataPipelineDetailStatusCodeMin = 0
 
-export const ResponseDataPipelineManagementDetail = zod
+export const ResponseDataPipelineDetail = zod
 	.object({
 		data: zod
 			.object({
 				adm_status: zod.number().int(),
-				canvases: zod.array(PipelineManagementCanvas),
+				canvases: zod.array(PipelineCanvas),
 				created_at: zod.string().datetime({ offset: true }),
 				host_ids: zod.array(zod.string().uuid()),
 				last_updated: zod.string().datetime({ offset: true }),
@@ -4486,22 +4474,18 @@ export const ResponseDataPipelineManagementDetail = zod
 					.uuid()
 					.nullish()
 					.describe('Null when the owner was deleted. Such a pipeline is always public.'),
-				pipeline_management_id: zod.string().uuid(),
+				pipeline_id: zod.string().uuid(),
 				sink_ids: zod.array(zod.string().uuid()),
 				visibility: zod.number().int()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataPipelineManagementDetailStatusCodeMin),
+		status_code: zod.number().int().min(responseDataPipelineDetailStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
 
-export type ResponseDataPipelineManagementDetail = zod.input<
-	typeof ResponseDataPipelineManagementDetail
->
-export type ResponseDataPipelineManagementDetailOutput = zod.output<
-	typeof ResponseDataPipelineManagementDetail
->
+export type ResponseDataPipelineDetail = zod.input<typeof ResponseDataPipelineDetail>
+export type ResponseDataPipelineDetailOutput = zod.output<typeof ResponseDataPipelineDetail>
 
 export const responseDataTokenResponseStatusCodeMin = 0
 
@@ -5104,7 +5088,7 @@ export const UpdateListenerResponse = zod.object({
 export type UpdateListenerResponse = zod.input<typeof UpdateListenerResponse>
 export type UpdateListenerResponseOutput = zod.output<typeof UpdateListenerResponse>
 
-export const UpdatePipelineManagementGraphRequest = zod.object({
+export const UpdatePipelineGraphRequest = zod.object({
 	graph: PipelineGraphInput,
 	last_updated: zod
 		.string()
@@ -5112,14 +5096,10 @@ export const UpdatePipelineManagementGraphRequest = zod.object({
 		.describe('The `last_updated` of the canvas when it was read.')
 })
 
-export type UpdatePipelineManagementGraphRequest = zod.input<
-	typeof UpdatePipelineManagementGraphRequest
->
-export type UpdatePipelineManagementGraphRequestOutput = zod.output<
-	typeof UpdatePipelineManagementGraphRequest
->
+export type UpdatePipelineGraphRequest = zod.input<typeof UpdatePipelineGraphRequest>
+export type UpdatePipelineGraphRequestOutput = zod.output<typeof UpdatePipelineGraphRequest>
 
-export const UpdatePipelineManagementNodeRequest = GraphNodeContentInput.and(
+export const UpdatePipelineNodeRequest = GraphNodeContentInput.and(
 	zod.object({
 		last_updated: zod
 			.string()
@@ -5128,14 +5108,10 @@ export const UpdatePipelineManagementNodeRequest = GraphNodeContentInput.and(
 	})
 )
 
-export type UpdatePipelineManagementNodeRequest = zod.input<
-	typeof UpdatePipelineManagementNodeRequest
->
-export type UpdatePipelineManagementNodeRequestOutput = zod.output<
-	typeof UpdatePipelineManagementNodeRequest
->
+export type UpdatePipelineNodeRequest = zod.input<typeof UpdatePipelineNodeRequest>
+export type UpdatePipelineNodeRequestOutput = zod.output<typeof UpdatePipelineNodeRequest>
 
-export const UpdatePipelineManagementRequest = zod.object({
+export const UpdatePipelineRequest = zod.object({
 	adm_status: zod.number().int(),
 	force: zod
 		.boolean()
@@ -5153,10 +5129,8 @@ export const UpdatePipelineManagementRequest = zod.object({
 	visibility: zod.number().int().describe('Only the owner can change it.')
 })
 
-export type UpdatePipelineManagementRequest = zod.input<typeof UpdatePipelineManagementRequest>
-export type UpdatePipelineManagementRequestOutput = zod.output<
-	typeof UpdatePipelineManagementRequest
->
+export type UpdatePipelineRequest = zod.input<typeof UpdatePipelineRequest>
+export type UpdatePipelineRequestOutput = zod.output<typeof UpdatePipelineRequest>
 
 export const updateProcessorRequestAdmStatusDefault = 1
 

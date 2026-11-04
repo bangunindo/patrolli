@@ -3,7 +3,7 @@
  * Do not edit manually.
  * Patrolli API
  * RESTful API for Patrolli monitoring system
- * OpenAPI spec version: 0.6.2
+ * OpenAPI spec version: 0.1.0-beta.1
  */
 import { ResponseDataHealthResponse } from './patrolliAPI.schemas.type.ts'
 
