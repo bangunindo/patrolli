@@ -4492,6 +4492,15 @@
         },
         "additionalProperties": false
       },
+      "AttributeCollectAction": {
+        "type": "string",
+        "description": "What a collection rule does with each row it builds.\n\nWithin one batch, rules run in config order and records in batch order, so\nan upsert and a delete of the same key in one batch apply in that order.\nBatches handled by different processor workers are not ordered against\neach other, as for upserts alone.",
+        "enum": [
+          "upsert",
+          "delete",
+          "delete_partition"
+        ]
+      },
       "AttributeCollectBinding": {
         "oneOf": [
           {
@@ -4525,7 +4534,7 @@
               },
               {
                 "$ref": "#/components/schemas/AttributeCollectCast",
-                "description": "Explicit conversion before writing. Without a cast the input must\nalready match the column's declared type. A conversion failure skips the\nwhole candidate row; there is no implicit stringification.\n\n`double` is allowed for a value column, never a hash or partition key.\nA range bound must use `integer` or `ip`, matching the table's range.\n\nAn `ip` column always needs `cast: ip`, bound or not, because the input\narrives as a string and would otherwise fail the column's type check and\nskip the row. A missing or contradicting cast is rejected when the table\nresolves."
+                "description": "Explicit conversion before writing. Without a cast the input must\nalready match the column's declared type. A conversion failure skips the\nwhole candidate row; there is no implicit stringification.\n\n`double` is allowed for a value column, never a hash or partition key.\nA prefix column is CIDR text: no cast, or `string`.\n\nAn `ip` column always needs `cast: ip`, bound or not, because the input\narrives as a string and would otherwise fail the column's type check and\nskip the row. A missing or contradicting cast is rejected when the table\nresolves."
               }
             ]
           },
@@ -4608,9 +4617,13 @@
           "columns"
         ],
         "properties": {
+          "action": {
+            "$ref": "#/components/schemas/AttributeCollectAction",
+            "description": "What each eligible parent does to the table. Default `upsert`."
+          },
           "columns": {
             "type": "object",
-            "description": "Lookup-table column name -> source binding. Must bind every declared\ncolumn exactly once, hash keys and range partition/start/end columns\nincluded; an unknown column is rejected when the table resolves. YAML\nmap order determines neither schema nor composite-key order.\n\nA binding with a `key` reads that exact attribute. A `null` binding, or\none without `key`, is *pivoted*: it reads the `pivot.value` field of the\narray element whose normalized name equals the column name (or the\nbinding's `name`), and requires `pivot` on the rule.\n\nA hash key is taken from the resulting row. In a range table the bound\ncolumns supply the interval, whose type and inclusive ends the table\ndefines; bounds are consumed by the index, not stored as readable\nvalues. There is no match block and no per-processor key, TTL or\ncapacity setting.\n\nA missing input or failed cast skips the whole candidate row, leaving\nany existing row untouched. No partial updates, no fallback values.",
+            "description": "Lookup-table column name -> source binding. For `upsert`, must bind\nevery declared column exactly once, hash keys and the prefix and\npartition columns included; for `delete`, exactly the key columns; for\n`delete_partition`, exactly the partition columns. An unknown column is\nrejected when the table resolves. YAML map order determines neither\nschema nor composite-key order.\n\nA binding with a `key` reads that exact attribute. A `null` binding, or\none without `key`, is *pivoted*: it reads the `pivot.value` field of the\narray element whose normalized name equals the column name (or the\nbinding's `name`), and requires `pivot` on the rule.\n\nA hash key is taken from the resulting row. In a prefix table the prefix\ncolumn supplies the CIDR (a string attribute such as `10.1.0.0/16`, or a\nbare address for a host route; host bits set is an error), which is\nconsumed by the index, not stored as a readable value. There is no match\nblock and no per-processor key, TTL or capacity setting.\n\nA missing input or failed cast skips the whole candidate row, leaving\nany existing row untouched. No partial updates, no fallback values.",
             "additionalProperties": {
               "$ref": "#/components/schemas/AttributeCollectBinding"
             },
@@ -4780,7 +4793,7 @@
               },
               {
                 "$ref": "#/components/schemas/AttributeLookupCast",
-                "description": "Explicit conversion before probing. Without a cast the input must\nalready match the table's key type. A conversion failure skips the\nprobe; composite keys are never implicitly stringified.\n\nAn `ip` key column or range point always needs `cast: ip`, because the\ninput arrives as a string and would otherwise miss every record. A\nmissing or contradicting cast is rejected when the table resolves."
+                "description": "Explicit conversion before probing. Without a cast the input must\nalready match the table's key type. A conversion failure skips the\nprobe; composite keys are never implicitly stringified.\n\nAn `ip` key column always needs `cast: ip`, because the input arrives as\na string and would otherwise miss every record. A missing or\ncontradicting cast is rejected when the table resolves. A prefix\ntable's `point` is always an IP and needs no cast."
               }
             ]
           },
@@ -4804,11 +4817,11 @@
       },
       "AttributeLookupMatch": {
         "type": "object",
-        "description": "Bind attributes to the index already defined by the lookup table.\n\nA hash table requires exactly its configured key columns and no `point`; a\nrange table its partition columns (possibly none) plus `point`. Bindings are\nnamed, so YAML map order does not determine tuple order.",
+        "description": "Bind attributes to the index already defined by the lookup table.\n\nA hash table requires exactly its configured key columns and no `point`; a\nprefix table its partition columns (possibly none) plus `point`, which\nfinds the longest stored prefix containing that address. Bindings are\nnamed, so YAML map order does not determine tuple order.",
         "properties": {
           "keys": {
             "type": "object",
-            "description": "Lookup-table key/partition column -> input attribute. Empty only for an\nunpartitioned range lookup. Range bound columns are not probe bindings.",
+            "description": "Lookup-table key/partition column -> input attribute. Empty only for an\nunpartitioned prefix lookup. The prefix column is not a probe binding.",
             "additionalProperties": {
               "$ref": "#/components/schemas/AttributeLookupInput"
             },
@@ -4823,7 +4836,7 @@
               },
               {
                 "$ref": "#/components/schemas/AttributeLookupInput",
-                "description": "Point to search for in a range index; absent for a hash lookup. An\nexplicit cast must be `integer` or `ip`, matching the table's range."
+                "description": "Address to look up in a prefix table; absent for a hash lookup. Always\nread as an IP (text, or the bare-integer form), so `cast` may be left\nout; if set it must be `ip`."
               }
             ]
           }
@@ -4847,11 +4860,11 @@
           },
           "match": {
             "$ref": "#/components/schemas/AttributeLookupMatch",
-            "description": "Input attributes supplying the table's hash key or partition/range key."
+            "description": "Input attributes supplying the table's hash key, or a prefix table's\npartition and probe address."
           },
           "output": {
             "type": "object",
-            "description": "Destination attribute key -> lookup-table column name. All columns come\nfrom the same matched row, so extra outputs add no index probes. Values\nkeep their column types; IP values are emitted as strings.",
+            "description": "Destination attribute key -> lookup-table column name. All columns come\nfrom the same matched row, so extra outputs add no index probes. Values\nkeep their column types; IP values are emitted as strings. Naming a\nprefix table's `prefix_column` emits the prefix that matched, as CIDR\ntext (`10.1.0.0/16`).",
             "additionalProperties": {
               "type": "string"
             },
