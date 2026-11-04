@@ -28,6 +28,7 @@ import GroupLayout from './GroupLayout.vue'
 import TextControl from './TextControl.vue'
 import PasswordControl from './PasswordControl.vue'
 import SwitchControl from './SwitchControl.vue'
+import { isSensitiveJsonSchema } from '@/app/services/forms/sensitive.utils'
 import NumberControl from './NumberControl.vue'
 import BooleanControl from './BooleanControl.vue'
 import SelectControl from './SelectControl.vue'
@@ -139,7 +140,14 @@ export const zodFormRenderers: JsonFormsRendererRegistryEntry[] = [
 		renderer: markRaw(ArrayControl)
 	},
 	{
-		tester: rankWith(5, or(optionIs('sensitive', true), optionIs('widget', 'password'))),
+		tester: rankWith(
+			5,
+			or(
+				optionIs('sensitive', true),
+				optionIs('widget', 'password'),
+				schemaMatches(isSensitiveJsonSchema)
+			)
+		),
 		renderer: markRaw(PasswordControl)
 	},
 	{

@@ -145,6 +145,7 @@ export interface FieldDescriptor {
 	pathKey: string
 	label: string
 	widget: FieldWidgetType
+	sensitive?: boolean
 	zodType: string
 	required: boolean
 	isOptional: boolean

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import type { UiHint } from '@@/shared/types/dynamic-form.type'
+import { isSensitiveSetObject } from '../sensitive.utils'
 
 export const sinkHints: Record<string, UiHint> = {
 	name: { order: 1, label: 'Name', placeholder: 'Name of group' },
@@ -182,8 +183,11 @@ export const sinkHints: Record<string, UiHint> = {
 			const kafkaConfig = draft?.config?.config || draft?.config
 			const protocol = kafkaConfig?.security?.protocol || 'plaintext'
 			if (protocol === 'sasl_plaintext' || protocol === 'sasl_ssl') {
-				const hasUsername = sasl?.username && String(sasl.username).trim() !== ''
-				const hasPassword = sasl?.password && String(sasl.password).trim() !== ''
+				const hasUsername =
+					typeof sasl?.username === 'string' && sasl.username.trim() !== ''
+				const hasPassword =
+					(typeof sasl?.password === 'string' && sasl.password.trim() !== '') ||
+					isSensitiveSetObject(sasl?.password)
 				if (!sasl || (!hasUsername && !hasPassword)) {
 					return `Protocol '${protocol}' requires SASL authentication credentials`
 				}
@@ -225,7 +229,10 @@ export const sinkHints: Record<string, UiHint> = {
 			const kafkaConfig = draft?.config?.config || draft?.config
 			const protocol = kafkaConfig?.security?.protocol || 'plaintext'
 			if (protocol === 'sasl_plaintext' || protocol === 'sasl_ssl') {
-				if (!password || String(password).trim() === '') {
+				const hasValidPassword =
+					(typeof password === 'string' && password.trim() !== '') ||
+					isSensitiveSetObject(password)
+				if (!hasValidPassword) {
 					return 'Password is required for SASL protocol'
 				}
 			}

@@ -79,6 +79,16 @@ const builtInValidators: FormatValidator[] = [
 		message: (ctx) => `${formatFieldLabel(ctx.label)} is required`
 	},
 	{
+		name: 'non-empty-secret',
+		test: (val) => {
+			if (val === null || val === undefined) return false
+			if (typeof val === 'string') return val.trim().length > 0
+			return false
+		},
+		message: () =>
+			'New secret cannot be empty; enter a new value, click Revert, or click Remove'
+	},
+	{
 		name: 'array',
 		test: (val) => Array.isArray(val) && val.length > 0,
 		message: (ctx) => `${formatFieldLabel(ctx.label)} can't be empty`
@@ -262,7 +272,16 @@ export function validateRules(value: any, rules: string[], context: ValidationCo
 	if (!rules || rules.length === 0) return []
 	const messages: string[] = []
 
-	// 1. Execute 'required' rule if present
+	// 1. Execute 'non-empty-secret' rule if present
+	if (rules.includes('non-empty-secret')) {
+		const err = validateFormat('non-empty-secret', value, context)
+		if (err) {
+			messages.push(err)
+			return messages
+		}
+	}
+
+	// 2. Execute 'required' rule if present
 	if (rules.includes('required')) {
 		const err = validateFormat('required', value, context)
 		if (err) {
@@ -271,7 +290,7 @@ export function validateRules(value: any, rules: string[], context: ValidationCo
 		}
 	}
 
-	// 2. Execute 'array' rule if present
+	// 3. Execute 'array' rule if present
 	if (rules.includes('array')) {
 		const err = validateFormat('array', value, context)
 		if (err) {
@@ -280,9 +299,9 @@ export function validateRules(value: any, rules: string[], context: ValidationCo
 		}
 	}
 
-	// 3. Execute other format rules
+	// 4. Execute other format rules
 	for (const rule of rules) {
-		if (rule === 'required' || rule === 'array') continue
+		if (rule === 'required' || rule === 'non-empty-secret' || rule === 'array') continue
 
 		if (hasFormatValidator(rule)) {
 			if (Array.isArray(value)) {

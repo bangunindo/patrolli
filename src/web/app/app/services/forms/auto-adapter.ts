@@ -12,6 +12,7 @@ import {
 } from './zod-introspector'
 import { pathToString, formatFieldLabel, getValueByPath } from './path-helper'
 import { validateFormat, type ValidationContext } from './format-registry'
+import { isSensitiveSchema, isSensitiveSetObject } from './sensitive.utils'
 import type { FormValidationResult, UiHint } from '@@/shared/types/dynamic-form.type'
 
 /**
@@ -655,6 +656,10 @@ export class AutoFormAdapter {
 						if (!fieldUnwrapped.isOptional && !fieldUnwrapped.isNullable) {
 							draft[key] = false
 						}
+					} else if (isSensitiveSchema(fieldSchema as z.ZodTypeAny)) {
+						if (!fieldUnwrapped.isOptional && !fieldUnwrapped.isNullable) {
+							draft[key] = ''
+						}
 					} else if (
 						fieldUnwrapped.typeName === 'ZodUnion' ||
 						fieldUnwrapped.typeName === 'ZodDiscriminatedUnion'
@@ -733,7 +738,9 @@ export class AutoFormAdapter {
 					typeof draft[key] === 'object' &&
 					!Array.isArray(draft[key])
 				) {
-					if (
+					if (isSensitiveSetObject(draft[key])) {
+						draft[key] = { set: draft[key].set }
+					} else if (
 						fieldUnwrapped.typeName === 'ZodUnion' ||
 						fieldUnwrapped.typeName === 'ZodDiscriminatedUnion'
 					) {
@@ -870,6 +877,10 @@ export class AutoFormAdapter {
 				return val
 			}
 			return {}
+		}
+
+		if (isSensitiveSetObject(val)) {
+			return { set: val.set }
 		}
 
 		if (val === null || val === undefined) {
