@@ -24,7 +24,7 @@ use super::attr_input;
 use super::attr_input::Parent;
 use crate::cache;
 use crate::cache::lookup_table::TableRead;
-use crate::cache::lookup_table::cell::{CellRef, KeyRef, Lookup, RangePoint};
+use crate::cache::lookup_table::cell::{CellRef, KeyRef, Lookup};
 use crate::cache::lookup_table::schema::{ColumnIdx, KeyPlan};
 use crate::config::lookup_table as lt;
 use crate::config::processor::AttributeTable;
@@ -43,6 +43,7 @@ use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use smol_str::{SmolStr, format_smolstr};
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::sync::Arc;
 use tracing::{trace, warn};
 use uuid::Uuid;
@@ -135,6 +136,13 @@ impl Values {
         }
     }
 
+    /// Records text that is already owned, such as a rendered prefix.
+    fn insert_text(&mut self, parent: Parent, text: SmolStr) {
+        if let Values::Str(m) = self {
+            m.insert(parent, text);
+        }
+    }
+
     fn cell(&self, parent: Parent) -> CellRef<'_> {
         match self {
             Self::Str(m) => CellRef::String(&m[&parent]),
@@ -191,18 +199,29 @@ struct Plan<'a> {
     /// In the table's own key order, which is what `Lookup` expects — the config
     /// binds them by name, so YAML map order is irrelevant.
     keys: Vec<&'a AttributeLookupInput>,
-    /// `Some` exactly when the table is range-keyed.
-    point: Option<(&'a AttributeLookupInput, lt::RangeType)>,
+    /// `Some` exactly when the table is prefix-keyed.
+    point: Option<&'a AttributeLookupInput>,
     /// Destination keys are owned once here rather than per hit: `Writes` keys
     /// on `SmolStr`, and a long destination would otherwise allocate per record.
-    outputs: Vec<(SmolStr, ColumnIdx, lt::ValueType)>,
+    outputs: Vec<(SmolStr, Output, lt::ValueType)>,
+}
+
+/// Where an output's value comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Output {
+    Column(ColumnIdx),
+    /// the prefix that matched, as CIDR text; named in `output` by the prefix
+    /// column, which is consumed by the index and so is never a column
+    MatchedPrefix,
 }
 
 impl<'a> Plan<'a> {
-    fn resolve(read: &TableRead, rule: &'a AttributeLookupRule) -> Result<Self> {
+    /// `key` is the table's configured key: the prefix column's name lives only
+    /// there, since the index consumes the column.
+    fn resolve(read: &TableRead, key: &lt::Key, rule: &'a AttributeLookupRule) -> Result<Self> {
         let schema = read.schema();
-        // Range bound columns are consumed by the index and never materialized,
-        // so they are not in `schema` and cannot be bound here.
+        // The prefix column is consumed by the index and never materialized,
+        // so it is not in `schema` and cannot be bound here.
         let bound = |idx: ColumnIdx| -> Result<&'a AttributeLookupInput> {
             let name = schema
                 .name(idx)
@@ -217,7 +236,7 @@ impl<'a> Plan<'a> {
                 .ok_or_else(|| anyhow!("match.keys has no binding for key column {name:?}"))?;
             // The index compares variants, so a wrong-typed binding misses on
             // every record. Fail the plan once instead of counting a miss per
-            // record. In `bound`, not in one arm: a range table's partition
+            // record. In `bound`, not in one arm: a prefix table's partition
             // columns are bound the same way.
             match (input.cast, ty) {
                 (Some(cast), ty) if cast_type(cast) != ty => {
@@ -253,12 +272,9 @@ impl<'a> Plan<'a> {
                     None,
                 )
             }
-            KeyPlan::Range {
-                partition,
-                range_type,
-            } => {
+            KeyPlan::Prefix { partition } => {
                 let point = rule.match_by.point.as_ref().ok_or_else(|| {
-                    anyhow!("the lookup table is range-keyed but match.point is not set")
+                    anyhow!("the lookup table is prefix-keyed but match.point is not set")
                 })?;
                 if configured != partition.len() {
                     bail!(
@@ -266,41 +282,43 @@ impl<'a> Plan<'a> {
                         partition.len()
                     );
                 }
-                // Same rule as `bound`: a point the index cannot match misses
-                // on every record, and an `ip` range needs `cast: ip` spelled
-                // out because OTAP has no IP value.
-                let want = match range_type {
-                    lt::RangeType::Ip => AttributeLookupCast::Ip,
-                    lt::RangeType::Integer => AttributeLookupCast::Integer,
-                };
-                match point.cast {
-                    Some(cast) if cast != want => bail!(
-                        "match.point.cast is {:?} but the table's range is {range_type:?}",
-                        cast
-                    ),
-                    None if *range_type == lt::RangeType::Ip => {
-                        bail!("an ip range needs an explicit `cast: ip` on match.point")
-                    }
-                    _ => {}
+                // The point is always read as an address, so a cast, if
+                // spelled out, can only say so.
+                if let Some(cast) = point.cast
+                    && cast != AttributeLookupCast::Ip
+                {
+                    bail!("match.point.cast is {cast:?} but a prefix table is probed by an ip");
                 }
                 (
                     partition.iter().map(|c| bound(*c)).collect::<Result<_>>()?,
-                    Some((point, *range_type)),
+                    Some(point),
                 )
             }
         };
 
+        let prefix_column = match key {
+            lt::Key::Prefix(prefix) if point.is_some() => Some(prefix.prefix_column.as_str()),
+            _ => None,
+        };
         let outputs = rule
             .output
             .iter()
             .map(|(destination, column)| {
+                if Some(column.as_str()) == prefix_column {
+                    // emitted as CIDR text, like every IP value
+                    return Ok((
+                        SmolStr::new(destination),
+                        Output::MatchedPrefix,
+                        lt::ValueType::String,
+                    ));
+                }
                 let idx = read
                     .column(column)
                     .ok_or_else(|| anyhow!("output column {column:?} is not in the table"))?;
                 let ty = schema
                     .value_type(idx)
                     .ok_or_else(|| anyhow!("output column {column:?} has no type"))?;
-                Ok((SmolStr::new(destination), idx, ty))
+                Ok((SmolStr::new(destination), Output::Column(idx), ty))
             })
             .collect::<Result<_>>()?;
 
@@ -332,7 +350,7 @@ fn run_rule(
         return Ok(());
     }
     // validate lookup rule to the cache table's schema
-    let plan = Plan::resolve(&read, rule)?;
+    let plan = Plan::resolve(&read, &table.meta().config.key, rule)?;
 
     let parent_ids = attr_input::rule_parent_ids(pl, &rule.table)?;
     let eligible = attr_input::eligible_parents(pl, shared, rule.when.as_ref(), &parent_ids)?;
@@ -355,7 +373,7 @@ fn run_rule(
         .iter()
         .map(|input| source(input))
         .collect::<Result<Vec<_>>>()?;
-    let point_source = plan.point.map(|(input, _)| source(input)).transpose()?;
+    let point_source = plan.point.map(source).transpose()?;
 
     let candidates =
         attr_input::candidates(key_sources.iter().chain(point_source.as_ref()), is_eligible);
@@ -373,19 +391,14 @@ fn run_rule(
                 }
             }
         }
-        let point = match (&plan.point, &point_source) {
-            (Some((input, range_type)), Some(source)) if usable => {
-                match source
-                    .get(parent)
-                    .and_then(|v| range_point(v, input.cast, *range_type))
-                {
-                    Some(point) => Some(point),
-                    None => {
-                        usable = false;
-                        None
-                    }
+        let point = match &point_source {
+            Some(source) if usable => match source.get(parent).and_then(probe_address) {
+                Some(point) => Some(point),
+                None => {
+                    usable = false;
+                    None
                 }
-            }
+            },
             _ => None,
         };
         if !usable {
@@ -400,18 +413,32 @@ fn run_rule(
             })
             .collect();
         let probe = match point {
-            Some(point) => Lookup::Range {
+            Some(addr) => Lookup::Prefix {
                 partition: &parts,
-                point,
+                addr,
             },
             None => Lookup::Hash(&parts),
         };
         // A miss is tallied by `lookup` itself and leaves every destination alone.
-        let Some(row) = read.lookup(probe) else {
+        let Some(found) = read.lookup(probe) else {
             continue;
         };
-        for (destination, column, ty) in &plan.outputs {
-            let cell = row.cell(*column);
+        for (destination, output, ty) in &plan.outputs {
+            let cell = match output {
+                Output::Column(column) => found.row.cell(*column),
+                Output::MatchedPrefix => {
+                    if let Some(net) = found.prefix {
+                        // a v4 CIDR always fits `SmolStr`'s inline buffer; only
+                        // a v6 one past 23 characters allocates
+                        writes
+                            .table(&rule.table)
+                            .entry(destination.clone())
+                            .or_insert_with(|| Values::new(*ty))
+                            .insert_text(parent, format_smolstr!("{net}"));
+                    }
+                    continue;
+                }
+            };
             if cell.is_null() {
                 continue;
             }
@@ -456,12 +483,15 @@ fn cast_type(cast: AttributeLookupCast) -> lt::ValueType {
     }
 }
 
-fn range_point(
-    value: &Value<'_>,
-    cast: Option<AttributeLookupCast>,
-    range_type: lt::RangeType,
-) -> Option<RangePoint> {
-    RangePoint::from_cell(key_part(value, cast)?.as_ref(), range_type)
+/// The address a prefix table is probed with. Always read as an IP — OTAP has
+/// no IP value, so it arrives as text (or the bare-integer form `parse_ip`
+/// also accepts) — whatever `cast` says, which plan time has already pinned
+/// to `ip` or unset.
+fn probe_address(value: &Value<'_>) -> Option<IpAddr> {
+    match key_part(value, Some(AttributeLookupCast::Ip))?.as_ref() {
+        CellRef::Ip(addr) => Some(addr),
+        _ => None,
+    }
 }
 
 // ---- writing back ----
@@ -822,34 +852,30 @@ mod tests {
         config.id
     }
 
-    /// A processor-fed range table. `columns` includes the two bound columns,
-    /// which the index consumes, so `rows` supplies only the materialized cells.
-    fn range_table(
+    /// A processor-fed prefix table keyed on its `network` column. `columns`
+    /// includes it, but the index consumes it, so `rows` supplies only the
+    /// materialized cells beside each CIDR.
+    fn prefix_table(
         cache: &cache::Cache,
-        range_type: lt::RangeType,
         partition_columns: &[&str],
         columns: &[(&str, lt::ValueType)],
-        rows: &[(&[CellRef<'_>], RangePoint, RangePoint)],
+        rows: &[(&[CellRef<'_>], &str)],
     ) -> Uuid {
         let config = lt::LookupTable {
             id: Uuid::now_v7(),
-            name: "range".into(),
+            name: "prefix".into(),
             source: processor_source(columns),
-            key: lt::Key::Range(lt::Range {
-                range_type,
+            key: lt::Key::Prefix(lt::Prefix {
+                prefix_column: "network".into(),
                 partition_columns: partition_columns.iter().map(|c| c.to_string()).collect(),
-                start_column: "lo".into(),
-                start_inclusive: true,
-                end_column: "hi".into(),
-                end_inclusive: true,
             }),
         };
         let table = cache.lookup_table.insert(&config).unwrap();
         let mutable = table.as_mutable().unwrap();
-        for (cells, start, end) in rows {
+        for (cells, cidr) in rows {
             let outcome = mutable
                 .table()
-                .upsert_range(cells, *start, true, *end, true)
+                .upsert_prefix(cells, cidr.parse().unwrap())
                 .unwrap();
             assert_eq!(outcome, Upsert::Inserted);
         }
@@ -1226,7 +1252,7 @@ mod tests {
     #[test]
     fn enriching_a_record_does_not_allocate_per_record() {
         let cache = cache::Cache::new();
-        let id = hash_table(
+        let hash = hash_table(
             &cache,
             &["host"],
             &[
@@ -1235,36 +1261,56 @@ mod tests {
             ],
             &[&[CellRef::String("h"), CellRef::String("dc1")]],
         );
-        let cfg = config(
-            json!({"lookups":[{"lookup_table":id,"table":"record","match":{"keys":{"host":{"key":"host"}}},"output":{"site":"site"}}]}),
+        let hash_cfg = config(
+            json!({"lookups":[{"lookup_table":hash,"table":"record","match":{"keys":{"host":{"key":"host"}}},"output":{"site":"site"}}]}),
         );
-        let node = Uuid::now_v7();
-        let measure = |records: usize| {
-            let pl = logs(
-                vec![],
-                (0..records).map(|_| vec![kv("host", s("h"))]).collect(),
-            );
-            // once to warm every lazily grown map, then measure a clean run
-            let _ = attribute_lookup(pl.clone(), &cfg, node, &cache);
-            let ((pl, errored), allocations) =
-                super::super::test_alloc::measure(|| attribute_lookup(pl, &cfg, node, &cache));
-            assert!(!errored);
-            assert_eq!(
-                record_attrs(&pl)
-                    .iter()
-                    .filter(|(_, k, _)| k == "site")
-                    .count(),
-                records,
-                "every record must actually have been enriched"
-            );
-            allocations.calls
-        };
+        // A prefix probe, emitting the matched prefix as well. Only v4: a v4
+        // CIDR always fits `SmolStr`'s 23-byte inline buffer, while a long v6
+        // one (`2001:db8:1234:5678::/64`) allocates once per record by design.
+        let prefix = prefix_table(
+            &cache,
+            &[],
+            &[
+                ("network", lt::ValueType::String),
+                ("site", lt::ValueType::String),
+            ],
+            &[
+                (&[CellRef::String("dc0")], "10.0.0.0/8"),
+                (&[CellRef::String("dc1")], "10.1.0.0/16"),
+            ],
+        );
+        let prefix_cfg = config(
+            json!({"lookups":[{"lookup_table":prefix,"table":"record","match":{"point":{"key":"host"}},"output":{"site":"site","net":"network"}}]}),
+        );
+        for (cfg, host) in [(&hash_cfg, "h"), (&prefix_cfg, "10.1.2.3")] {
+            let node = Uuid::now_v7();
+            let measure = |records: usize| {
+                let pl = logs(
+                    vec![],
+                    (0..records).map(|_| vec![kv("host", s(host))]).collect(),
+                );
+                // once to warm every lazily grown map, then measure a clean run
+                let _ = attribute_lookup(pl.clone(), cfg, node, &cache);
+                let ((pl, errored), allocations) =
+                    super::super::test_alloc::measure(|| attribute_lookup(pl, cfg, node, &cache));
+                assert!(!errored);
+                assert_eq!(
+                    record_attrs(&pl)
+                        .iter()
+                        .filter(|(_, k, _)| k == "site")
+                        .count(),
+                    records,
+                    "every record must actually have been enriched"
+                );
+                allocations.calls
+            };
 
-        let (small, large) = (measure(100), measure(1000));
-        assert!(
-            large.saturating_sub(small) < 200,
-            "900 more records must not cost ~900 more allocations: {small} -> {large}"
-        );
+            let (small, large) = (measure(100), measure(1000));
+            assert!(
+                large.saturating_sub(small) < 200,
+                "900 more records must not cost ~900 more allocations ({host}): {small} -> {large}"
+            );
+        }
     }
 
     #[test]
@@ -1417,20 +1463,18 @@ mod tests {
     }
 
     #[test]
-    fn unpartitioned_and_partitioned_integer_ranges_both_probe() {
+    fn unpartitioned_and_partitioned_prefixes_both_probe() {
         for partitioned in [false, true] {
             let cache = cache::Cache::new();
             let columns: Vec<(&str, lt::ValueType)> = if partitioned {
                 vec![
-                    ("lo", lt::ValueType::Integer),
-                    ("hi", lt::ValueType::Integer),
+                    ("network", lt::ValueType::String),
                     ("site", lt::ValueType::String),
                     ("zone", lt::ValueType::String),
                 ]
             } else {
                 vec![
-                    ("lo", lt::ValueType::Integer),
-                    ("hi", lt::ValueType::Integer),
+                    ("network", lt::ValueType::String),
                     ("zone", lt::ValueType::String),
                 ]
             };
@@ -1440,15 +1484,9 @@ mod tests {
             } else {
                 vec![CellRef::String("dmz")]
             };
-            let id = range_table(
-                &cache,
-                lt::RangeType::Integer,
-                partition,
-                &columns,
-                &[(&cells, RangePoint::Integer(100), RangePoint::Integer(199))],
-            );
+            let id = prefix_table(&cache, partition, &columns, &[(&cells, "10.0.0.0/8")]);
 
-            let mut attrs = vec![kv("vlan", int(150))];
+            let mut attrs = vec![kv("addr", s("10.1.2.3"))];
             let mut keys = json!({});
             if partitioned {
                 attrs.push(kv("site", s("jkt")));
@@ -1458,7 +1496,7 @@ mod tests {
             let cfg = config(json!({"lookups": [{
                 "lookup_table": id,
                 "table": "record",
-                "match": {"keys": keys, "point": {"key": "vlan"}},
+                "match": {"keys": keys, "point": {"key": "addr"}},
                 "output": {"zone": "zone"},
             }]}));
 
@@ -1473,25 +1511,79 @@ mod tests {
     }
 
     #[test]
-    fn an_ip_range_probe_canonicalises_the_v4_mapped_form() {
+    fn the_longest_prefix_wins_and_can_be_output() {
         let cache = cache::Cache::new();
-        let id = range_table(
+        let id = prefix_table(
             &cache,
-            lt::RangeType::Ip,
             &[],
             &[
-                ("lo", lt::ValueType::Ip),
-                ("hi", lt::ValueType::Ip),
+                ("network", lt::ValueType::String),
+                ("asn", lt::ValueType::Integer),
+            ],
+            &[
+                (&[CellRef::Integer(8)], "10.0.0.0/8"),
+                (&[CellRef::Integer(24)], "10.1.2.0/24"),
+                (&[CellRef::Integer(16)], "10.1.0.0/16"),
+                (&[CellRef::Integer(64)], "2001:db8:1234:5678::/64"),
+            ],
+        );
+        let pl = logs(
+            vec![],
+            vec![
+                vec![kv("dst", s("10.1.2.3"))],
+                vec![kv("dst", s("10.1.9.9"))],
+                vec![kv("dst", s("10.9.9.9"))],
+                vec![kv("dst", s("2001:db8:1234:5678::1"))],
+                vec![kv("dst", s("11.0.0.1"))],
+            ],
+        );
+        let cfg = config(json!({"lookups": [{
+            "lookup_table": id,
+            "table": "record",
+            "match": {"point": {"key": "dst"}},
+            "output": {"dst.asn": "asn", "dst.prefix": "network"},
+        }]}));
+
+        let (pl, errored) = run(pl, &cfg, &cache);
+        assert!(!errored);
+        let attrs = record_attrs(&pl);
+        for (parent, asn, prefix) in [
+            (0, "i24", "10.1.2.0/24"),
+            (1, "i16", "10.1.0.0/16"),
+            (2, "i8", "10.0.0.0/8"),
+            (3, "i64", "2001:db8:1234:5678::/64"),
+        ] {
+            assert!(
+                attrs.contains(&(parent, "dst.asn".into(), asn.into())),
+                "{parent}: {attrs:?}"
+            );
+            assert!(
+                attrs.contains(&(parent, "dst.prefix".into(), prefix.into())),
+                "{parent}: {attrs:?}"
+            );
+        }
+        assert!(
+            !attrs
+                .iter()
+                .any(|(p, k, _)| *p == 4 && k.starts_with("dst.")),
+            "an uncovered address must not be enriched: {attrs:?}"
+        );
+    }
+
+    #[test]
+    fn a_prefix_probe_canonicalises_the_v4_mapped_form() {
+        let cache = cache::Cache::new();
+        let id = prefix_table(
+            &cache,
+            &[],
+            &[
+                ("network", lt::ValueType::String),
                 ("country", lt::ValueType::String),
             ],
-            &[(
-                &[CellRef::String("ID")],
-                RangePoint::Ip("10.0.0.0".parse().unwrap()),
-                RangePoint::Ip("10.0.0.255".parse().unwrap()),
-            )],
+            &[(&[CellRef::String("ID")], "10.0.0.0/24")],
         );
         // The mapped form must fold onto v4, or the probe would look in the v6
-        // set and miss.
+        // trie and miss.
         let pl = logs(
             vec![],
             vec![
@@ -1520,8 +1612,101 @@ mod tests {
         );
         assert!(
             !attrs.iter().any(|(p, k, _)| *p == 2 && k == "flow.country"),
-            "an out-of-range address must not be enriched: {attrs:?}"
+            "an uncovered address must not be enriched: {attrs:?}"
         );
+    }
+
+    /// The point of a prefix table is always an address: a cast may be left out
+    /// or spelled `ip`, and anything else is a plan error.
+    #[test]
+    fn a_prefix_point_cast_must_be_ip_or_absent() {
+        let cache = cache::Cache::new();
+        let id = prefix_table(
+            &cache,
+            &[],
+            &[
+                ("network", lt::ValueType::String),
+                ("country", lt::ValueType::String),
+            ],
+            &[(&[CellRef::String("ID")], "10.0.0.0/24")],
+        );
+        for (cast, want_error) in [
+            (None, false),
+            (Some("ip"), false),
+            (Some("string"), true),
+            (Some("integer"), true),
+        ] {
+            let mut point = json!({"key": "src"});
+            if let Some(cast) = cast {
+                point["cast"] = json!(cast);
+            }
+            // unvalidated, so the plan-time check is what is exercised;
+            // config validation rejects the same casts earlier
+            let cfg: AttributeLookup = serde_json::from_value(json!({"lookups": [{
+                "lookup_table": id, "table": "record",
+                "match": {"point": point},
+                "output": {"country": "country"},
+            }]}))
+            .unwrap();
+            assert_eq!(cfg.validate().is_err(), want_error, "{cast:?}");
+            let (pl, errored) = run(
+                logs(vec![], vec![vec![kv("src", s("10.0.0.1"))]]),
+                &cfg,
+                &cache,
+            );
+            assert_eq!(errored, want_error, "{cast:?}");
+            assert_eq!(
+                record_attrs(&pl).contains(&(0, "country".into(), "ID".into())),
+                !want_error,
+                "{cast:?}"
+            );
+        }
+
+        // and a prefix table needs a point at all
+        let cfg = config(json!({"lookups": [{
+            "lookup_table": id, "table": "record",
+            "match": {"keys": {"country": {"key": "c"}}},
+            "output": {"country": "country"},
+        }]}));
+        let (_, errored) = run(logs(vec![], vec![vec![kv("c", s("ID"))]]), &cfg, &cache);
+        assert!(errored);
+    }
+
+    /// An unparseable address is a key error for that record, not a miss and
+    /// not a rule failure.
+    #[test]
+    fn an_unparseable_point_is_a_key_error() {
+        let cache = cache::Cache::new();
+        let id = prefix_table(
+            &cache,
+            &[],
+            &[
+                ("network", lt::ValueType::String),
+                ("country", lt::ValueType::String),
+            ],
+            &[(&[CellRef::String("ID")], "10.0.0.0/24")],
+        );
+        let cfg = config(json!({"lookups": [{
+            "lookup_table": id, "table": "record",
+            "match": {"point": {"key": "src"}},
+            "output": {"country": "country"},
+        }]}));
+        let node = Uuid::now_v7();
+        let pl = logs(
+            vec![],
+            vec![
+                vec![kv("src", s("not-an-ip"))],
+                vec![kv("src", s("10.0.0.1"))],
+            ],
+        );
+        let (pl, errored) = attribute_lookup(pl, &cfg, node, &cache);
+        assert!(!errored);
+        assert!(record_attrs(&pl).contains(&(1, "country".into(), "ID".into())));
+        let table = cache.lookup_table.get(&id).unwrap();
+        let usage = table.meta().metrics.processor_snapshots();
+        let usage = usage.iter().find(|p| p.id == node).unwrap();
+        assert_eq!(usage.lookups_errored, 1);
+        assert_eq!(usage.lookups_hit, 1);
     }
 
     /// An `ip` key column without `cast: ip` used to plan fine and miss every
@@ -1594,19 +1779,17 @@ mod tests {
         assert!(errored);
     }
 
-    /// The check lives in `bound`, which both key kinds go through, so a range
+    /// The check lives in `bound`, which both key kinds go through, so a prefix
     /// table's partition columns are covered by the same rule as a hash key's.
     #[test]
-    fn a_range_partition_column_is_checked_the_same_way_as_a_hash_key() {
+    fn a_prefix_partition_column_is_checked_the_same_way_as_a_hash_key() {
         let cache = cache::Cache::new();
-        let id = range_table(
+        let id = prefix_table(
             &cache,
-            lt::RangeType::Integer,
             &["ip"],
             &[
                 ("ip", lt::ValueType::Ip),
-                ("lo", lt::ValueType::Integer),
-                ("hi", lt::ValueType::Integer),
+                ("network", lt::ValueType::String),
                 ("country", lt::ValueType::String),
             ],
             &[(
@@ -1614,19 +1797,21 @@ mod tests {
                     CellRef::Ip("10.0.0.1".parse().unwrap()),
                     CellRef::String("ID"),
                 ],
-                RangePoint::Integer(1),
-                RangePoint::Integer(10),
+                "192.0.2.0/24",
             )],
         );
         let cfg = config(json!({"lookups": [{
             "lookup_table": id, "table": "record",
             "match": {
                 "keys": {"ip": {"key": "ip"}},
-                "point": {"key": "n", "cast": "integer"},
+                "point": {"key": "n"},
             },
             "output": {"country": "country"},
         }]}));
-        let pl = logs(vec![], vec![vec![kv("ip", s("10.0.0.1")), kv("n", int(5))]]);
+        let pl = logs(
+            vec![],
+            vec![vec![kv("ip", s("10.0.0.1")), kv("n", s("192.0.2.9"))]],
+        );
         let (_, errored) = run(pl, &cfg, &cache);
         assert!(errored, "an uncast ip partition column must fail the rule");
     }

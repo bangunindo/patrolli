@@ -193,7 +193,7 @@ mod tests {
         let key = hash_key(&["host"]);
         let data = load("host,site\na,\n", &csv_cfg(true, &[]), &key).unwrap();
         let site = data.schema().index_of("site").unwrap();
-        let row = data.lookup(Lookup::Hash(&[KeyRef::String("a")])).unwrap();
+        let (row, _) = data.lookup(Lookup::Hash(&[KeyRef::String("a")])).unwrap();
         assert_eq!(data.cell(row, site), CellRef::Null);
     }
 
@@ -214,7 +214,7 @@ mod tests {
         let note = data.schema().index_of("note").unwrap();
         let at = |data: &super::super::immutable::ImmutableData, h: &str| {
             data.lookup(Lookup::Hash(&[KeyRef::String(h)]))
-                .map(|r| data.cell(r, note).as_str().unwrap_or_default().to_string())
+                .map(|(r, _)| data.cell(r, note).as_str().unwrap_or_default().to_string())
         };
         assert_eq!(at(&data, "a").as_deref(), Some(r#"x\y""#));
         assert_eq!(
@@ -242,7 +242,7 @@ mod tests {
         cfg.null_values = vec![];
         let data = load("host,site\na,\n", &cfg, &key).unwrap();
         let site = data.schema().index_of("site").unwrap();
-        let row = data.lookup(Lookup::Hash(&[KeyRef::String("a")])).unwrap();
+        let (row, _) = data.lookup(Lookup::Hash(&[KeyRef::String("a")])).unwrap();
         assert_eq!(data.cell(row, site), CellRef::String(""));
 
         // and a sentinel can stand in for null instead, dump style
@@ -252,7 +252,7 @@ mod tests {
         let site = data.schema().index_of("site").unwrap();
         let at = |h: &str| {
             data.lookup(Lookup::Hash(&[KeyRef::String(h)]))
-                .map(|r| data.cell(r, site))
+                .map(|(r, _)| data.cell(r, site))
         };
         assert_eq!(at("a"), Some(CellRef::Null));
         assert_eq!(at("b"), Some(CellRef::String("")));
@@ -299,7 +299,7 @@ mod tests {
         let data = load("host;site\na;'jkt;selatan'\n", &cfg, &key).unwrap();
         use crate::cache::lookup_table::cell::{KeyRef, Lookup};
         let site = data.schema().index_of("site").unwrap();
-        let row = data.lookup(Lookup::Hash(&[KeyRef::String("a")])).unwrap();
+        let (row, _) = data.lookup(Lookup::Hash(&[KeyRef::String("a")])).unwrap();
         assert_eq!(data.cell(row, site), CellRef::String("jkt;selatan"));
     }
 
@@ -321,37 +321,50 @@ mod tests {
     }
 
     #[test]
-    fn an_ip_range_file_loads_end_to_end() {
-        use crate::cache::lookup_table::cell::{Lookup, RangePoint};
-        let key = cfg::Key::Range(cfg::Range {
-            range_type: cfg::RangeType::Ip,
+    fn a_cidr_file_loads_end_to_end() {
+        use crate::cache::lookup_table::cell::Lookup;
+        let key = cfg::Key::Prefix(cfg::Prefix {
+            prefix_column: "network".into(),
             partition_columns: vec![],
-            start_column: "start".into(),
-            start_inclusive: true,
-            end_column: "end".into(),
-            end_inclusive: true,
         });
         let data = load(
-            "start,end,country\n\
-             1.0.0.0,1.0.0.255,AU\n\
-             1.0.1.0,1.0.3.255,CN\n\
-             2001:db8::,2001:db8::ffff,ID\n",
+            "network,country\n\
+             1.0.0.0/24,AU\n\
+             1.0.0.128/25,NZ\n\
+             1.0.0.0/16,CN\n\
+             2001:db8::/32,ID\n\
+             10.0.0.1/8,XX\n",
             &csv_cfg(true, &[]),
             &key,
         )
         .unwrap();
         assert_eq!(data.schema().names(), &["country"]);
+        assert_eq!(data.stats().skipped.bad_prefix, 1, "host bits set");
         let country = data.schema().index_of("country").unwrap();
         let at = |s: &str| {
-            data.lookup(Lookup::Range {
+            data.lookup(Lookup::Prefix {
                 partition: &[],
-                point: RangePoint::Ip(s.parse().unwrap()),
+                addr: s.parse().unwrap(),
             })
-            .map(|r| data.cell(r, country))
+            .map(|(r, net)| (data.cell(r, country), net.unwrap().to_string()))
         };
-        assert_eq!(at("1.0.0.5"), Some(CellRef::String("AU")));
-        assert_eq!(at("1.0.2.9"), Some(CellRef::String("CN")));
-        assert_eq!(at("2001:db8::1"), Some(CellRef::String("ID")));
+        assert_eq!(
+            at("1.0.0.5"),
+            Some((CellRef::String("AU"), "1.0.0.0/24".into()))
+        );
+        assert_eq!(
+            at("1.0.0.200"),
+            Some((CellRef::String("NZ"), "1.0.0.128/25".into()))
+        );
+        assert_eq!(
+            at("1.0.2.9"),
+            Some((CellRef::String("CN"), "1.0.0.0/16".into()))
+        );
+        assert_eq!(
+            at("2001:db8::1"),
+            Some((CellRef::String("ID"), "2001:db8::/32".into()))
+        );
         assert_eq!(at("8.8.8.8"), None);
+        assert_eq!(at("10.0.0.1"), None);
     }
 }

@@ -2,266 +2,35 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use super::cell::{KeyOwned, KeyRef, RangePoint, hash_key, keys_eq};
+use super::cell::{KeyOwned, KeyRef, hash_key, keys_eq};
+use super::prefix::PrefixSet;
 use super::schema::RowId;
-use crate::config::lookup_table::RangeType;
 use hashbrown::HashTable;
-use rangemap::RangeInclusiveMap;
+use ipnet::IpNet;
 use std::net::IpAddr;
 
-/// Why a range was not indexed.
+/// Why a prefix was not indexed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RangeReject {
-    /// the bounds are reversed, or exclusive bounds left nothing between them
-    Empty,
-    /// the range collides with one already indexed; ranges must be disjoint
-    Overlap,
-    /// start and end are different IP families, or do not match `range_type`
-    Mismatch,
+pub enum PrefixReject {
+    /// the exact prefix is already indexed in this partition
+    Duplicate,
 }
 
-/// A key type that can be a range bound: totally ordered and steppable, so
-/// exclusive bounds can be folded into inclusive ones at build time.
-pub trait RangeKey: Ord + Copy + rangemap::StepLite {
-    fn next_up(self) -> Option<Self>;
-    fn next_down(self) -> Option<Self>;
-}
-
-macro_rules! impl_range_key {
-    ($($t:ty)*) => ($(
-        impl RangeKey for $t {
-            #[inline]
-            fn next_up(self) -> Option<Self> { self.checked_add(1) }
-            #[inline]
-            fn next_down(self) -> Option<Self> { self.checked_sub(1) }
-        }
-    )*)
-}
-impl_range_key!(i64 u32 u128);
-
-/// Folds `[start, end]` with arbitrary inclusivity into a closed `[lo, hi]`.
-pub(super) fn normalize<K: RangeKey>(
-    start: K,
-    start_inclusive: bool,
-    end: K,
-    end_inclusive: bool,
-) -> Option<(K, K)> {
-    let lo = if start_inclusive {
-        start
-    } else {
-        start.next_up()?
-    };
-    let hi = if end_inclusive { end } else { end.next_down()? };
-    (lo <= hi).then_some((lo, hi))
-}
-
-/// Disjoint ranges frozen into three parallel arrays. Lookup is a binary search
-/// over `starts` plus one bound check — faster and far more compact than keeping
-/// the build-time `RangeInclusiveMap`: 12 bytes per v4 range against roughly 30
-/// for a BTreeMap node.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ranges<K> {
-    starts: Box<[K]>,
-    ends: Box<[K]>,
-    rows: Box<[RowId]>,
-}
-
-impl<K> Default for Ranges<K> {
-    fn default() -> Self {
-        Self {
-            starts: Box::new([]),
-            ends: Box::new([]),
-            rows: Box::new([]),
-        }
-    }
-}
-
-impl<K: Ord + Copy> Ranges<K> {
-    #[inline]
-    pub fn get(&self, point: K) -> Option<RowId> {
-        let i = self.starts.partition_point(|s| *s <= point);
-        (i > 0 && point <= self.ends[i - 1]).then(|| self.rows[i - 1])
-    }
-
-    pub fn len(&self) -> usize {
-        self.rows.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.rows.is_empty()
-    }
-}
-
-/// Accumulates ranges, rejecting overlaps, then freezes into [`Ranges`].
-/// `rangemap` owns the fiddly part: deciding whether a candidate touches what
-/// is stored, and keeping the set ordered and disjoint.
-#[derive(Debug)]
-pub struct RangeBuilder<K: RangeKey> {
-    map: RangeInclusiveMap<K, RowId>,
-}
-
-impl<K: RangeKey> Default for RangeBuilder<K> {
-    fn default() -> Self {
-        Self {
-            map: RangeInclusiveMap::new(),
-        }
-    }
-}
-
-impl<K: RangeKey> RangeBuilder<K> {
-    pub fn insert(
-        &mut self,
-        start: K,
-        start_inclusive: bool,
-        end: K,
-        end_inclusive: bool,
-        row: RowId,
-    ) -> Result<(), RangeReject> {
-        let (lo, hi) =
-            normalize(start, start_inclusive, end, end_inclusive).ok_or(RangeReject::Empty)?;
-        if self.map.overlapping(&(lo..=hi)).next().is_some() {
-            return Err(RangeReject::Overlap);
-        }
-        self.map.insert(lo..=hi, row);
-        Ok(())
-    }
-
-    pub fn finish(self) -> Ranges<K> {
-        let n = self.map.len();
-        let mut starts = Vec::with_capacity(n);
-        let mut ends = Vec::with_capacity(n);
-        let mut rows = Vec::with_capacity(n);
-        // `RangeInclusiveMap` iterates in ascending, disjoint order
-        for (range, row) in self.map {
-            starts.push(*range.start());
-            ends.push(*range.end());
-            rows.push(row);
-        }
-        Ranges {
-            starts: starts.into_boxed_slice(),
-            ends: ends.into_boxed_slice(),
-            rows: rows.into_boxed_slice(),
-        }
-    }
-}
-
-/// The ranges of one partition. An IP table keeps a set per address family.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RangeSet {
-    Integer(Ranges<i64>),
-    Ip { v4: Ranges<u32>, v6: Ranges<u128> },
-}
-
-impl RangeSet {
-    #[inline]
-    pub fn get(&self, point: RangePoint) -> Option<RowId> {
-        match (self, point) {
-            (RangeSet::Integer(r), RangePoint::Integer(v)) => r.get(v),
-            (RangeSet::Ip { v4, .. }, RangePoint::Ip(IpAddr::V4(v))) => r_get_v4(v4, v),
-            (RangeSet::Ip { v6, .. }, RangePoint::Ip(IpAddr::V6(v))) => v6.get(v.to_bits()),
-            _ => None,
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        match self {
-            RangeSet::Integer(r) => r.len(),
-            RangeSet::Ip { v4, v6 } => v4.len() + v6.len(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
-#[inline]
-fn r_get_v4(ranges: &Ranges<u32>, addr: std::net::Ipv4Addr) -> Option<RowId> {
-    ranges.get(addr.to_bits())
-}
-
-#[derive(Debug)]
-pub enum RangeSetBuilder {
-    Integer(RangeBuilder<i64>),
-    Ip {
-        v4: RangeBuilder<u32>,
-        v6: RangeBuilder<u128>,
-    },
-}
-
-impl RangeSetBuilder {
-    pub fn new(range_type: RangeType) -> Self {
-        match range_type {
-            RangeType::Integer => RangeSetBuilder::Integer(RangeBuilder::default()),
-            RangeType::Ip => RangeSetBuilder::Ip {
-                v4: RangeBuilder::default(),
-                v6: RangeBuilder::default(),
-            },
-        }
-    }
-
-    pub fn insert(
-        &mut self,
-        start: RangePoint,
-        start_inclusive: bool,
-        end: RangePoint,
-        end_inclusive: bool,
-        row: RowId,
-    ) -> Result<(), RangeReject> {
-        match (self, start, end) {
-            (RangeSetBuilder::Integer(b), RangePoint::Integer(s), RangePoint::Integer(e)) => {
-                b.insert(s, start_inclusive, e, end_inclusive, row)
-            }
-            (
-                RangeSetBuilder::Ip { v4, .. },
-                RangePoint::Ip(IpAddr::V4(s)),
-                RangePoint::Ip(IpAddr::V4(e)),
-            ) => v4.insert(
-                s.to_bits(),
-                start_inclusive,
-                e.to_bits(),
-                end_inclusive,
-                row,
-            ),
-            (
-                RangeSetBuilder::Ip { v6, .. },
-                RangePoint::Ip(IpAddr::V6(s)),
-                RangePoint::Ip(IpAddr::V6(e)),
-            ) => v6.insert(
-                s.to_bits(),
-                start_inclusive,
-                e.to_bits(),
-                end_inclusive,
-                row,
-            ),
-            _ => Err(RangeReject::Mismatch),
-        }
-    }
-
-    pub fn finish(self) -> RangeSet {
-        match self {
-            RangeSetBuilder::Integer(b) => RangeSet::Integer(b.finish()),
-            RangeSetBuilder::Ip { v4, v6 } => RangeSet::Ip {
-                v4: v4.finish(),
-                v6: v6.finish(),
-            },
-        }
-    }
-}
-
-/// Maps a partition key tuple to its slot. An unpartitioned table has exactly
-/// one slot and never hashes anything.
+/// Maps a partition key tuple to its slot, each slot a longest-prefix-match
+/// set of row ids. An unpartitioned table has exactly one slot and never
+/// hashes anything.
 #[derive(Debug, Clone)]
-pub struct RangeIndex {
+pub struct PrefixIndex {
     table: HashTable<u32>,
     keys: Box<[Box<[KeyOwned]>]>,
-    sets: Box<[RangeSet]>,
+    sets: Box<[PrefixSet<RowId>]>,
     partitioned: bool,
 }
 
-impl RangeIndex {
+impl PrefixIndex {
+    /// The row of the narrowest prefix containing `addr`, and that prefix.
     #[inline]
-    pub fn get(&self, partition: &[KeyRef<'_>], point: RangePoint) -> Option<RowId> {
+    pub fn get(&self, partition: &[KeyRef<'_>], addr: IpAddr) -> Option<(RowId, IpNet)> {
         let slot = if self.partitioned {
             let hash = hash_key(partition.iter().copied());
             *self
@@ -270,7 +39,8 @@ impl RangeIndex {
         } else {
             0
         };
-        self.sets.get(slot as usize)?.get(point)
+        let (net, row) = self.sets.get(slot as usize)?.lpm(addr)?;
+        Some((*row, net))
     }
 
     pub fn partitions(&self) -> usize {
@@ -278,27 +48,31 @@ impl RangeIndex {
     }
 
     pub fn len(&self) -> usize {
-        self.sets.iter().map(RangeSet::len).sum()
+        self.sets.iter().map(PrefixSet::len).sum()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.sets.iter().all(RangeSet::is_empty)
+        self.sets.iter().all(PrefixSet::is_empty)
+    }
+
+    /// Bytes held by the tries and the partition table.
+    pub fn mem_size(&self) -> usize {
+        self.sets.iter().map(PrefixSet::mem_size).sum::<usize>()
+            + self.table.capacity() * std::mem::size_of::<u32>()
     }
 }
 
 #[derive(Debug)]
-pub struct RangeIndexBuilder {
-    range_type: RangeType,
+pub struct PrefixIndexBuilder {
     partitioned: bool,
     table: HashTable<u32>,
     keys: Vec<Box<[KeyOwned]>>,
-    sets: Vec<RangeSetBuilder>,
+    sets: Vec<PrefixSet<RowId>>,
 }
 
-impl RangeIndexBuilder {
-    pub fn new(range_type: RangeType, partitioned: bool) -> Self {
+impl PrefixIndexBuilder {
+    pub fn new(partitioned: bool) -> Self {
         let mut this = Self {
-            range_type,
             partitioned,
             table: HashTable::new(),
             keys: Vec::new(),
@@ -306,60 +80,52 @@ impl RangeIndexBuilder {
         };
         if !partitioned {
             this.keys.push(Box::new([]));
-            this.sets.push(RangeSetBuilder::new(range_type));
+            this.sets.push(PrefixSet::new());
         }
         this
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn insert(
         &mut self,
         partition: &[KeyRef<'_>],
-        start: RangePoint,
-        start_inclusive: bool,
-        end: RangePoint,
-        end_inclusive: bool,
+        net: IpNet,
         row: RowId,
-    ) -> Result<(), RangeReject> {
-        if !self.partitioned {
-            return self.sets[0].insert(start, start_inclusive, end, end_inclusive, row);
+    ) -> Result<(), PrefixReject> {
+        let set = if !self.partitioned {
+            &mut self.sets[0]
+        } else {
+            let hash = hash_key(partition.iter().copied());
+            match self
+                .table
+                .find(hash, |slot| keys_eq(&self.keys[*slot as usize], partition))
+            {
+                Some(slot) => &mut self.sets[*slot as usize],
+                None => {
+                    // a new partition always takes its first prefix, so no
+                    // rejected row can leave an empty partition behind
+                    let slot = self.sets.len() as u32;
+                    self.keys
+                        .push(partition.iter().map(|k| k.to_owned_key()).collect());
+                    self.sets.push(PrefixSet::new());
+                    self.table.insert_unique(hash, slot, |slot| {
+                        hash_key(self.keys[*slot as usize].iter().map(KeyOwned::as_ref))
+                    });
+                    self.sets.last_mut().expect("just pushed")
+                }
+            }
+        };
+        if set.contains(&net) {
+            return Err(PrefixReject::Duplicate);
         }
-        let hash = hash_key(partition.iter().copied());
-        if let Some(slot) = self
-            .table
-            .find(hash, |slot| keys_eq(&self.keys[*slot as usize], partition))
-        {
-            return self.sets[*slot as usize].insert(
-                start,
-                start_inclusive,
-                end,
-                end_inclusive,
-                row,
-            );
-        }
-        // A rejected first interval must not retain an empty partition or its key.
-        let mut set = RangeSetBuilder::new(self.range_type);
-        set.insert(start, start_inclusive, end, end_inclusive, row)?;
-        let slot = self.sets.len() as u32;
-        self.keys
-            .push(partition.iter().map(|k| k.to_owned_key()).collect());
-        self.sets.push(set);
-        self.table.insert_unique(hash, slot, |slot| {
-            hash_key(self.keys[*slot as usize].iter().map(KeyOwned::as_ref))
-        });
+        set.insert(net, row);
         Ok(())
     }
 
-    pub fn finish(self) -> RangeIndex {
-        RangeIndex {
+    pub fn finish(self) -> PrefixIndex {
+        PrefixIndex {
             table: self.table,
             keys: self.keys.into_boxed_slice(),
-            sets: self
-                .sets
-                .into_iter()
-                .map(RangeSetBuilder::finish)
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
+            sets: self.sets.into_boxed_slice(),
             partitioned: self.partitioned,
         }
     }
@@ -409,14 +175,14 @@ impl HashIndex {
 #[derive(Debug, Clone)]
 pub enum Index {
     Hash(HashIndex),
-    Range(RangeIndex),
+    Prefix(PrefixIndex),
 }
 
 impl Index {
     pub fn len(&self) -> usize {
         match self {
             Index::Hash(h) => h.len(),
-            Index::Range(r) => r.len(),
+            Index::Prefix(p) => p.len(),
         }
     }
 
@@ -428,202 +194,85 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::lookup_table::prefix::parse_prefix;
 
-    fn ranges(entries: &[(i64, i64, RowId)]) -> Ranges<i64> {
-        let mut b = RangeBuilder::default();
-        for (lo, hi, row) in entries {
-            b.insert(*lo, true, *hi, true, *row).unwrap();
-        }
-        b.finish()
+    fn net(s: &str) -> IpNet {
+        parse_prefix(s).unwrap()
+    }
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
     }
 
     #[test]
-    fn point_lookup_hits_inside_and_misses_in_gaps() {
-        let r = ranges(&[(10, 20, 1), (30, 40, 2)]);
-        assert_eq!(r.get(10), Some(1));
-        assert_eq!(r.get(15), Some(1));
-        assert_eq!(r.get(20), Some(1));
-        assert_eq!(r.get(30), Some(2));
-        assert_eq!(r.get(40), Some(2));
-        assert_eq!(r.get(9), None, "below the first range");
-        assert_eq!(r.get(25), None, "in the gap");
-        assert_eq!(r.get(41), None, "above the last range");
-    }
-
-    #[test]
-    fn empty_set_never_matches() {
-        let r: Ranges<i64> = Ranges::default();
-        assert_eq!(r.get(0), None);
-    }
-
-    #[test]
-    fn all_four_inclusivity_combinations() {
-        // the source range is 10..20 with varying bound inclusivity
-        let cases = [
-            (true, true, 10i64, 20i64),
-            (true, false, 10, 19),
-            (false, true, 11, 20),
-            (false, false, 11, 19),
-        ];
-        for (start_incl, end_incl, want_lo, want_hi) in cases {
-            let mut b = RangeBuilder::default();
-            b.insert(10i64, start_incl, 20, end_incl, 1).unwrap();
-            let r = b.finish();
-            assert_eq!(r.get(want_lo), Some(1), "{start_incl}/{end_incl} lo");
-            assert_eq!(r.get(want_hi), Some(1), "{start_incl}/{end_incl} hi");
-            assert_eq!(r.get(want_lo - 1), None, "{start_incl}/{end_incl} below lo");
-            assert_eq!(r.get(want_hi + 1), None, "{start_incl}/{end_incl} above hi");
-        }
-    }
-
-    #[test]
-    fn empty_and_reversed_ranges_are_rejected() {
-        let mut b = RangeBuilder::default();
-        // exclusive on both sides with nothing between
+    fn nested_prefixes_resolve_to_the_narrowest() {
+        let mut b = PrefixIndexBuilder::new(false);
+        b.insert(&[], net("10.0.0.0/8"), 1).unwrap();
+        b.insert(&[], net("10.1.2.0/24"), 3).unwrap();
+        b.insert(&[], net("10.1.0.0/16"), 2).unwrap();
+        let index = b.finish();
+        assert_eq!(index.partitions(), 1);
+        assert_eq!(index.len(), 3);
         assert_eq!(
-            b.insert(10i64, false, 11, false, 1),
-            Err(RangeReject::Empty)
-        );
-        // reversed
-        assert_eq!(b.insert(20i64, true, 10, true, 1), Err(RangeReject::Empty));
-        // exclusive start at the top of the domain has no successor
-        assert_eq!(
-            b.insert(i64::MAX, false, i64::MAX, true, 1),
-            Err(RangeReject::Empty)
-        );
-        assert_eq!(b.finish().len(), 0);
-    }
-
-    #[test]
-    fn overlaps_are_rejected_and_leave_the_first_range_intact() {
-        let mut b = RangeBuilder::default();
-        b.insert(10i64, true, 20, true, 1).unwrap();
-        assert_eq!(
-            b.insert(15i64, true, 25, true, 2),
-            Err(RangeReject::Overlap)
+            index.get(&[], ip("10.1.2.9")),
+            Some((3, net("10.1.2.0/24")))
         );
         assert_eq!(
-            b.insert(20i64, true, 20, true, 3),
-            Err(RangeReject::Overlap)
+            index.get(&[], ip("10.1.9.9")),
+            Some((2, net("10.1.0.0/16")))
         );
-        assert_eq!(b.insert(5i64, true, 30, true, 4), Err(RangeReject::Overlap));
-        // adjacent but not overlapping is fine
-        b.insert(21i64, true, 30, true, 5).unwrap();
-        let r = b.finish();
-        assert_eq!(r.get(15), Some(1));
-        assert_eq!(r.get(25), Some(5));
+        assert_eq!(index.get(&[], ip("10.9.9.9")), Some((1, net("10.0.0.0/8"))));
+        assert_eq!(index.get(&[], ip("11.0.0.0")), None);
     }
 
     #[test]
-    fn ranges_touching_the_domain_boundaries_do_not_overflow() {
-        // a v4 geoip table really does end at 255.255.255.255
-        let mut b = RangeBuilder::default();
-        b.insert(0u32, true, 100, true, 1).unwrap();
-        b.insert(u32::MAX - 10, true, u32::MAX, true, 2).unwrap();
-        let r = b.finish();
-        assert_eq!(r.get(0), Some(1));
-        assert_eq!(r.get(u32::MAX), Some(2));
-        assert_eq!(r.get(u32::MAX - 11), None);
-    }
-
-    #[test]
-    fn ip_sets_keep_the_families_apart() {
-        let mut b = RangeSetBuilder::new(RangeType::Ip);
-        let v4 = |s: &str| RangePoint::Ip(s.parse().unwrap());
-        b.insert(v4("10.0.0.0"), true, v4("10.0.0.255"), true, 1)
-            .unwrap();
-        b.insert(v4("2001:db8::"), true, v4("2001:db8::ffff"), true, 2)
-            .unwrap();
-        // a mixed-family range is nonsense
+    fn a_repeated_prefix_is_rejected_and_the_first_kept() {
+        let mut b = PrefixIndexBuilder::new(false);
+        b.insert(&[], net("10.0.0.0/8"), 1).unwrap();
         assert_eq!(
-            b.insert(v4("10.0.0.0"), true, v4("2001:db8::"), true, 3),
-            Err(RangeReject::Mismatch)
+            b.insert(&[], net("10.0.0.0/8"), 2),
+            Err(PrefixReject::Duplicate)
         );
-        let set = b.finish();
-        assert_eq!(set.get(v4("10.0.0.7")), Some(1));
-        assert_eq!(set.get(v4("2001:db8::5")), Some(2));
-        assert_eq!(set.get(v4("11.0.0.1")), None);
-        assert_eq!(set.get(RangePoint::Integer(5)), None);
-        assert_eq!(set.len(), 2);
-    }
-
-    #[test]
-    fn integer_sets_reject_ip_bounds() {
-        let mut b = RangeSetBuilder::new(RangeType::Integer);
         assert_eq!(
-            b.insert(
-                RangePoint::Ip("10.0.0.1".parse().unwrap()),
-                true,
-                RangePoint::Ip("10.0.0.2".parse().unwrap()),
-                true,
-                1
-            ),
-            Err(RangeReject::Mismatch)
+            b.finish().get(&[], ip("10.0.0.1")),
+            Some((1, net("10.0.0.0/8")))
         );
     }
 
     #[test]
-    fn partitions_isolate_identical_ranges() {
-        let mut b = RangeIndexBuilder::new(RangeType::Integer, true);
+    fn partitions_isolate_identical_prefixes() {
+        let mut b = PrefixIndexBuilder::new(true);
         let a = [KeyRef::String("vrf-a")];
         let c = [KeyRef::String("vrf-c")];
-        b.insert(
-            &a,
-            RangePoint::Integer(1),
-            true,
-            RangePoint::Integer(10),
-            true,
-            1,
-        )
-        .unwrap();
-        // the same range in another partition is not an overlap
-        b.insert(
-            &c,
-            RangePoint::Integer(1),
-            true,
-            RangePoint::Integer(10),
-            true,
-            2,
-        )
-        .unwrap();
-        // but a collision inside one partition still is
+        b.insert(&a, net("10.0.0.0/8"), 1).unwrap();
+        // the same prefix in another partition is not a duplicate
+        b.insert(&c, net("10.0.0.0/8"), 2).unwrap();
+        // but inside one partition it still is
         assert_eq!(
-            b.insert(
-                &a,
-                RangePoint::Integer(5),
-                true,
-                RangePoint::Integer(6),
-                true,
-                3
-            ),
-            Err(RangeReject::Overlap)
+            b.insert(&a, net("10.0.0.0/8"), 3),
+            Err(PrefixReject::Duplicate)
         );
         let index = b.finish();
         assert_eq!(index.partitions(), 2);
         assert_eq!(index.len(), 2);
-        assert_eq!(index.get(&a, RangePoint::Integer(5)), Some(1));
-        assert_eq!(index.get(&c, RangePoint::Integer(5)), Some(2));
-        assert_eq!(
-            index.get(&[KeyRef::String("vrf-z")], RangePoint::Integer(5)),
-            None
-        );
+        assert_eq!(index.get(&a, ip("10.0.0.5")), Some((1, net("10.0.0.0/8"))));
+        assert_eq!(index.get(&c, ip("10.0.0.5")), Some((2, net("10.0.0.0/8"))));
+        assert_eq!(index.get(&[KeyRef::String("vrf-z")], ip("10.0.0.5")), None);
+        assert!(index.mem_size() > 0);
     }
 
     #[test]
-    fn an_unpartitioned_index_has_a_single_slot() {
-        let mut b = RangeIndexBuilder::new(RangeType::Integer, false);
-        b.insert(
-            &[],
-            RangePoint::Integer(1),
-            true,
-            RangePoint::Integer(10),
-            true,
-            7,
-        )
-        .unwrap();
+    fn families_stay_apart() {
+        let mut b = PrefixIndexBuilder::new(false);
+        b.insert(&[], net("0.0.0.0/0"), 4).unwrap();
+        b.insert(&[], net("2001:db8::/32"), 6).unwrap();
         let index = b.finish();
-        assert_eq!(index.partitions(), 1);
-        assert_eq!(index.get(&[], RangePoint::Integer(3)), Some(7));
+        assert_eq!(index.get(&[], ip("192.0.2.1")), Some((4, net("0.0.0.0/0"))));
+        assert_eq!(
+            index.get(&[], ip("2001:db8::1")),
+            Some((6, net("2001:db8::/32")))
+        );
+        assert_eq!(index.get(&[], ip("2001:db9::1")), None);
     }
 
     #[test]

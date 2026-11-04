@@ -34,6 +34,7 @@ use arc_swap::ArcSwap;
 use cell::{CellRef, Lookup};
 use immutable::ImmutableData;
 use immutable::LoadStats;
+use ipnet::IpNet;
 use loader::SourceStamp;
 use metrics::{ProcessorMetrics, ReadCounts, TableMetrics, Totals};
 use mutable::{Mutable, MutableRow, TableWrite};
@@ -636,18 +637,24 @@ impl TableRead {
         self.len() == 0
     }
 
-    pub fn lookup(&self, key: Lookup<'_>) -> Option<Row<'_>> {
-        let row = match &self.data {
-            Snapshot::Immutable(data) => data.lookup(key).map(|row| Row::Immutable {
-                data: data.as_ref(),
-                row,
+    pub fn lookup(&self, key: Lookup<'_>) -> Option<Match<'_>> {
+        let found = match &self.data {
+            Snapshot::Immutable(data) => data.lookup(key).map(|(row, prefix)| Match {
+                row: Row::Immutable {
+                    data: data.as_ref(),
+                    row,
+                },
+                prefix,
             }),
-            Snapshot::Mutable(t) => t.table.get(key).map(Row::Mutable),
+            Snapshot::Mutable(t) => t.table.get(key).map(|(row, prefix)| Match {
+                row: Row::Mutable(row),
+                prefix,
+            }),
         };
         if let Some(tally) = &self.tally {
-            tally.record(row.is_some());
+            tally.record(found.is_some());
         }
-        row
+        found
     }
 
     /// A record whose probe key could not be built at all — a missing or
@@ -658,6 +665,15 @@ impl TableRead {
             tally.record_key_error();
         }
     }
+}
+
+/// What a lookup found: the row, and for a prefix table the stored prefix that
+/// matched (the narrowest one containing the probe address).
+#[derive(Debug, Clone)]
+pub struct Match<'a> {
+    pub row: Row<'a>,
+    /// `None` for a hash table
+    pub prefix: Option<IpNet>,
 }
 
 /// One matched row. A mutable row owns its `Arc`, so no lock is held while it
@@ -849,7 +865,7 @@ impl LookupTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cell::{KeyRef, RangePoint};
+    use cell::{Delete, KeyRef};
     use std::time::Duration;
 
     fn processor_table(
@@ -1097,55 +1113,47 @@ mod tests {
         assert_eq!(read.generation(), 1, "a mutable schema is fixed by config");
         assert_eq!(read.len(), 1);
         let site = read.column("site").unwrap();
-        let row = read.lookup(Lookup::Hash(&[KeyRef::String("a")])).unwrap();
+        let found = read.lookup(Lookup::Hash(&[KeyRef::String("a")])).unwrap();
+        assert_eq!(found.prefix, None);
+        let row = found.row;
         assert_eq!(row.cell(site), CellRef::String("jkt"));
         assert!(matches!(row.value(site), Value::String(ref z) if z.as_str() == "jkt"));
         assert!(read.lookup(Lookup::Hash(&[KeyRef::String("b")])).is_none());
     }
 
     #[test]
-    fn a_mutable_range_table_reads_through_the_shared_api() {
+    fn a_mutable_prefix_table_reads_through_the_shared_api() {
         let registry = LookupTable::new();
         let config = processor_table(
-            "vlans",
-            cfg::Key::Range(cfg::Range {
-                range_type: cfg::RangeType::Integer,
+            "subnets",
+            cfg::Key::Prefix(cfg::Prefix {
+                prefix_column: "network".into(),
                 partition_columns: vec![],
-                start_column: "lo".into(),
-                start_inclusive: true,
-                end_column: "hi".into(),
-                end_inclusive: true,
             }),
             &[
-                ("lo", cfg::ValueType::Integer),
-                ("hi", cfg::ValueType::Integer),
+                ("network", cfg::ValueType::String),
                 ("zone", cfg::ValueType::String),
             ],
         );
         let table = registry.insert(&config).unwrap();
-        let _ = table
-            .as_mutable()
-            .unwrap()
-            .table()
-            .upsert_range(
-                &[CellRef::String("dmz")],
-                RangePoint::Integer(100),
-                true,
-                RangePoint::Integer(199),
-                true,
-            )
-            .unwrap();
-        assert_eq!(table.read().len(), 1);
+        let write = table.as_mutable().unwrap().table();
+        for (cidr, zone) in [("10.0.0.0/8", "corp"), ("10.1.0.0/16", "dmz")] {
+            let _ = write
+                .upsert_prefix(&[CellRef::String(zone)], cidr.parse().unwrap())
+                .unwrap();
+        }
+        assert_eq!(table.read().len(), 2);
 
         let read = table.read();
         let zone = read.column("zone").unwrap();
-        let row = read
-            .lookup(Lookup::Range {
+        let found = read
+            .lookup(Lookup::Prefix {
                 partition: &[],
-                point: RangePoint::Integer(150),
+                addr: "10.1.5.5".parse().unwrap(),
             })
             .unwrap();
-        assert_eq!(row.cell(zone), CellRef::String("dmz"));
+        assert_eq!(found.row.cell(zone), CellRef::String("dmz"));
+        assert_eq!(found.prefix, Some("10.1.0.0/16".parse().unwrap()));
     }
 
     #[test]
@@ -1162,9 +1170,9 @@ mod tests {
         assert!(read.column("anything").is_none());
         assert!(read.lookup(Lookup::Hash(&[KeyRef::String("a")])).is_none());
         assert!(
-            read.lookup(Lookup::Range {
+            read.lookup(Lookup::Prefix {
                 partition: &[],
-                point: RangePoint::Integer(1)
+                addr: "10.0.0.1".parse().unwrap(),
             })
             .is_none()
         );
@@ -1338,8 +1346,8 @@ mod tests {
                 "a cell of the wrong type is an error, not a rejection"
             );
             write.note_key_error();
-            assert!(write.remove(Lookup::Hash(&[KeyRef::String("a")])));
-            assert!(!write.remove(Lookup::Hash(&[KeyRef::String("a")])));
+            assert!(write.remove(Delete::Hash(&[KeyRef::String("a")])));
+            assert!(!write.remove(Delete::Hash(&[KeyRef::String("a")])));
         }
 
         let m = processor_metrics(&table, node);

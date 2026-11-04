@@ -234,13 +234,20 @@ monitor:
 #
 # Two key kinds:
 #   * hash — exact match on one or more columns.
-#   * range — disjoint ranges over integers or IP addresses, optionally
-#     bucketed by `partition_columns`. The bound columns are consumed by the
-#     index and are not readable as values; every other column is.
+#   * prefix — longest-prefix match on an IP prefix (CIDR) column, optionally
+#     bucketed by `partition_columns`. Prefixes may nest (a /24 inside a /16
+#     inside a /8); a probe address gets the narrowest one containing it. The
+#     prefix column is consumed by the index and is not readable as a value
+#     (attribute_lookup can still output the matched prefix by naming it);
+#     every other column is. A bare address is a host route (/32 or /128). A
+#     prefix with host bits set (10.0.0.1/8) is rejected, not truncated.
+#     Dumps that ship start/end address ranges (the classic geoip CSVs) must be
+#     converted to CIDR first; most vendors also publish a CIDR edition.
 #
-# A row whose range overlaps one already loaded, whose key repeats another
-# row's, or whose cell will not cast is skipped and counted; the load only
-# fails outright if every row was rejected.
+# A row whose prefix repeats another in the same partition, whose prefix will
+# not parse, whose hash key repeats another row's, or whose cell will not cast
+# is skipped and counted; the load only fails outright if every row was
+# rejected.
 #
 # Internal metrics report occupancy and counters at internal_metrics_interval.
 # File tables also expose load_error and last_success_timestamp (Unix seconds,
@@ -249,7 +256,8 @@ monitor:
 # handles, so they are attributed to the processor node that probed the table.
 # ──────────────────────────────────────────────────────────────────────────────
 # lookup_tables:
-#   # ── Range over IP addresses: the classic geoip table.
+#   # ── Prefix over IP networks: a geoip table in the MaxMind "blocks" style,
+#   # one CIDR per row.
 #   - id: 019b77b3-df79-70a2-ab01-f43b2cf72400
 #     name: geoip_city
 #     source:
@@ -259,15 +267,15 @@ monitor:
 #       # Files are concatenated and must share a schema — one v4 dump plus one
 #       # v6 dump is the usual reason for more than one path.
 #       paths:
-#         - /var/lib/patrolli/lookup/dbip-city-ipv4.csv.gz
-#         - /var/lib/patrolli/lookup/dbip-city-ipv6.csv.gz
+#         - /var/lib/patrolli/lookup/city-blocks-ipv4.csv.gz
+#         - /var/lib/patrolli/lookup/city-blocks-ipv6.csv.gz
 #       compression: gzip        # none (default) | gzip | zstd | lz4
 #       reload_interval: 3600    # seconds; how often the files are re-stat'd. Default 60.
 #       format:
 #         type: csv
 #         has_headers: false     # when false, `headers` below is required
 #         # Configured headers override the file's own header row.
-#         headers: [start, end, country, region, city, latitude, longitude]
+#         headers: [network, country, region, city, latitude, longitude]
 #         delimiter: ','         # default ','
 #         quote: '"'             # default '"'
 #         # Inside a quoted field, `""` always means one `"`. Set `escape` as
@@ -280,21 +288,17 @@ monitor:
 #         null_values: ['', '\N']
 #         # Columns default to `string`. Cast the ones that are not.
 #         # Valid: bool | double | integer | string | ip
+#         # The prefix column is CIDR text and must stay `string`.
 #         type_cast:
 #           latitude: double
 #           longitude: double
 #     key:
-#       type: range
-#       range_type: ip           # ip | integer (default integer)
-#       start_column: start
-#       end_column: end
-#       start_inclusive: true    # default true
-#       end_inclusive: true      # default false, i.e. [start, end)
+#       type: prefix
+#       prefix_column: network   # e.g. 1.0.0.0/24 or 2001:db8::/32
 #
-#   # ── Range over IP prefixes, bucketed by a partition key. Ranges only have
-#   # to be disjoint within a partition, so tenants in different VRFs can reuse
-#   # the same private address space. A prefix is written as its first and last
-#   # address (10.1.0.0/16 → 10.1.0.0, 10.1.255.255).
+#   # ── Prefix, bucketed by a partition key. Prefixes only have to be unique
+#   # within a partition, so tenants in different VRFs can reuse the same
+#   # private address space.
 #   - id: 019b77b3-df79-70a2-ab01-f43b2cf72401
 #     name: vrf_subnets
 #     source:
@@ -304,14 +308,11 @@ monitor:
 #       paths: [/var/lib/patrolli/lookup/vrf-subnets.csv]
 #       format:
 #         type: csv
-#         has_headers: true    # vrf,net_first,net_last,tenant,zone
+#         has_headers: true    # vrf,subnet,tenant,zone (subnet like 10.1.0.0/16)
 #     key:
-#       type: range
-#       range_type: ip
+#       type: prefix
+#       prefix_column: subnet
 #       partition_columns: [vrf]
-#       start_column: net_first
-#       end_column: net_last
-#       end_inclusive: true
 #
 #   # ── Exact match on a composite key.
 #   - id: 019b77b3-df79-70a2-ab01-f43b2cf72402
@@ -349,6 +350,25 @@ monitor:
 #     key:
 #       type: hash
 #       key_columns: [ifIndex]
+#
+#   # ── Processor-fed prefix table: routes learned per BGP peer. A whole peer's
+#   # routes can be dropped at once with an attribute_collect `delete_partition`
+#   # rule. ttl 0 disables expiry; max_rows still caps the table.
+#   - id: 019b77b3-df79-70a2-ab01-f43b2cf72404
+#     name: bgp_routes
+#     source:
+#       type: processor
+#       ttl: 0
+#       max_rows: 2000000
+#       columns:
+#         - name: peer
+#         - name: prefix       # CIDR text; must be a string column
+#         - name: origin_as
+#           value_type: integer
+#     key:
+#       type: prefix
+#       prefix_column: prefix
+#       partition_columns: [peer]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # listeners — passive receivers. Each runs its own worker pool and feeds the
@@ -722,13 +742,17 @@ processors:
   #             op: "="
   #             value: {string: tcp}
   #         match:
-  #           point:           # range probe; add keys above for partitioned ranges
+  #           point:           # prefix probe: longest prefix containing this
+  #                            # address; add keys above for partitioned tables
   #             key: nf.data.sourceIPv4Address
-  #             cast: ip       # explicit conversion; key casts: bool/integer/string/ip
-  #                            # an `ip` key column or range point always needs
-  #                            # `cast: ip` — OTAP has no IP value, so it arrives
-  #                            # as a string; the rule is rejected without it
+  #             # always read as an IP, so `cast` may be left out; if set it
+  #             # must be `ip`. Key casts: bool/integer/string/ip — an `ip` key
+  #             # column always needs `cast: ip` (OTAP has no IP value, so it
+  #             # arrives as a string; the rule is rejected without it)
+  #             cast: ip
   #         output:            # destination attribute -> lookup-table column
+  #           "geoip.source.network": network   # the prefix column: the matched
+  #                                             # prefix as CIDR text
   #           "geoip.source.country": country
   #           "geoip.source.city": city
   #           "geoip.source.latitude": latitude
@@ -788,12 +812,55 @@ processors:
   #           ifAlias: {cast: string}                 # pivoted; options without a key
   #           ifType: {value: value, cast: integer}   # pivoted from the raw value field
   #           admin_status: {name: ifAdminStatus}     # pivoted from a differently named object
+  #       # `action: delete` removes the row stored under exactly this key, so
+  #       # it binds the key columns and nothing else.
+  #       - lookup_table: 019b77b3-df79-70a2-ab01-f43b2cf72403 # interfaces
+  #         table: record
+  #         action: delete     # upsert (default) | delete | delete_partition
+  #         when:
+  #           match:
+  #             table: record
+  #             key: snmp.event
+  #             key_is_regex: false
+  #             op: "="
+  #             value: {string: interface_removed}
+  #         columns:
+  #           ifIndex: {key: snmp.id, cast: integer}
+  #       # A prefix table's prefix column is a string attribute holding CIDR
+  #       # text (10.1.0.0/16, 2001:db8::/32; a bare address is a host route).
+  #       - lookup_table: 019b77b3-df79-70a2-ab01-f43b2cf72404 # bgp_routes
+  #         table: record
+  #         columns:
+  #           peer: {key: bgp.peer}
+  #           prefix: {key: bgp.prefix}
+  #           origin_as: {key: bgp.origin_as, cast: integer}
+  #       # `action: delete_partition` drops every row of one partition of a
+  #       # prefix table — here all routes of a peer that went down. It binds
+  #       # exactly the table's partition_columns.
+  #       - lookup_table: 019b77b3-df79-70a2-ab01-f43b2cf72404 # bgp_routes
+  #         table: record
+  #         action: delete_partition
+  #         when:
+  #           match:
+  #             table: record
+  #             key: bgp.peer_state
+  #             key_is_regex: false
+  #             op: "="
+  #             value: {string: down}
+  #         columns:
+  #           peer: {key: bgp.peer}
   # END attribute_collect example
   # Only source.type: processor tables are writable. Their column types, keys,
-  # range inclusivity, TTL and capacity stay on the lookup-table definition.
-  # Bind every declared column, including keys and range bounds. Each parent
-  # supplies one complete row; repeated keys replace the row and refresh its
-  # TTL. No partial merging or processor-level overwrite option.
+  # TTL and capacity stay on the lookup-table definition.
+  # An upsert binds every declared column, including keys and the prefix
+  # column. Each parent supplies one complete row; repeated keys replace the
+  # row and refresh its TTL. No partial merging or processor-level overwrite
+  # option. A delete binds exactly the key columns (a prefix table's prefix and
+  # partition columns) and removes only that exact key, never a wider or
+  # narrower prefix; delete_partition binds exactly the partition columns.
+  # Within a batch, rules run in config order and records in batch order, so an
+  # upsert and a delete of one key apply in that order; batches handled by
+  # different processor workers are not ordered against each other.
   # Keys are matched byte for byte (an array element is `a.0.b`; `*` has no
   # special meaning). Record rules may also read resource attributes with
   # {table: resource, key: host.id}. Guards select whole records, and both
@@ -803,7 +870,8 @@ processors:
   # column name (or the binding's `name`) supplies the cell from `pivot.value` or
   # the binding's `value`. Duplicate names within a record resolve to the highest
   # element index. `snmp_object` drops `MODULE::` and, by default, the instance.
-  # Missing inputs, null keys/bounds and failed casts skip the entire row.
+  # Missing inputs, null keys/prefixes, failed casts and unparseable prefixes
+  # skip the entire row.
   # Explicit null value cells are stored as null; capacity rejections are counted
   # separately. Telemetry passes through unchanged, even on collection errors.
   # Casts: bool/integer/string/ip, plus double for non-key value columns. An `ip`

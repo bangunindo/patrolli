@@ -68,29 +68,34 @@ pub struct AttributeLookupRule {
     /// restriction the inherited top-level predicate carries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<AttributeFilter>,
-    /// Input attributes supplying the table's hash key or partition/range key.
+    /// Input attributes supplying the table's hash key, or a prefix table's
+    /// partition and probe address.
     #[serde(rename = "match")]
     pub match_by: AttributeLookupMatch,
     /// Destination attribute key -> lookup-table column name. All columns come
     /// from the same matched row, so extra outputs add no index probes. Values
-    /// keep their column types; IP values are emitted as strings.
+    /// keep their column types; IP values are emitted as strings. Naming a
+    /// prefix table's `prefix_column` emits the prefix that matched, as CIDR
+    /// text (`10.1.0.0/16`).
     pub output: BTreeMap<String, String>,
 }
 
 /// Bind attributes to the index already defined by the lookup table.
 ///
 /// A hash table requires exactly its configured key columns and no `point`; a
-/// range table its partition columns (possibly none) plus `point`. Bindings are
+/// prefix table its partition columns (possibly none) plus `point`, which
+/// finds the longest stored prefix containing that address. Bindings are
 /// named, so YAML map order does not determine tuple order.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AttributeLookupMatch {
     /// Lookup-table key/partition column -> input attribute. Empty only for an
-    /// unpartitioned range lookup. Range bound columns are not probe bindings.
+    /// unpartitioned prefix lookup. The prefix column is not a probe binding.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub keys: BTreeMap<String, AttributeLookupInput>,
-    /// Point to search for in a range index; absent for a hash lookup. An
-    /// explicit cast must be `integer` or `ip`, matching the table's range.
+    /// Address to look up in a prefix table; absent for a hash lookup. Always
+    /// read as an IP (text, or the bare-integer form), so `cast` may be left
+    /// out; if set it must be `ip`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub point: Option<AttributeLookupInput>,
 }
@@ -113,9 +118,10 @@ pub struct AttributeLookupInput {
     /// already match the table's key type. A conversion failure skips the
     /// probe; composite keys are never implicitly stringified.
     ///
-    /// An `ip` key column or range point always needs `cast: ip`, because the
-    /// input arrives as a string and would otherwise miss every record. A
-    /// missing or contradicting cast is rejected when the table resolves.
+    /// An `ip` key column always needs `cast: ip`, because the input arrives as
+    /// a string and would otherwise miss every record. A missing or
+    /// contradicting cast is rejected when the table resolves. A prefix
+    /// table's `point` is always an IP and needs no cast.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cast: Option<AttributeLookupCast>,
 }
@@ -164,7 +170,7 @@ impl AttributeLookupRule {
             validate_when(filter, &self.table).context("when")?;
         }
         if self.match_by.keys.is_empty() && self.match_by.point.is_none() {
-            bail!("match requires keys or a range point");
+            bail!("match requires keys or a point");
         }
         for column in self.match_by.keys.keys() {
             if column.trim().is_empty() {
@@ -172,12 +178,11 @@ impl AttributeLookupRule {
             }
         }
         if let Some(point) = &self.match_by.point
-            && matches!(
-                point.cast,
-                Some(AttributeLookupCast::Bool | AttributeLookupCast::String)
-            )
+            && point
+                .cast
+                .is_some_and(|cast| cast != AttributeLookupCast::Ip)
         {
-            bail!("match.point.cast must be integer or ip");
+            bail!("match.point.cast must be ip, or left out: the point is always an address");
         }
 
         for input in self
@@ -386,19 +391,19 @@ mod tests {
     }
 
     #[test]
-    fn scalar_and_partitioned_range_lookups_are_supported() {
+    fn scalar_and_partitioned_prefix_lookups_are_supported() {
         let mut scalar = rule();
         scalar["match"] = json!({"keys": {"host": {"key": "host.name"}}});
         scalar["output"] = json!({"host.owner": "owner"});
-        let mut range = rule();
-        range["match"] = json!({
+        let mut prefix = rule();
+        prefix["match"] = json!({
             "keys": {"vrf": {"key": "vrf"}},
             "point": {"key": "flow.ip", "cast": "ip"}
         });
-        range["output"] = json!({"flow.country": "country"});
-        config(vec![scalar, range.clone()]).validate().unwrap();
-        range["match"].as_object_mut().unwrap().remove("keys");
-        config(vec![range]).validate().unwrap();
+        prefix["output"] = json!({"flow.country": "country"});
+        config(vec![scalar, prefix.clone()]).validate().unwrap();
+        prefix["match"].as_object_mut().unwrap().remove("keys");
+        config(vec![prefix]).validate().unwrap();
     }
 
     /// `*` used to bind an array index. It is an ordinary key character now,
@@ -446,6 +451,7 @@ mod tests {
             ("match", json!({})),
             ("match", json!({"keys": {"": {"key": "id"}}})),
             ("match", json!({"point": {"key": "id", "cast": "string"}})),
+            ("match", json!({"point": {"key": "id", "cast": "integer"}})),
             ("output", json!({})),
             ("output", json!({"interface.name": " "})),
         ] {

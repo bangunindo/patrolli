@@ -879,12 +879,12 @@ mod tests {
         assert!(output.contains(&format!(
             "patrolli_lookup_table_loads_total{{{identity},kind=\"immutable\"}} 4\n"
         )));
-        // the reason is a label, so seven families do not become forty-nine
+        // the reason is a label, so five families do not become twenty-five
         assert!(output.contains(&format!(
             "patrolli_lookup_table_rows_skipped_total{{{identity},reason=\"cast\"}} 12\n"
         )));
         assert!(output.contains(&format!(
-            "patrolli_lookup_table_rows_skipped_total{{{identity},reason=\"overlap\"}} 0\n"
+            "patrolli_lookup_table_rows_skipped_total{{{identity},reason=\"prefix\"}} 0\n"
         )));
         assert!(output.contains(&format!(
             "patrolli_lookup_table_processor_lookups_hit_total{{{identity},node_id=\"{node_id}\"}} 94\n"

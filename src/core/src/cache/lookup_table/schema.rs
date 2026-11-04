@@ -14,9 +14,9 @@ pub type RowId = u32;
 
 /// The materialized columns of a table.
 ///
-/// For range-keyed tables the bound columns are *not* here: they are consumed
-/// by the index and never stored per row, which is what lets many disjoint
-/// ranges collapse onto a single deduplicated row.
+/// For prefix-keyed tables the prefix column is *not* here: it is consumed by
+/// the index and never stored per row, which is what lets many prefixes
+/// collapse onto a single deduplicated row.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Schema {
     names: Box<[SmolStr]>,
@@ -89,27 +89,26 @@ pub enum KeyPlan {
     Hash {
         columns: Box<[ColumnIdx]>,
     },
-    Range {
+    Prefix {
         /// indices into the materialized schema; empty for an unpartitioned table
         partition: Box<[ColumnIdx]>,
-        range_type: cfg::RangeType,
     },
 }
 
 impl KeyPlan {
     /// How many key parts a probe must supply.
     ///
-    /// For a range key this counts only the partition columns; the range point
-    /// is passed separately.
+    /// For a prefix key this counts only the partition columns; the address is
+    /// passed separately.
     pub fn arity(&self) -> usize {
         match self {
             KeyPlan::Hash { columns } => columns.len(),
-            KeyPlan::Range { partition, .. } => partition.len(),
+            KeyPlan::Prefix { partition } => partition.len(),
         }
     }
 
-    pub fn is_range(&self) -> bool {
-        matches!(self, KeyPlan::Range { .. })
+    pub fn is_prefix(&self) -> bool {
+        matches!(self, KeyPlan::Prefix { .. })
     }
 }
 
@@ -119,44 +118,34 @@ impl KeyPlan {
 pub struct ColumnLayout {
     /// source column index -> materialized index, or `None` when index-only
     pub materialized: Box<[Option<ColumnIdx>]>,
-    /// source index of the range start column
-    pub range_start: Option<usize>,
-    /// source index of the range end column
-    pub range_end: Option<usize>,
+    /// source index of the column the index consumes (a prefix table's
+    /// prefix column)
+    pub key_column: Option<usize>,
 }
 
 impl ColumnLayout {
     /// Splits `source` (the columns as they appear in the file) into the
-    /// materialized [`Schema`] and the index-only bound columns.
+    /// materialized [`Schema`] and the index-only prefix column.
     pub fn build(
         source: &[(SmolStr, cfg::ValueType)],
         key: &cfg::Key,
     ) -> Result<(Self, Schema, KeyPlan)> {
         let position = |name: &str| source.iter().position(|(n, _)| n == name);
 
-        let (range_start, range_end) = match key {
-            cfg::Key::Hash(_) => (None, None),
-            cfg::Key::Range(range) => {
-                let start = position(&range.start_column).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "key.start_column {:?} is not a column of this table",
-                        range.start_column
-                    )
-                })?;
-                let end = position(&range.end_column).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "key.end_column {:?} is not a column of this table",
-                        range.end_column
-                    )
-                })?;
-                (Some(start), Some(end))
-            }
+        let key_column = match key {
+            cfg::Key::Hash(_) => None,
+            cfg::Key::Prefix(prefix) => Some(position(&prefix.prefix_column).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "key.prefix_column {:?} is not a column of this table",
+                    prefix.prefix_column
+                )
+            })?),
         };
 
         let mut materialized = Vec::with_capacity(source.len());
         let mut columns = Vec::with_capacity(source.len());
         for (i, (name, ty)) in source.iter().enumerate() {
-            if Some(i) == range_start || Some(i) == range_end {
+            if Some(i) == key_column {
                 materialized.push(None);
                 continue;
             }
@@ -164,7 +153,7 @@ impl ColumnLayout {
             columns.push((name.clone(), *ty));
         }
         if columns.is_empty() {
-            bail!("table has no value columns once the range bounds are consumed");
+            bail!("table has no value columns once the prefix column is consumed");
         }
         let schema = Schema::new(columns)?;
 
@@ -172,18 +161,16 @@ impl ColumnLayout {
             cfg::Key::Hash(hash) => KeyPlan::Hash {
                 columns: schema.resolve_all(&hash.key_columns, "key.key_columns entry")?,
             },
-            cfg::Key::Range(range) => KeyPlan::Range {
+            cfg::Key::Prefix(prefix) => KeyPlan::Prefix {
                 partition: schema
-                    .resolve_all(&range.partition_columns, "key.partition_columns entry")?,
-                range_type: range.range_type,
+                    .resolve_all(&prefix.partition_columns, "key.partition_columns entry")?,
             },
         };
 
         Ok((
             Self {
                 materialized: materialized.into_boxed_slice(),
-                range_start,
-                range_end,
+                key_column,
             },
             schema,
             plan,

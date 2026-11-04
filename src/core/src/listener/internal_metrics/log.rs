@@ -1984,7 +1984,7 @@ mod lookup_table_tests {
             ValueOwned::Double(2.0)
         ));
         assert!(matches!(
-            field(field(&rate, "rows_skipped_by_reason"), "overlap"),
+            field(field(&rate, "rows_skipped_by_reason"), "prefix"),
             ValueOwned::Double(0.0)
         ));
         assert!(matches!(

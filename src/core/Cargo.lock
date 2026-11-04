@@ -4587,7 +4587,6 @@ dependencies = [
  "prost",
  "prost-build",
  "rand 0.10.2",
- "rangemap",
  "rdkafka",
  "refinery",
  "regex",
@@ -5436,12 +5435,6 @@ checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
 dependencies = [
  "rand_core 0.9.5",
 ]
-
-[[package]]
-name = "rangemap"
-version = "1.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a611d15b50743feb4c76b7d03edcb0e64f399c26961e4efe6975bc398be6aa3d"
 
 [[package]]
 name = "rayon"

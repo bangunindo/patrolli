@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The `attribute_collect` processor: complete rows harvested out of incoming
-//! attributes and upserted into mutable lookup tables. Config contract on
+//! attributes and upserted into mutable lookup tables, or keys harvested the
+//! same way and deleted from them. Config contract on
 //! [`crate::config::processor::attribute_collect`]; this module is its execution.
 //!
 //! The mirror of [`super::attribute_lookup`] — same guards, same parents, same
@@ -14,20 +15,26 @@
 //! Nothing here can cost telemetry; a rule that cannot be planned, an
 //! unbuildable row and a row rejected for capacity differ only in which counter
 //! moves. Rows are complete by construction: a missing input, a null key or
-//! bound, or a failed cast skips the whole candidate, because the table
-//! replaces a key's row outright and a partial write would drop columns.
+//! prefix, an unparseable prefix, or a failed cast skips the whole candidate,
+//! because the table replaces a key's row outright and a partial write would
+//! drop columns.
+//!
+//! Rules run in config order and records in batch order, so an upsert and a
+//! delete of one key within a batch apply in that order. Batches on different
+//! processor workers are not ordered against each other.
 
 use super::attr_input;
 use super::attr_input::Parent;
 use crate::cache;
-use crate::cache::lookup_table::cell::{CellRef, RangePoint};
+use crate::cache::lookup_table::cell::{CellRef, Delete, KeyRef};
 use crate::cache::lookup_table::mutable::Mutable;
+use crate::cache::lookup_table::prefix::parse_prefix;
 use crate::cache::lookup_table::schema::{ColumnIdx, KeyPlan};
 use crate::config::lookup_table as lt;
 use crate::config::processor::AttributeTable;
 use crate::config::processor::attribute_collect::{
-    AttributeCollect, AttributeCollectCast, AttributeCollectInput, AttributeCollectPivot,
-    AttributeCollectRule, NameFormat,
+    AttributeCollect, AttributeCollectAction, AttributeCollectCast, AttributeCollectInput,
+    AttributeCollectPivot, AttributeCollectRule, NameFormat,
 };
 use crate::payload::{self, Payload, Value, attr};
 use anyhow::{Result, anyhow, bail};
@@ -35,7 +42,6 @@ use arrow::array::BooleanArray;
 use regex::{CaptureLocations, Regex};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
-use smol_str::SmolStr;
 use tracing::{trace, warn};
 use uuid::Uuid;
 
@@ -82,14 +88,16 @@ pub(super) fn attribute_collect(
 
 /// A rule's config resolved against its target table.
 struct Plan<'a> {
-    /// One binding per materialized column, in `ColumnIdx` order — which is the
-    /// order [`Mutable::upsert_hash`] reads its cells in.
-    columns: Vec<(Binding<'a>, lt::ValueType)>,
-    /// The materialized columns the key is taken from: a hash table's key
-    /// columns, or a range table's partition columns.
-    key_columns: Box<[ColumnIdx]>,
-    /// The interval bindings, `Some` exactly when the table is range-keyed.
-    bounds: Option<Bounds<'a>>,
+    action: AttributeCollectAction,
+    /// The bound materialized columns and whether each is part of the key. For
+    /// an upsert, every column in `ColumnIdx` order — which is the order
+    /// [`Mutable::upsert_hash`] reads its cells in. For a delete, the key
+    /// columns in key order (a hash key, or a prefix table's partition); for a
+    /// partition delete, the partition columns in order.
+    columns: Vec<(Binding<'a>, lt::ValueType, bool)>,
+    /// The prefix column's binding, `Some` exactly when the table is
+    /// prefix-keyed and the rule names a prefix (an upsert or a delete).
+    prefix: Option<Binding<'a>>,
     /// The distinct normalized element names the pivoted bindings ask for;
     /// [`Binding::Pivot::slot`] indexes into it.
     pivot_names: Vec<&'a str>,
@@ -118,16 +126,6 @@ impl Binding<'_> {
     }
 }
 
-/// The two bound columns of a range table, plus the inclusivity and range type
-/// that belong to the table rather than to this processor.
-struct Bounds<'a> {
-    start: Binding<'a>,
-    end: Binding<'a>,
-    start_inclusive: bool,
-    end_inclusive: bool,
-    range_type: lt::RangeType,
-}
-
 impl<'a> Plan<'a> {
     fn resolve(
         table: &Mutable,
@@ -135,24 +133,49 @@ impl<'a> Plan<'a> {
         rule: &'a AttributeCollectRule,
     ) -> Result<Self> {
         let schema = table.schema();
-        // Bound columns are consumed by the index and never materialized, so
-        // their names come off the table's own key config, not `schema`.
-        let range = match &config.key {
+        let action = rule.action;
+        // The prefix column is consumed by the index and never materialized,
+        // so its name comes off the table's own key config, not `schema`.
+        let prefix_column = match &config.key {
             lt::Key::Hash(_) => None,
-            lt::Key::Range(range) => Some(range),
+            lt::Key::Prefix(prefix) => Some(prefix.prefix_column.as_str()),
+        };
+        // The materialized columns the key is taken from: a hash table's key
+        // columns, or a prefix table's partition columns.
+        let key_columns: Box<[ColumnIdx]> = match table.key_plan() {
+            KeyPlan::Hash { columns } => columns.clone(),
+            KeyPlan::Prefix { partition } => partition.clone(),
         };
 
-        // Every declared column must be bound exactly once. `columns` is a map,
-        // so only "missing" and "unknown" are left to check.
-        let declared: Vec<&str> = schema
-            .names()
+        // The materialized columns this action binds, and whether it binds the
+        // prefix too.
+        let (bound_columns, binds_prefix): (Vec<ColumnIdx>, bool) = match action {
+            AttributeCollectAction::Upsert => (
+                (0..schema.len() as ColumnIdx).collect(),
+                prefix_column.is_some(),
+            ),
+            AttributeCollectAction::Delete => (key_columns.to_vec(), prefix_column.is_some()),
+            AttributeCollectAction::DeletePartition => {
+                if prefix_column.is_none() {
+                    bail!("delete_partition needs a prefix-keyed table; this one is hash-keyed");
+                }
+                if key_columns.is_empty() {
+                    bail!(
+                        "delete_partition needs a table with partition_columns; this prefix \
+                         table has none, so there is no partition to name"
+                    );
+                }
+                (key_columns.to_vec(), false)
+            }
+        };
+
+        // Every column the action needs must be bound exactly once, and
+        // nothing else. `columns` is a map, so only "missing" and "unknown"
+        // are left to check.
+        let declared: Vec<&str> = bound_columns
             .iter()
-            .map(SmolStr::as_str)
-            .chain(
-                range
-                    .iter()
-                    .flat_map(|r| [r.start_column.as_str(), r.end_column.as_str()]),
-            )
+            .map(|idx| schema.name(*idx).expect("index taken from the schema"))
+            .chain(prefix_column.filter(|_| binds_prefix))
             .collect();
         let mut pivot_names: Vec<&'a str> = Vec::new();
         let mut binding = |name: &str| -> Result<Binding<'a>> {
@@ -197,16 +220,23 @@ impl<'a> Plan<'a> {
             .filter(|name| !declared.contains(name))
             .collect();
         if !unknown.is_empty() {
-            bail!("columns names {unknown:?}, which the table does not declare");
+            match action {
+                AttributeCollectAction::Upsert => {
+                    bail!("columns names {unknown:?}, which the table does not declare")
+                }
+                AttributeCollectAction::Delete => bail!(
+                    "a delete binds exactly the table's key columns {declared:?}, \
+                     but columns also names {unknown:?}"
+                ),
+                AttributeCollectAction::DeletePartition => bail!(
+                    "a delete_partition binds exactly the table's partition columns \
+                     {declared:?}, but columns also names {unknown:?}"
+                ),
+            }
         }
 
-        let key_columns = match table.key_plan() {
-            KeyPlan::Hash { columns } => columns.clone(),
-            KeyPlan::Range { partition, .. } => partition.clone(),
-        };
-
-        let mut columns = Vec::with_capacity(schema.len());
-        for idx in 0..schema.len() as ColumnIdx {
+        let mut columns = Vec::with_capacity(bound_columns.len());
+        for idx in bound_columns {
             let name = schema.name(idx).expect("index taken from the schema");
             let ty = schema.value_type(idx).expect("index taken from the schema");
             let bound = binding(name)?;
@@ -220,64 +250,51 @@ impl<'a> Plan<'a> {
             // No OTAP IP value, so an ip column always arrives as a string.
             // Without the cast every real address skips its candidate row while
             // null ones still store, so the table fills with nulls and looks
-            // alive. `bounds` below enforces the same rule.
+            // alive.
             if bound.cast().is_none() && ty == lt::ValueType::Ip {
                 bail!("an ip column needs an explicit `cast: ip` on columns[{name:?}]");
             }
+            let is_key = key_columns.contains(&idx);
             // `KeyRef` has no double variant. A lookup-table misconfiguration,
             // but it surfaces here.
-            if ty == lt::ValueType::Double && key_columns.contains(&idx) {
+            if ty == lt::ValueType::Double && is_key {
                 bail!("key column {name:?} is a double and cannot index a lookup table");
             }
-            columns.push((bound, ty));
+            columns.push((bound, ty, is_key));
         }
 
-        let bounds = range
-            .map(|range| {
-                let want = match range.range_type {
-                    lt::RangeType::Ip => AttributeCollectCast::Ip,
-                    lt::RangeType::Integer => AttributeCollectCast::Integer,
-                };
-                let mut bound = |name: &str| -> Result<Binding<'a>> {
-                    let bound = binding(name)?;
-                    match bound.cast() {
-                        Some(cast) if cast != want => bail!(
-                            "columns[{name:?}].cast is {cast:?} but the table's range is {:?}",
-                            range.range_type
-                        ),
-                        // No OTAP IP value: an ip bound arrives as a string.
-                        None if range.range_type == lt::RangeType::Ip => {
-                            bail!("an ip range needs an explicit `cast: ip` on columns[{name:?}]")
-                        }
-                        _ => {}
-                    }
-                    Ok(bound)
-                };
-                Ok::<_, anyhow::Error>(Bounds {
-                    start: bound(&range.start_column)?,
-                    end: bound(&range.end_column)?,
-                    start_inclusive: range.start_inclusive,
-                    end_inclusive: range.end_inclusive,
-                    range_type: range.range_type,
-                })
-            })
-            .transpose()?;
+        let prefix = match prefix_column {
+            Some(name) if binds_prefix => {
+                let bound = binding(name)?;
+                // CIDR text, parsed by the table's own parser; there is no IP
+                // prefix value to cast to.
+                if let Some(cast) = bound.cast()
+                    && cast != AttributeCollectCast::String
+                {
+                    bail!(
+                        "columns[{name:?}].cast is {cast:?}, but the prefix column holds CIDR \
+                         text: leave the cast out or use `string`"
+                    );
+                }
+                Some(bound)
+            }
+            _ => None,
+        };
 
         Ok(Plan {
+            action,
             columns,
-            key_columns,
-            bounds,
+            prefix,
             pivot_names,
         })
     }
 
-    /// Every binding of the plan, columns then bounds.
+    /// Every binding of the plan, columns then the prefix.
     fn bindings(&self) -> impl Iterator<Item = &Binding<'a>> {
-        self.columns.iter().map(|(binding, _)| binding).chain(
-            self.bounds
-                .iter()
-                .flat_map(|bounds| [&bounds.start, &bounds.end]),
-        )
+        self.columns
+            .iter()
+            .map(|(binding, ..)| binding)
+            .chain(self.prefix.as_ref())
     }
 }
 
@@ -479,7 +496,7 @@ fn run_rule<'a>(
 
     // Nulls are kept: an attribute that is present but explicitly null is a null
     // cell for a value column, which is not the same as the attribute being
-    // absent. For a key or bound column both still skip the row.
+    // absent. For a key or prefix column both still skip the row.
     let source = |binding: &Binding<'a>| -> Result<ColumnSource<'a>> {
         Ok(match binding {
             Binding::Key(input) => ColumnSource::Attr(attr_input::read_source(
@@ -496,22 +513,15 @@ fn run_rule<'a>(
     let column_sources = plan
         .columns
         .iter()
-        .map(|(binding, _)| source(binding))
+        .map(|(binding, ..)| source(binding))
         .collect::<Result<Vec<_>>>()?;
-    let bound_sources = plan
-        .bounds
-        .as_ref()
-        .map(|bounds| Ok::<_, anyhow::Error>((source(&bounds.start)?, source(&bounds.end)?)))
-        .transpose()?;
+    let prefix_source = plan.prefix.as_ref().map(source).transpose()?;
 
     // A parent carrying none of the inputs is not a candidate — it is not
     // participating, and an error for it would drown the counter. One carrying
     // *some* is a candidate, and fails when the row is built.
     let mut set = FxHashSet::default();
-    for source in column_sources
-        .iter()
-        .chain(bound_sources.iter().flat_map(|(start, end)| [start, end]))
-    {
+    for source in column_sources.iter().chain(prefix_source.as_ref()) {
         if let ColumnSource::Attr(source) = source {
             source.extend_candidates(&is_eligible, &mut set);
         }
@@ -525,19 +535,14 @@ fn run_rule<'a>(
     for parent in candidates {
         converted.clear();
         let mut usable = true;
-        for (idx, ((binding, ty), source)) in plan.columns.iter().zip(&column_sources).enumerate() {
+        for ((binding, ty, is_key), source) in plan.columns.iter().zip(&column_sources) {
             match source
                 .get(parent, pivot.as_ref())
                 .and_then(|value| cell_of(value, binding.cast(), *ty))
             {
                 // A null key is not a key: the row would be stored under a
                 // placeholder no probe could ever name.
-                Some(cell)
-                    if cell.as_ref().is_null()
-                        && plan.key_columns.contains(&(idx as ColumnIdx)) =>
-                {
-                    usable = false;
-                }
+                Some(cell) if cell.as_ref().is_null() && *is_key => usable = false,
                 Some(cell) => converted.push(cell),
                 None => usable = false,
             }
@@ -546,23 +551,19 @@ fn run_rule<'a>(
             }
         }
 
-        let interval = match (&plan.bounds, &bound_sources) {
-            (Some(bounds), Some((start_source, end_source))) if usable => {
-                let point = |binding: &Binding<'a>, source: &ColumnSource<'a>| {
-                    source
-                        .get(parent, pivot.as_ref())
-                        .and_then(|value| range_point(value, binding.cast(), bounds.range_type))
-                };
-                match (
-                    point(&bounds.start, start_source),
-                    point(&bounds.end, end_source),
-                ) {
-                    (Some(start), Some(end)) => Some((start, end)),
-                    _ => {
-                        usable = false;
-                        None
-                    }
-                }
+        // A null, missing or unparseable prefix skips the row like a failed
+        // cast would.
+        let net = match (&plan.prefix, &prefix_source) {
+            (Some(binding), Some(source)) if usable => {
+                let net = source
+                    .get(parent, pivot.as_ref())
+                    .and_then(|value| cell_of(value, binding.cast(), lt::ValueType::String))
+                    .and_then(|cell| match cell.as_ref() {
+                        CellRef::String(text) => parse_prefix(text).ok(),
+                        _ => None,
+                    });
+                usable = net.is_some();
+                net
             }
             _ => None,
         };
@@ -576,24 +577,50 @@ fn run_rule<'a>(
             .iter()
             .map(attr_input::Converted::as_ref)
             .collect();
-        // The handle tallies every outcome, and neither a `Rejected` nor an
-        // `Err` is worth failing the rule for.
-        let outcome = match (&plan.bounds, interval) {
-            (Some(bounds), Some((start, end))) => write.upsert_range(
-                &cells,
-                start,
-                bounds.start_inclusive,
-                end,
-                bounds.end_inclusive,
-            ),
-            _ => write.upsert_hash(&cells),
-        };
-        if let Err(e) = outcome {
-            trace!(
-                error = %e,
-                lookup_table = %rule.lookup_table,
-                "lookup table rejected a row"
-            );
+        match plan.action {
+            AttributeCollectAction::Upsert => {
+                // The handle tallies every outcome, and neither a `Rejected`
+                // nor an `Err` is worth failing the rule for.
+                let outcome = match net {
+                    Some(net) => write.upsert_prefix(&cells, net),
+                    None => write.upsert_hash(&cells),
+                };
+                if let Err(e) = outcome {
+                    trace!(
+                        error = %e,
+                        lookup_table = %rule.lookup_table,
+                        "lookup table rejected a row"
+                    );
+                }
+            }
+            AttributeCollectAction::Delete | AttributeCollectAction::DeletePartition => {
+                // Every bound column is a key here, and nulls were refused
+                // above; doubles were refused at plan time.
+                let Ok(parts) = cells
+                    .iter()
+                    .map(|cell| KeyRef::try_from_cell(*cell))
+                    .collect::<Result<SmallVec<[KeyRef<'_>; 8]>>>()
+                else {
+                    write.note_key_error();
+                    continue;
+                };
+                // A missing key or partition is a no-op, not an error: the
+                // records of one batch may well repeat it.
+                match (plan.action, net) {
+                    (AttributeCollectAction::DeletePartition, _) => {
+                        write.remove_partition(&parts);
+                    }
+                    (_, Some(net)) => {
+                        write.remove(Delete::Prefix {
+                            partition: &parts,
+                            net,
+                        });
+                    }
+                    (_, None) => {
+                        write.remove(Delete::Hash(&parts));
+                    }
+                }
+            }
         }
     }
     Ok(())
@@ -626,18 +653,6 @@ fn cell_of<'a>(
     matches.then_some(converted)
 }
 
-fn range_point(
-    value: &Value<'_>,
-    cast: Option<AttributeCollectCast>,
-    range_type: lt::RangeType,
-) -> Option<RangePoint> {
-    let ty = match range_type {
-        lt::RangeType::Integer => lt::ValueType::Integer,
-        lt::RangeType::Ip => lt::ValueType::Ip,
-    };
-    RangePoint::from_cell(cell_of(value, cast, ty)?.as_ref(), range_type)
-}
-
 fn cast_type(cast: AttributeCollectCast) -> lt::ValueType {
     match cast {
         AttributeCollectCast::Bool => lt::ValueType::Bool,
@@ -652,6 +667,7 @@ fn cast_type(cast: AttributeCollectCast) -> lt::ValueType {
 mod tests {
     use super::*;
     use crate::cache::lookup_table::cell::{CellOwned, KeyRef, Lookup};
+    use crate::cache::lookup_table::mutable::Upsert;
     use crate::common::internal_metrics::LookupTableProcessor;
     use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
     use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -662,6 +678,7 @@ mod tests {
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
     use serde_json::{Value as Json, json};
+    use smol_str::SmolStr;
     use std::net::IpAddr;
     use std::time::Duration;
 
@@ -764,29 +781,70 @@ mod tests {
         config.id
     }
 
-    /// An empty processor-fed range table. `columns` includes the two bound
-    /// columns `lo`/`hi`, which the index consumes.
-    fn range_table(
+    /// An empty processor-fed prefix table. `columns` includes the prefix
+    /// column `network`, which the index consumes.
+    fn prefix_table(
         cache: &cache::Cache,
-        range_type: lt::RangeType,
         partition_columns: &[&str],
         columns: &[(&str, lt::ValueType)],
     ) -> Uuid {
         let config = lt::LookupTable {
             id: Uuid::now_v7(),
-            name: "range".into(),
+            name: "prefix".into(),
             source: processor_source(columns, 1000),
-            key: lt::Key::Range(lt::Range {
-                range_type,
+            key: lt::Key::Prefix(lt::Prefix {
+                prefix_column: "network".into(),
                 partition_columns: partition_columns.iter().map(|c| c.to_string()).collect(),
-                start_column: "lo".into(),
-                start_inclusive: true,
-                end_column: "hi".into(),
-                end_inclusive: true,
             }),
         };
         cache.lookup_table.insert(&config).unwrap();
         config.id
+    }
+
+    /// Routes per BGP peer, pre-filled with `(peer, network, asn)` rows.
+    fn routes_table(cache: &cache::Cache, rows: &[(&str, &str, i64)]) -> Uuid {
+        let id = prefix_table(
+            cache,
+            &["peer"],
+            &[
+                ("peer", lt::ValueType::String),
+                ("network", lt::ValueType::String),
+                ("asn", lt::ValueType::Integer),
+            ],
+        );
+        let table = cache.lookup_table.get(&id).unwrap();
+        let mutable = table.as_mutable().unwrap();
+        for (peer, network, asn) in rows {
+            let outcome = mutable
+                .table()
+                .upsert_prefix(
+                    &[CellRef::String(peer), CellRef::Integer(*asn)],
+                    network.parse().unwrap(),
+                )
+                .unwrap();
+            assert_eq!(outcome, Upsert::Inserted);
+        }
+        id
+    }
+
+    /// The row matching `addr` in a prefix table, and the prefix it matched.
+    fn at(
+        cache: &cache::Cache,
+        id: Uuid,
+        partition: &[KeyRef<'_>],
+        addr: &str,
+    ) -> Option<(Vec<CellOwned>, String)> {
+        let table = cache.lookup_table.get(&id).unwrap();
+        let mutable = table.as_mutable().unwrap();
+        let (stored, net) = mutable.table().get(Lookup::Prefix {
+            partition,
+            addr: addr.parse().unwrap(),
+        })?;
+        let width = mutable.table().schema().len() as ColumnIdx;
+        Some((
+            (0..width).map(|i| stored.cell(i).to_owned_cell()).collect(),
+            net.unwrap().to_string(),
+        ))
     }
 
     /// A file-backed table, which collection must refuse to write to.
@@ -824,7 +882,7 @@ mod tests {
     fn row(cache: &cache::Cache, id: Uuid, probe: Lookup<'_>) -> Option<Vec<CellOwned>> {
         let table = cache.lookup_table.get(&id).unwrap();
         let mutable = table.as_mutable().unwrap();
-        let stored = mutable.table().get(probe)?;
+        let (stored, _) = mutable.table().get(probe)?;
         let width = mutable.table().schema().len() as ColumnIdx;
         Some((0..width).map(|i| stored.cell(i).to_owned_cell()).collect())
     }
@@ -1408,15 +1466,13 @@ mod tests {
     }
 
     #[test]
-    fn a_pivoted_binding_may_supply_a_range_bound() {
+    fn a_pivoted_binding_may_supply_the_prefix() {
         let cache = cache::Cache::new();
-        let id = range_table(
+        let id = prefix_table(
             &cache,
-            lt::RangeType::Integer,
             &[],
             &[
-                ("lo", lt::ValueType::Integer),
-                ("hi", lt::ValueType::Integer),
+                ("network", lt::ValueType::String),
                 ("owner", lt::ValueType::String),
             ],
         );
@@ -1425,9 +1481,8 @@ mod tests {
             vec![snmp_row(
                 "1",
                 &[
-                    ("MY-MIB::rangeEnd.1", "200", "200"),
-                    ("MY-MIB::rangeStart.1", "100", "100"),
-                    ("MY-MIB::rangeOwner.1", "core", "core"),
+                    ("MY-MIB::routePrefix.1", "10.1.0.0/16", "10.1.0.0/16"),
+                    ("MY-MIB::routeOwner.1", "core", "core"),
                 ],
             )],
         );
@@ -1435,24 +1490,15 @@ mod tests {
             id,
             json!({"type": "snmp_object"}),
             json!({
-                "lo": {"name": "rangeStart", "cast": "integer"},
-                "hi": {"name": "rangeEnd", "cast": "integer"},
-                "owner": {"name": "rangeOwner"},
+                "network": {"name": "routePrefix"},
+                "owner": {"name": "routeOwner"},
             }),
         );
         let m = run_counted(pl, &cfg, &cache, id);
         assert_eq!(m.writes_inserted, 1);
         assert_eq!(
-            row(
-                &cache,
-                id,
-                Lookup::Range {
-                    partition: &[],
-                    point: RangePoint::Integer(150),
-                }
-            )
-            .unwrap(),
-            vec![text("core")]
+            at(&cache, id, &[], "10.1.2.3").unwrap(),
+            (vec![text("core")], "10.1.0.0/16".into())
         );
     }
 
@@ -1710,119 +1756,410 @@ mod tests {
     }
 
     #[test]
-    fn a_range_rule_takes_its_bounds_from_the_bound_columns() {
+    fn a_prefix_rule_takes_its_key_from_the_prefix_column() {
         let cache = cache::Cache::new();
-        let id = range_table(
+        let id = prefix_table(
             &cache,
-            lt::RangeType::Integer,
             &["vrf"],
             &[
                 ("vrf", lt::ValueType::String),
-                ("lo", lt::ValueType::Integer),
-                ("hi", lt::ValueType::Integer),
+                ("network", lt::ValueType::String),
                 ("zone", lt::ValueType::String),
             ],
         );
+        let row = |vrf: &str, network: Option<&str>, zone: &str| {
+            let mut attrs = vec![kv("vrf", s(vrf)), kv("zone", s(zone))];
+            attrs.push(match network {
+                Some(network) => kv("network", s(network)),
+                None => null_kv("network"),
+            });
+            attrs
+        };
         let pl = logs(
             vec![],
             vec![
-                vec![
-                    kv("vrf", s("blue")),
-                    kv("lo", int(10)),
-                    kv("hi", int(20)),
-                    kv("zone", s("dmz")),
-                ],
-                // a null bound has no place in an index
-                vec![
-                    kv("vrf", s("blue")),
-                    null_kv("lo"),
-                    kv("hi", int(40)),
-                    kv("zone", s("core")),
-                ],
+                row("blue", Some("10.0.0.0/8"), "corp"),
+                row("blue", Some("10.1.0.0/16"), "dmz"),
+                // a bare address is a host route
+                row("blue", Some("10.1.2.3"), "host"),
+                // a null prefix has no place in an index
+                row("blue", None, "core"),
+                // host bits set, and not a prefix at all
+                row("blue", Some("10.2.0.1/16"), "bad"),
+                row("blue", Some("nope"), "bad"),
             ],
         );
         let cfg = config(json!({"collections": [{
             "lookup_table": id, "table": "record",
             "columns": {
                 "vrf": {"key": "vrf"},
-                "lo": {"key": "lo", "cast": "integer"},
-                "hi": {"key": "hi", "cast": "integer"},
+                "network": {"key": "network"},
                 "zone": {"key": "zone"},
             },
         }]}));
 
         let m = run_counted(pl, &cfg, &cache, id);
-        let probe = |point: i64| {
-            row(
-                &cache,
-                id,
-                Lookup::Range {
-                    partition: &[KeyRef::String("blue")],
-                    point: RangePoint::Integer(point),
-                },
-            )
-        };
-        // The table's own `end_inclusive: true` decides the closed upper end,
-        // and the bounds are consumed by the index rather than stored.
-        assert_eq!(probe(20).unwrap(), vec![text("blue"), text("dmz")]);
-        assert_eq!(probe(9), None);
-        assert_eq!(probe(21), None);
-        assert_eq!(m.writes_inserted, 1);
-        assert_eq!(m.writes_errored, 1, "the null lower bound");
+        let blue = [KeyRef::String("blue")];
+        // the prefix is consumed by the index rather than stored
+        assert_eq!(
+            at(&cache, id, &blue, "10.1.2.3").unwrap(),
+            (vec![text("blue"), text("host")], "10.1.2.3/32".into())
+        );
+        assert_eq!(
+            at(&cache, id, &blue, "10.1.2.4").unwrap(),
+            (vec![text("blue"), text("dmz")], "10.1.0.0/16".into())
+        );
+        assert_eq!(
+            at(&cache, id, &blue, "10.2.0.1").unwrap(),
+            (vec![text("blue"), text("corp")], "10.0.0.0/8".into())
+        );
+        assert_eq!(at(&cache, id, &[KeyRef::String("red")], "10.1.2.3"), None);
+        assert_eq!(m.writes_inserted, 3);
+        assert_eq!(
+            m.writes_errored, 3,
+            "the null, host-bits and garbage prefixes"
+        );
     }
 
     #[test]
-    fn an_ip_range_needs_an_explicit_cast_and_canonicalises_its_bounds() {
+    fn a_prefix_column_is_text_and_refuses_an_ip_cast() {
         let cache = cache::Cache::new();
-        let columns = &[
-            ("lo", lt::ValueType::Ip),
-            ("hi", lt::ValueType::Ip),
-            ("city", lt::ValueType::String),
-        ];
-        let id = range_table(&cache, lt::RangeType::Ip, &[], columns);
+        let id = prefix_table(
+            &cache,
+            &[],
+            &[
+                ("network", lt::ValueType::String),
+                ("city", lt::ValueType::String),
+            ],
+        );
         let pl = || {
             logs(
                 vec![],
                 vec![vec![
-                    kv("lo", s("::ffff:10.0.0.0")),
-                    kv("hi", s("10.0.0.255")),
+                    kv("network", s("::ffff:10.0.0.0/120")),
                     kv("city", s("jakarta")),
                 ]],
             )
         };
 
-        // OTAP has no IP value, so without the cast the rule cannot run at all.
-        let uncast = config(json!({"collections": [{
+        let ip = config(json!({"collections": [{
             "lookup_table": id, "table": "record",
-            "columns": {"lo": {"key": "lo"}, "hi": {"key": "hi"}, "city": {"key": "city"}},
+            "columns": {"network": {"key": "network", "cast": "ip"}, "city": {"key": "city"}},
         }]}));
-        let (_, errored) = run(pl(), &uncast, &cache);
-        assert!(errored, "an ip range must demand `cast: ip`");
+        let (_, errored) = run(pl(), &ip, &cache);
+        assert!(errored, "a prefix is not an address");
         assert_eq!(rows(&cache, id), 0);
 
-        let cfg = config(json!({"collections": [{
-            "lookup_table": id, "table": "record",
-            "columns": {
-                "lo": {"key": "lo", "cast": "ip"},
-                "hi": {"key": "hi", "cast": "ip"},
-                "city": {"key": "city"},
-            },
-        }]}));
-        let (_, errored) = run(pl(), &cfg, &cache);
-        assert!(!errored);
+        for cast in [json!(null), json!("string")] {
+            let mut network = json!({"key": "network"});
+            if !cast.is_null() {
+                network["cast"] = cast;
+            }
+            let cfg = config(json!({"collections": [{
+                "lookup_table": id, "table": "record",
+                "columns": {"network": network, "city": {"key": "city"}},
+            }]}));
+            let (_, errored) = run(pl(), &cfg, &cache);
+            assert!(!errored);
+        }
+        assert_eq!(rows(&cache, id), 1, "the second write updated the first");
         assert_eq!(
-            row(
-                &cache,
-                id,
-                Lookup::Range {
-                    partition: &[],
-                    point: RangePoint::Ip("10.0.0.7".parse().unwrap()),
-                },
-            )
-            .unwrap(),
-            vec![text("jakarta")],
-            "the v4-mapped lower bound folds onto v4"
+            at(&cache, id, &[], "10.0.0.7").unwrap(),
+            (vec![text("jakarta")], "10.0.0.0/24".into()),
+            "the v4-mapped prefix folds onto v4"
         );
+    }
+
+    #[test]
+    fn a_delete_removes_exactly_one_hash_key() {
+        let cache = cache::Cache::new();
+        let id = hash_table(
+            &cache,
+            &["host"],
+            &[
+                ("host", lt::ValueType::String),
+                ("site", lt::ValueType::String),
+            ],
+        );
+        let upsert = config(json!({"collections": [{
+            "lookup_table": id, "table": "record",
+            "columns": {"host": {"key": "host"}, "site": {"key": "site"}},
+        }]}));
+        let (_, errored) = run(
+            logs(
+                vec![],
+                vec![
+                    vec![kv("host", s("a")), kv("site", s("jkt"))],
+                    vec![kv("host", s("b")), kv("site", s("bdg"))],
+                ],
+            ),
+            &upsert,
+            &cache,
+        );
+        assert!(!errored);
+        assert_eq!(rows(&cache, id), 2);
+
+        let delete = config(json!({"collections": [{
+            "lookup_table": id, "table": "record", "action": "delete",
+            "columns": {"host": {"key": "host"}},
+        }]}));
+        let m = run_counted(
+            logs(
+                vec![],
+                vec![
+                    vec![kv("host", s("a"))],
+                    // already gone by now, and never there: both no-ops
+                    vec![kv("host", s("a"))],
+                    vec![kv("host", s("zz"))],
+                    // no key at all is not a candidate
+                    vec![kv("other", s("x"))],
+                ],
+            ),
+            &delete,
+            &cache,
+            id,
+        );
+        assert_eq!(m.removes, 1, "only the delete that found a row");
+        assert_eq!(m.writes, 0, "a delete is not a write");
+        assert_eq!(m.writes_errored, 0, "a missing key is not an error");
+        assert_eq!(rows(&cache, id), 1);
+        assert_eq!(by_str(&cache, id, "a"), None);
+        assert_eq!(
+            by_str(&cache, id, "b").unwrap(),
+            vec![text("b"), text("bdg")]
+        );
+    }
+
+    #[test]
+    fn a_delete_removes_exactly_one_prefix_and_exposes_its_parent() {
+        let cache = cache::Cache::new();
+        let id = routes_table(
+            &cache,
+            &[
+                ("p1", "10.0.0.0/8", 8),
+                ("p1", "10.1.0.0/16", 16),
+                ("p2", "10.1.0.0/16", 99),
+            ],
+        );
+        let delete = config(json!({"collections": [{
+            "lookup_table": id, "table": "record", "action": "delete",
+            "columns": {"peer": {"key": "peer"}, "network": {"key": "network"}},
+        }]}));
+        let m = run_counted(
+            logs(
+                vec![],
+                vec![
+                    vec![kv("peer", s("p1")), kv("network", s("10.1.0.0/16"))],
+                    // an address inside a prefix, or a narrower one, is not it
+                    vec![kv("peer", s("p1")), kv("network", s("10.0.0.1"))],
+                    vec![kv("peer", s("p1")), kv("network", s("10.0.0.0/9"))],
+                    vec![kv("peer", s("p1")), kv("network", s("bad"))],
+                ],
+            ),
+            &delete,
+            &cache,
+            id,
+        );
+        assert_eq!(m.removes, 1);
+        assert_eq!(m.writes_errored, 1, "the unparseable prefix");
+        assert_eq!(rows(&cache, id), 2);
+        assert_eq!(
+            at(&cache, id, &[KeyRef::String("p1")], "10.1.2.3").unwrap(),
+            (vec![text("p1"), CellOwned::Integer(8)], "10.0.0.0/8".into()),
+            "the parent is exposed"
+        );
+        assert_eq!(
+            at(&cache, id, &[KeyRef::String("p2")], "10.1.2.3")
+                .unwrap()
+                .1,
+            "10.1.0.0/16",
+            "another partition's copy is untouched"
+        );
+    }
+
+    #[test]
+    fn a_partition_delete_removes_only_the_named_partition() {
+        let cache = cache::Cache::new();
+        let id = routes_table(
+            &cache,
+            &[
+                ("p1", "10.0.0.0/8", 1),
+                ("p1", "10.1.0.0/16", 1),
+                ("p1", "2001:db8::/32", 1),
+                ("p2", "10.0.0.0/8", 2),
+            ],
+        );
+        let withdraw = config(json!({"collections": [{
+            "lookup_table": id, "table": "record", "action": "delete_partition",
+            "columns": {"peer": {"key": "peer"}},
+        }]}));
+        let m = run_counted(
+            logs(
+                vec![],
+                // repeating a partition in one batch is harmless
+                vec![
+                    vec![kv("peer", s("p1"))],
+                    vec![kv("peer", s("p1"))],
+                    vec![kv("peer", s("p9"))],
+                ],
+            ),
+            &withdraw,
+            &cache,
+            id,
+        );
+        assert_eq!(m.removes, 3, "every row of the partition counts");
+        assert_eq!(m.writes_errored, 0);
+        assert_eq!(rows(&cache, id), 1);
+        assert_eq!(at(&cache, id, &[KeyRef::String("p1")], "10.1.2.3"), None);
+        assert!(at(&cache, id, &[KeyRef::String("p2")], "10.1.2.3").is_some());
+    }
+
+    #[test]
+    fn upserts_and_deletes_apply_in_rule_then_record_order() {
+        let cache = cache::Cache::new();
+        let id = routes_table(&cache, &[]);
+        let cfg = config(json!({"collections": [
+            {
+                "lookup_table": id, "table": "record",
+                "when": predicate("record", "op", "add"),
+                "columns": {
+                    "peer": {"key": "peer"},
+                    "network": {"key": "network"},
+                    "asn": {"key": "asn", "cast": "integer"},
+                },
+            },
+            {
+                "lookup_table": id, "table": "record", "action": "delete",
+                "when": predicate("record", "op", "withdraw"),
+                "columns": {"peer": {"key": "peer"}, "network": {"key": "network"}},
+            },
+        ]}));
+        let record = |op: &str, network: &str| {
+            vec![
+                kv("op", s(op)),
+                kv("peer", s("p1")),
+                kv("network", s(network)),
+                kv("asn", s("65000")),
+            ]
+        };
+        // the upsert rule runs over the whole batch first, then the delete rule
+        let pl = logs(
+            vec![],
+            vec![
+                record("withdraw", "10.0.0.0/8"),
+                record("add", "10.0.0.0/8"),
+                record("add", "10.1.0.0/16"),
+            ],
+        );
+        let (_, errored) = run(pl, &cfg, &cache);
+        assert!(!errored);
+        assert_eq!(rows(&cache, id), 1);
+        assert_eq!(
+            at(&cache, id, &[KeyRef::String("p1")], "10.9.9.9"),
+            None,
+            "the withdrawal ran after the announcement"
+        );
+    }
+
+    #[test]
+    fn delete_rules_must_bind_exactly_their_key() {
+        let cache = cache::Cache::new();
+        let hash = hash_table(
+            &cache,
+            &["host"],
+            &[
+                ("host", lt::ValueType::String),
+                ("site", lt::ValueType::String),
+            ],
+        );
+        let routes = routes_table(&cache, &[("p1", "10.0.0.0/8", 1)]);
+        let unpartitioned = prefix_table(
+            &cache,
+            &[],
+            &[
+                ("network", lt::ValueType::String),
+                ("asn", lt::ValueType::Integer),
+            ],
+        );
+        let pl = || {
+            logs(
+                vec![],
+                vec![vec![
+                    kv("host", s("a")),
+                    kv("site", s("jkt")),
+                    kv("peer", s("p1")),
+                    kv("network", s("10.0.0.0/8")),
+                    kv("asn", int(1)),
+                ]],
+            )
+        };
+        let cases = [
+            // a delete binding a value column
+            (
+                hash,
+                "delete",
+                json!({"host": {"key": "host"}, "site": {"key": "site"}}),
+                "exactly the table's key columns",
+            ),
+            (
+                routes,
+                "delete",
+                json!({"peer": {"key": "peer"}, "network": {"key": "network"}, "asn": {"key": "asn"}}),
+                "exactly the table's key columns",
+            ),
+            // a delete missing part of its key
+            (
+                routes,
+                "delete",
+                json!({"peer": {"key": "peer"}}),
+                "no binding for table column \"network\"",
+            ),
+            // delete_partition on tables with no partition to name
+            (
+                hash,
+                "delete_partition",
+                json!({"host": {"key": "host"}}),
+                "hash-keyed",
+            ),
+            (
+                unpartitioned,
+                "delete_partition",
+                json!({"network": {"key": "network"}}),
+                "no partition to name",
+            ),
+            // delete_partition binding a non-partition column
+            (
+                routes,
+                "delete_partition",
+                json!({"peer": {"key": "peer"}, "network": {"key": "network"}}),
+                "exactly the table's partition columns",
+            ),
+        ];
+        for (id, action, columns, want) in cases {
+            let cfg = config(json!({"collections": [{
+                "lookup_table": id, "table": "record", "action": action, "columns": columns,
+            }]}));
+            let (_, errored) = run(pl(), &cfg, &cache);
+            assert!(errored, "{action} {columns}");
+            let plan_error = {
+                let table = cache.lookup_table.get(&id).unwrap();
+                let rule = &cfg.collections[0];
+                Plan::resolve(
+                    table.as_mutable().unwrap().table(),
+                    &table.meta().config,
+                    rule,
+                )
+                .err()
+                .map(|e| format!("{e:#}"))
+                .unwrap_or_default()
+            };
+            assert!(
+                plan_error.contains(want),
+                "{action} {columns}: {plan_error}"
+            );
+        }
+        assert_eq!(rows(&cache, hash), 0);
+        assert_eq!(rows(&cache, routes), 1, "nothing was deleted");
     }
 
     #[test]
