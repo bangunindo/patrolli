@@ -186,6 +186,11 @@ impl<L: Transport> Harness<L> {
         self.listener.running().await
     }
 
+    async fn all_units_finished(&self) -> bool {
+        let units = self.worker.units.lock().await;
+        units.live.iter().all(|unit| unit.handle.is_finished())
+    }
+
     async fn any_unit_finished(&self) -> bool {
         let units = self.worker.units.lock().await;
         units.live.iter().any(|unit| unit.handle.is_finished())
@@ -231,10 +236,13 @@ impl<L: Transport> Harness<L> {
         }
     }
 
-    /// Waits until every unit has returned on its own.
+    /// Waits until every unit has returned on its own. A unit lowers
+    /// `total_workers` just before its task ends, and `adjust` replaces only
+    /// units whose task has ended, so wait for both: a restart that came in
+    /// between would count the late unit as live and spawn one unit short.
     pub async fn wait_for_no_workers(&self) {
         let deadline = Instant::now() + CLOSE_LIMIT;
-        while self.workers().await != 0 {
+        while self.workers().await != 0 || !self.all_units_finished().await {
             assert!(Instant::now() < deadline, "workers did not return");
             sleep(Duration::from_millis(10)).await;
         }
