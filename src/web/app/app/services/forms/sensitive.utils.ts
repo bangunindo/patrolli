@@ -13,6 +13,7 @@ export function isSensitiveSetObject(val: unknown): val is { set: string } {
 		typeof val === 'object' &&
 		val !== null &&
 		'set' in val &&
+		Object.keys(val).length === 1 &&
 		typeof (val as { set: unknown }).set === 'string' &&
 		(val as { set: string }).set.trim().length > 0
 	)

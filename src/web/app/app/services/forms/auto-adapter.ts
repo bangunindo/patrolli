@@ -738,7 +738,10 @@ export class AutoFormAdapter {
 					typeof draft[key] === 'object' &&
 					!Array.isArray(draft[key])
 				) {
-					if (isSensitiveSetObject(draft[key])) {
+					if (
+						isSensitiveSchema(fieldSchema as z.ZodTypeAny) &&
+						isSensitiveSetObject(draft[key])
+					) {
 						draft[key] = { set: draft[key].set }
 					} else if (
 						fieldUnwrapped.typeName === 'ZodUnion' ||
@@ -879,7 +882,7 @@ export class AutoFormAdapter {
 			return {}
 		}
 
-		if (isSensitiveSetObject(val)) {
+		if (isSensitiveSchema(schema) && isSensitiveSetObject(val)) {
 			return { set: val.set }
 		}
 

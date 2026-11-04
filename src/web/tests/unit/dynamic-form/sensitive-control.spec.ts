@@ -43,6 +43,10 @@ describe('Sensitive secret handling', () => {
 			expect(isSensitiveSetObject({ set: 'enc_handle_123' })).toBe(true)
 			expect(isSensitiveSetObject({ set: 'a' })).toBe(true)
 
+			// Objects with additional properties must be rejected
+			expect(isSensitiveSetObject({ set: 'name', value: 'John Doe' })).toBe(false)
+			expect(isSensitiveSetObject({ set: 'enc_handle_123', extra: true })).toBe(false)
+
 			// Empty and whitespace handles must be rejected
 			expect(isSensitiveSetObject({ set: '' })).toBe(false)
 			expect(isSensitiveSetObject({ set: '   ' })).toBe(false)
@@ -150,6 +154,30 @@ describe('Sensitive secret handling', () => {
 			expect(draft.req_pass).toBe('')
 			expect(draft.opt_pass).toBeNull()
 			expect(draft.existing_pass).toEqual({ set: 'enc_saved_handle' })
+		})
+
+		it('should preserve non-sensitive objects having set property in toDraft and toRequest', () => {
+			const nonSensitiveSchema = z.object({
+				filter: z.object({
+					set: z.string(),
+					value: z.string()
+				})
+			})
+
+			const entity = {
+				filter: { set: 'name', value: 'John Doe' }
+			}
+
+			// 1. toDraft must not strip value property
+			const draft = AutoFormAdapter.toDraft(nonSensitiveSchema, entity)
+			expect(draft.filter).toEqual({ set: 'name', value: 'John Doe' })
+
+			// 2. toRequest (deepSanitize) must not strip value property
+			const result = AutoFormAdapter.toRequest(nonSensitiveSchema, draft)
+			expect(result.success).toBe(true)
+			if (result.success) {
+				expect(result.data.filter).toEqual({ set: 'name', value: 'John Doe' })
+			}
 		})
 
 		it('should validate SASL password in sink hints rejecting empty object and accepting handle', () => {
