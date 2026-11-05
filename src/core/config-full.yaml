@@ -370,7 +370,7 @@ monitor:
 #       prefix_column: prefix
 #       partition_columns: [peer]
 #
-#   # ── Route table, written by a BGP/BMP listener (see docs/bgp-bmp.md). The
+#   # ── Route table, written by a `bgp` listener (BMP or passive BGP). The
 #   # columns and the key are fixed, so neither is given (a key spelled out must
 #   # be exactly the fixed one): prefix-keyed on `prefix`, partitioned by
 #   # `router` and `vrf`. Columns:
@@ -854,11 +854,14 @@ processors:
   #       - lookup_table: 019b77b3-df79-70a2-ab01-f43b2cf72405 # routes
   #         table: record
   #         match:
-  #           keys:            # the exporter is the router whose routes apply
-  #             router: {key: source.address, cast: ip}
+  #           keys:            # a list is tried in order, the first present
+  #                            # key wins: a router mapped from the exporter by
+  #                            # an earlier processor, else the exporter itself
+  #             router: {key: [bgp.router, source.address], cast: ip}
   #           literals:        # key column -> a constant, parsed as the
   #             vrf: global    # column's type; never also in keys
-  #           point: {key: nf.data.destinationIPv4Address}
+  #           point:           # v4 or v6 flows in one rule
+  #             key: [nf.data.destinationIPv4Address, nf.data.destinationIPv6Address]
   #         output:
   #           dst.as: origin_as
   #           dst.as_path: as_path

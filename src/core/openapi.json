@@ -4736,9 +4736,23 @@
         },
         "additionalProperties": false
       },
+      "AttributeKeys": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "One attribute key, or keys tried in order. A single key keeps its plain\nstring form when written back."
+      },
       "AttributeLookup": {
         "type": "object",
-        "description": "Enrich attributes with independent lookups, applying their writes together.\n\nEvery rule reads the incoming attributes: another rule's outputs are not\nvisible as inputs. Each parent matches at most one lookup row, whose\nselected columns supply scalar output attributes.\n\nMissing inputs, failed casts, lookup misses and null result cells leave the\ndestination unchanged; invalid inputs are counted separately from misses.\nDefaults and fallback expressions are not supported.",
+        "description": "Enrich attributes with independent lookups, applying their writes together.\n\nEvery rule reads the incoming attributes: another rule's outputs are not\nvisible as inputs. Each parent matches at most one lookup row, whose\nselected columns supply scalar output attributes.\n\nMissing inputs, failed casts, lookup misses and null result cells leave the\ndestination unchanged; invalid inputs are counted separately from misses.\nDefault values are not supported; an input key may list fallback\nattributes ([`AttributeKeys`]).",
         "required": [
           "lookups"
         ],
@@ -4798,8 +4812,8 @@
             ]
           },
           "key": {
-            "type": "string",
-            "description": "Dotted attribute key, matched byte for byte. A flattened array element\nis addressed by its literal index, such as `interfaces.0.ifIndex`; no\nsegment carries a special meaning. Composite inputs align by parent ID,\nnever by Arrow row position."
+            "$ref": "#/components/schemas/AttributeKeys",
+            "description": "Dotted attribute key, matched byte for byte. A flattened array element\nis addressed by its literal index, such as `interfaces.0.ifIndex`; no\nsegment carries a special meaning. Composite inputs align by parent ID,\nnever by Arrow row position.\n\nA list names fallbacks: the first key present on the parent supplies\nthe input, such as `[bgp.router, source.address]` for a router mapped\nfrom its exporter where a mapping exists. `table` and `cast` apply to\neach. A present value that fails its cast is an invalid input; the next\nkey is not tried."
           },
           "table": {
             "oneOf": [

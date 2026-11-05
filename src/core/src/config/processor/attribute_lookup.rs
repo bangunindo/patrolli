@@ -23,7 +23,8 @@ use uuid::Uuid;
 ///
 /// Missing inputs, failed casts, lookup misses and null result cells leave the
 /// destination unchanged; invalid inputs are counted separately from misses.
-/// Defaults and fallback expressions are not supported.
+/// Default values are not supported; an input key may list fallback
+/// attributes ([`AttributeKeys`]).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AttributeLookup {
@@ -120,7 +121,13 @@ pub struct AttributeLookupInput {
     /// is addressed by its literal index, such as `interfaces.0.ifIndex`; no
     /// segment carries a special meaning. Composite inputs align by parent ID,
     /// never by Arrow row position.
-    pub key: String,
+    ///
+    /// A list names fallbacks: the first key present on the parent supplies
+    /// the input, such as `[bgp.router, source.address]` for a router mapped
+    /// from its exporter where a mapping exists. `table` and `cast` apply to
+    /// each. A present value that fails its cast is an invalid input; the next
+    /// key is not tried.
+    pub key: AttributeKeys,
     /// Explicit conversion before probing. Without a cast the input must
     /// already match the table's key type. A conversion failure skips the
     /// probe; composite keys are never implicitly stringified.
@@ -131,6 +138,45 @@ pub struct AttributeLookupInput {
     /// table's `point` is always an IP and needs no cast.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cast: Option<AttributeLookupCast>,
+}
+
+/// One attribute key, or keys tried in order. A single key keeps its plain
+/// string form when written back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum AttributeKeys {
+    One(String),
+    FirstOf(Vec<String>),
+}
+
+impl AttributeKeys {
+    pub fn as_slice(&self) -> &[String] {
+        match self {
+            Self::One(key) => std::slice::from_ref(key),
+            Self::FirstOf(keys) => keys,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        let keys = self.as_slice();
+        if keys.is_empty() {
+            bail!("a key list must not be empty");
+        }
+        let mut seen = FxHashSet::default();
+        for key in keys {
+            validate_key_path(key)?;
+            if !seen.insert(key.as_str()) {
+                bail!("attribute key {key:?} is listed twice");
+            }
+        }
+        Ok(())
+    }
+}
+
+impl From<&str> for AttributeKeys {
+    fn from(key: &str) -> Self {
+        Self::One(key.to_owned())
+    }
 }
 
 /// A constant probe value. Any YAML scalar but a float: it is rendered as text
@@ -222,7 +268,7 @@ impl AttributeLookupRule {
             .values()
             .chain(self.match_by.point.iter())
         {
-            validate_key_path(&input.key)?;
+            input.key.validate()?;
             let source_table = input.table.as_ref().unwrap_or(&self.table);
             if source_table != &self.table
                 && (self.table != AttributeTable::Record
@@ -547,6 +593,41 @@ mod tests {
             let mut invalid = rule();
             invalid["output"] = json!({key: "name"});
             assert!(config(vec![invalid]).validate().is_err(), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn a_key_is_one_string_or_a_list_of_fallbacks() {
+        let mut list = rule();
+        list["match"]["keys"]["index"]["key"] = json!(["if.index", "interface.index"]);
+        list["match"]["point"] = json!({"key": ["dst4", "dst6"]});
+        let parsed = config(vec![list]);
+        parsed.validate().unwrap();
+        let by = &parsed.lookups[0].match_by;
+        assert_eq!(
+            by.keys["index"].key.as_slice(),
+            ["if.index", "interface.index"]
+        );
+        assert_eq!(by.keys["device"].key.as_slice(), ["host.id"]);
+        // each form is written back as it was given
+        let back = serde_json::to_value(&parsed).unwrap();
+        let back = &back["lookups"][0]["match"];
+        assert_eq!(back["keys"]["device"]["key"], json!("host.id"));
+        assert_eq!(
+            back["keys"]["index"]["key"],
+            json!(["if.index", "interface.index"])
+        );
+        assert_eq!(back["point"]["key"], json!(["dst4", "dst6"]));
+
+        for (keys, error) in [
+            (json!([]), "must not be empty"),
+            (json!(["a", "a"]), "listed twice"),
+            (json!(["a", "a..b"]), "empty path segments"),
+        ] {
+            let mut invalid = rule();
+            invalid["match"]["keys"]["index"]["key"] = keys;
+            let err = format!("{:#}", config(vec![invalid]).validate().unwrap_err());
+            assert!(err.contains(error), "{err}");
         }
     }
 

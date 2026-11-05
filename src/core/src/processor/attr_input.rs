@@ -90,6 +90,9 @@ pub(super) enum Source<'a> {
         of_record: FxHashMap<Parent, u16>,
         by_resource: FxHashMap<u16, Value<'a>>,
     },
+    /// Fallback keys: a parent's value comes from the first source holding
+    /// one.
+    FirstOf(Vec<Source<'a>>),
 }
 
 impl<'a> Source<'a> {
@@ -100,6 +103,7 @@ impl<'a> Source<'a> {
                 of_record,
                 by_resource,
             } => by_resource.get(of_record.get(&parent)?),
+            Source::FirstOf(sources) => sources.iter().find_map(|s| s.get(parent)),
         }
     }
 
@@ -127,6 +131,11 @@ impl<'a> Source<'a> {
                     })
                     .map(|(record, _)| *record),
             ),
+            Source::FirstOf(sources) => {
+                for source in sources {
+                    source.extend_candidates(is_eligible, out);
+                }
+            }
         }
     }
 }

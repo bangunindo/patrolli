@@ -126,7 +126,9 @@ processors:
           table: record
           match:
             keys:
-              router: {{key: router, cast: ip}}
+              # no mapping processor in front, so every probe falls back to
+              # its `router`
+              router: {{key: [bgp.router, router], cast: ip}}
             literals:
               vrf: global
             point: {{key: dst.ip, cast: ip}}

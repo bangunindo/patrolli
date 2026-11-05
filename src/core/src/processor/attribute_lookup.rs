@@ -383,14 +383,22 @@ fn run_rule(
     // An explicit null is not a probe key, so it reads as absent here —
     // unlike `attribute_collect`, which stores it as a null cell.
     let source = |input: &AttributeLookupInput| {
-        attr_input::read_source(
-            pl,
-            &rule.table,
-            input.table.as_ref(),
-            &input.key,
-            &parent_ids,
-            false,
-        )
+        let read = |key: &String| {
+            attr_input::read_source(
+                pl,
+                &rule.table,
+                input.table.as_ref(),
+                key,
+                &parent_ids,
+                false,
+            )
+        };
+        match input.key.as_slice() {
+            [key] => read(key),
+            keys => Ok(attr_input::Source::FirstOf(
+                keys.iter().map(read).collect::<Result<_>>()?,
+            )),
+        }
     };
     // `None` for a literal, aligned with `plan.keys`
     let key_sources = plan
@@ -1557,6 +1565,98 @@ mod tests {
                 record_attrs(&pl)
             );
         }
+    }
+
+    #[test]
+    fn a_key_list_takes_the_first_present_attribute() {
+        let cache = cache::Cache::new();
+        let id = prefix_table(
+            &cache,
+            &["router"],
+            &[
+                ("network", lt::ValueType::String),
+                ("router", lt::ValueType::Ip),
+                ("asn", lt::ValueType::Integer),
+            ],
+            &[
+                (
+                    &[
+                        CellRef::Ip("192.0.2.1".parse().unwrap()),
+                        CellRef::Integer(1),
+                    ],
+                    "10.0.0.0/8",
+                ),
+                (
+                    &[
+                        CellRef::Ip("192.0.2.2".parse().unwrap()),
+                        CellRef::Integer(2),
+                    ],
+                    "10.0.0.0/8",
+                ),
+                (
+                    &[
+                        CellRef::Ip("192.0.2.2".parse().unwrap()),
+                        CellRef::Integer(6),
+                    ],
+                    "2001:db8::/32",
+                ),
+            ],
+        );
+        let pl = logs(
+            vec![],
+            vec![
+                // mapped: the first key wins over the exporter
+                vec![
+                    kv("bgp.router", s("192.0.2.2")),
+                    kv("source.address", s("192.0.2.1")),
+                    kv("dst4", s("10.1.1.1")),
+                ],
+                // unmapped: falls back to the exporter
+                vec![
+                    kv("source.address", s("192.0.2.1")),
+                    kv("dst4", s("10.1.1.1")),
+                ],
+                // a v6 flow, through the point's second key
+                vec![
+                    kv("source.address", s("192.0.2.2")),
+                    kv("dst6", s("2001:db8::1")),
+                ],
+                // the first key is present but not an address: an error, and
+                // the exporter is not tried
+                vec![
+                    kv("bgp.router", s("not-an-ip")),
+                    kv("source.address", s("192.0.2.1")),
+                    kv("dst4", s("10.1.1.1")),
+                ],
+            ],
+        );
+        let cfg = config(json!({"lookups": [{
+            "lookup_table": id,
+            "table": "record",
+            "match": {
+                "keys": {"router": {"key": ["bgp.router", "source.address"], "cast": "ip"}},
+                "point": {"key": ["dst4", "dst6"]},
+            },
+            "output": {"dst.as": "asn"},
+        }]}));
+
+        let (out, errored) = run(pl.clone(), &cfg, &cache);
+        assert!(!errored);
+        let attrs = record_attrs(&out);
+        let as_of = |parent| {
+            attrs
+                .iter()
+                .find(|(p, k, _)| *p == parent && k == "dst.as")
+                .map(|(_, _, v)| v.clone())
+        };
+        assert_eq!(as_of(0).as_deref(), Some("i2"), "{attrs:?}");
+        assert_eq!(as_of(1).as_deref(), Some("i1"), "{attrs:?}");
+        assert_eq!(as_of(2).as_deref(), Some("i6"), "{attrs:?}");
+        assert_eq!(as_of(3), None, "{attrs:?}");
+
+        let m = run_counted(pl, &cfg, &cache, id);
+        assert_eq!(m.lookups_hit, 3);
+        assert_eq!(m.lookups_errored, 1);
     }
 
     #[test]

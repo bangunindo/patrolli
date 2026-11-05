@@ -52,7 +52,8 @@ No test builds a patrolli image: the end-to-end tests (`otel_e2e_test`, `cluster
 (`CARGO_BIN_EXE_patrolli`), through `crates/app/tests/setup::patrolli::Patrolli`. Docker is still needed for third-party
 servers: `clickhouse_insert_test` and `kafka_sink_test` (their servers), `otel_e2e_test` (OTel
 collectors and telemetrygen, which reach patrolli on the host through the Docker host gateway, so a host
-firewall must let container → host traffic through), and the `cluster_*` and
+firewall must let container → host traffic through), `bgp_interop_e2e` (GoBGP and FRR routers, the
+same way), and the `cluster_*` and
 `config_propagation_e2e` binaries only for Postgres, which `PATROLLI_TEST_DATABASE_URL` replaces.
 `shutdown_test` and `lookup_table_e2e` need none. `crates/app/tests/setup::setup_db` gives each test its own migrated Postgres
 database: a `postgres:18-alpine` container by default, or, with `PATROLLI_TEST_DATABASE_URL` set to a

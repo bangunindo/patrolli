@@ -4,7 +4,7 @@
 
 //! BGP route collection: BMP sessions (RFC 7854, Loc-RIB per RFC 9069) and
 //! passive BGP sessions (RFC 4271) that write the routes into a `bgp` lookup
-//! table (see `docs/bgp-bmp.md`).
+//! table.
 
 pub mod codec;
 pub mod events;

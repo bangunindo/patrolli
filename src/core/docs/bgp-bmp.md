@@ -327,8 +327,10 @@ gives back exactly what was encoded. Phase 4's passive BGP will use the same `wi
 ## 5. Open design decisions
 
 1. ~~RIB scope~~ **Decided: per router**, as partitions of the route table (pmacct's model).
-   Still open: the exporter → router mapping when the BMP/BGP address differs from the netflow
-   source (a hash lookup table in front, or a host-config override).
+   ~~Exporter → router mapping~~ **Decided** (phase 5): a hash lookup table in front maps
+   the exporter to its router, and the route lookup's key lists fallbacks
+   (`router: {key: [bgp.router, source.address], cast: ip}`), so unmapped exporters match
+   by their own address. Recipe in [`bgp-enrichment.md`](bgp-enrichment.md) §3.
 2. ~~Which RIB to keep~~ **Decided for v1: Loc-RIB and passive BGP.** Adj-RIB-In is counted and
    skipped; supporting it (next-hop match or path selection) is a later phase.
 3. ~~Where enrichment runs~~ **Decided: in `cache::lookup_table`**, through a new `bgp` table
@@ -336,13 +338,17 @@ gives back exactly what was encoded. Phase 4's passive BGP will use the same `wi
 4. ~~VRF/RD~~ **Decided**: one table per listener, partitioned by `(router, vrf)`, `vrf` being
    `global` for RD 0 and the RD text otherwise. The common lookup binds `vrf: global` with an
    `attribute_lookup` literal. Which VRFs are kept is the listener's `vrfs` (phase 3; empty
-   keeps all). Still open: mapping a flow's ingress VRF ID (IE 234, router-local) to an RD.
+   keeps all). ~~Ingress VRF ID → RD~~ **Decided** (phase 5): no new mechanism; a hash table
+   keyed by `(exporter, ingressVRFID)` writes `bgp.vrf`, an insert-only `add_attributes`
+   defaults it to `global`, and the lookup binds `vrf` to it (`bgp-enrichment.md` §4).
 5. ~~Stale handling~~ **Decided**: Peer Down → `remove_partition`; connection loss → keep
    serving for `keep` (default 5 min); after the new dump's End-of-RIB (per address family) or
    when `keep` runs out, sweep what the dump did not refresh. A reconnect gets a whole `keep`
    for its dump. Mechanics in section 6, phases 1 and 2.
-6. **Provider precedence**: flow-supplied AS vs routing vs lookup tables (akvorado's ordered
-   providers).
+6. ~~Provider precedence~~ **Decided** (phase 5): no new mechanism. The recipe writes its own
+   keys (`dst.as`, …) beside the flow's `nf.data.*`; one value instead is the processor's
+   `overwrite` (false: the flow wins, true: BGP wins), with a `when` for exporters that send
+   AS 0 (`bgp-enrichment.md` §5).
 7. ~~Passive BGP in addition to BMP?~~ **Decided: both.** Passive BGP covers routers without
    BMP (Kentik's model); see "Plan" in section 3. ADD-PATH is never offered on the passive
    session (2026-11-05): the table shows one path per prefix and the router sends its best.
@@ -371,7 +377,9 @@ gives back exactly what was encoded. Phase 4's passive BGP will use the same `wi
     advertises Graceful Restart with no families (RFC 4724 §3) only so that routers which send
     End-of-RIB only under GR send it; the router's own restart time is not used. This differs
     from pmacct and bio-rd, which both drop a peer's routes as soon as its session closes and
-    advertise no GR. Which vendors send End-of-RIB only under GR is unverified.
+    advertise no GR. Checked in phase 5: GoBGP sends End-of-RIB only with GR enabled on its
+    neighbor (and then takes our receiver-only GR as negotiated); FRR sends it either way.
+    Other vendors unverified.
 15. ~~One router, both feeds~~ **Decided** (2026-11-05): a router (source IP) has one live
     session at a time. A session of the other protocol is refused while it lasts (BGP:
     NOTIFICATION Cease / Connection Rejected) and counted (`sessions_refused`), so two feeds
@@ -572,9 +580,35 @@ optional route events as log records, best effort (drop and count when full). Tw
      enrich OTLP probes.
    - Not done: TCP-AO, GTSM, a per-peer `vrf` (PE-CE sessions inside a VRF), RFC 9234 Role
      (an eBGP router enforcing it strictly would refuse patrolli), web form hints.
-5. **Enrichment and e2e**
-   - Document the `attribute_lookup` recipe, including the exporter → router mapping.
-   - Docker e2e: FRR or GoBGP feeding routes plus a flow generator; assert enriched records.
+5. **Enrichment and e2e** — **done**
+   - User guide [`bgp-enrichment.md`](bgp-enrichment.md): the pieces, the lookup rule and
+     the flow fields per format, exporter → router mapping, VRFs, precedence, tested router
+     configs, what interop found, limits. Its complete config is validated by
+     `config::tests::the_bgp_enrichment_guide_validates`.
+   - `attribute_lookup` keys take a list (`AttributeKeys`): the first attribute present on a
+     record is the input. A present value that fails its cast is an invalid input and is not
+     skipped past, so a bad mapping shows as `lookups_errored`. A single key serializes as
+     before (a string), so stored configs and the web form are unchanged; `point` takes a
+     list too, so one rule covers v4 and v6 flows.
+   - `crates/app/tests/bgp_interop_e2e.rs` (Docker; FRR 10.7.1 from quay, GoBGP 4.11.0 from
+     `jauderho/gobgp` pinned by digest, upstream publishes no image). Hand-built IPFIX from
+     127.0.0.1, so every case maps the exporter to the container router through a CSV
+     table; each step compares the enriched flows with the router's own RIB (`gobgp global
+     rib -j`, FRR's `show bgp … json`). Cases: GoBGP passive iBGP (AS_SET path,
+     communities, withdraw falling back to the covering prefix, disable/delete/enable swept
+     by End-of-RIB, Cease 6/2 in `session_down`); GoBGP BMP Loc-RIB (its ADD-PATH path ids,
+     a restart whose lost route goes by `keep`); FRR passive iBGP (route-map attributes,
+     End-of-RIB without GR, RFC 9003 shutdown text); GoBGP → FRR over eBGP with FRR's BMP
+     Loc-RIB (learned paths, upstream withdraw, a BMP reconnect whose End-of-RIB sweeps a
+     route lost meanwhile).
+   - No patrolli bug surfaced. Router behaviour found, documented in the guide: FRR 10.7.1
+     drops the Loc-RIB withdrawals of a peer that went down (`bmp_wrqueue_locrib` skips
+     non-established peers), sends its Loc-RIB End-of-RIB only after a new BMP session's
+     sync and only for peers up then, treats AS_SET as withdraw (RFC 9774), and resets IPv6
+     over an IPv4 session without a global IPv6 address (5/0); GoBGP sends no End-of-RIB
+     over BMP.
+   - Not done: web form support for the list form of `key`; vendor (Junos, IOS-XR)
+     captures; a full-table `gobgp mrt inject` run.
 6. **Cluster placement**: mutable tables are per node. Either flows from a router are enriched on
    the node holding its session, or the routes are replicated.
 
@@ -613,8 +647,9 @@ GoBGP as a reference RIB is the first e2e to write.
    - Passive BGP (done in phase 4, `peer_tests.rs`): the test plays the router with our own
      builders over in-memory streams and paused time, and NetGauze checks what we send.
    - A config edit that rebuilds the table forces a reconnect.
-4. **Interop e2e with GoBGP and FRR in Docker** (phase 5). Images pinned; patrolli reached on the
-   host through the Docker host gateway, as `otel_e2e_test` does.
+4. **Interop e2e with GoBGP and FRR in Docker** (done in phase 5, `bgp_interop_e2e`; what it
+   covers is under phase 5 above). Images pinned; patrolli reached on the host through the
+   Docker host gateway, as `otel_e2e_test` does. The plan as first written:
    - **GoBGP**, the most scriptable:
      - BMP client (`bmp-servers`) dialing patrolli. Its Loc-RIB monitoring option is believed
        to exist but not verified.
