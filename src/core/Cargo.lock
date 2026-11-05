@@ -4586,7 +4586,6 @@ dependencies = [
  "rdkafka",
  "refinery",
  "regex",
- "reqwest",
  "rustc-hash",
  "rustls",
  "rustls-pemfile",
