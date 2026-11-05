@@ -120,7 +120,7 @@ impl Daemon {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.yaml");
         std::fs::write(&path, config).unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_patrolli_ws"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_patrolli"))
             .envs(env.iter().copied())
             .arg("--config")
             .arg(&path)

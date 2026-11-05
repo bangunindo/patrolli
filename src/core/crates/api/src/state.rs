@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::jwt::Jwt;
+use deadpool_postgres::Pool;
 use patrolli::cache::Cache;
 use patrolli::cluster::inter::InterComm;
 use patrolli::config::sensitive::SecretKeys;
-use deadpool_postgres::Pool;
 use std::sync::Arc;
 
 /// AppState holds all shared state for the API server

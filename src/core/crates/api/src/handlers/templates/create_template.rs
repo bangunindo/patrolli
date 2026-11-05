@@ -5,8 +5,8 @@
 use crate::error::ApiResultExt;
 use crate::response::{ResponseData, ResponseError};
 use crate::state::AppState;
-use patrolli::db::schema::{HostTemplates, Templates};
 use axum::{Json, extract::State, http::StatusCode};
+use patrolli::db::schema::{HostTemplates, Templates};
 use sea_query::{PostgresQueryBuilder, Query as DbQuery};
 use sea_query_postgres::PostgresBinder;
 use serde::{Deserialize, Serialize};

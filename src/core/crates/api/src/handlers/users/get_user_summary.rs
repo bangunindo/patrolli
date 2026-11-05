@@ -5,9 +5,9 @@
 use crate::error::ApiResultExt;
 use crate::response::{ResponseData, ResponseError};
 use crate::state::AppState;
-use patrolli::db::schema::{AdmStatus, Users};
 use axum::extract::State;
 use axum::http::StatusCode;
+use patrolli::db::schema::{AdmStatus, Users};
 use sea_query::{Asterisk, Expr, ExprTrait, Func, PostgresQueryBuilder, Query as DbQuery};
 use sea_query_postgres::PostgresBinder;
 use serde::Serialize;

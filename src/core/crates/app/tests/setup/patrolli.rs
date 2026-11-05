@@ -38,7 +38,7 @@ impl Patrolli {
         let dir = tempfile::tempdir().expect("failed to create the patrolli temp dir");
         let path = dir.path().join("config.yaml");
         std::fs::write(&path, config_yaml).expect("failed to write the patrolli config");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_patrolli_ws"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_patrolli"))
             .arg("--config")
             .arg(&path)
             .current_dir(dir.path())

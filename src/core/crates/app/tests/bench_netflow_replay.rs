@@ -519,7 +519,7 @@ fn start_patrolli(bin: &str, dir: &Path, cpus: Vec<usize>) -> Patrolli {
 #[ignore = "throughput benchmark: run in release with --ignored --nocapture"]
 fn bench_netflow_replay() {
     let bin =
-        std::env::var("PATROLLI_BIN").unwrap_or_else(|_| env!("CARGO_BIN_EXE_patrolli_ws").into());
+        std::env::var("PATROLLI_BIN").unwrap_or_else(|_| env!("CARGO_BIN_EXE_patrolli").into());
     let pcap = std::env::var_os("BENCH_PCAP")
         .map(PathBuf::from)
         .unwrap_or_else(default_pcap);

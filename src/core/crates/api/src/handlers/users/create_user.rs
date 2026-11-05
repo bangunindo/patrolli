@@ -6,10 +6,10 @@ use crate::error::ApiResultExt;
 use crate::handlers::users::{USER_COLUMNS, User, hash_password, row_to_user};
 use crate::response::{ResponseData, ResponseError};
 use crate::state::AppState;
-use patrolli::db::models::serialize_utc_as_local;
-use patrolli::db::schema::{AdmStatus, Users, default_adm_status};
 use axum::{Json, extract::State, http::StatusCode};
 use chrono::{DateTime, Utc};
+use patrolli::db::models::serialize_utc_as_local;
+use patrolli::db::schema::{AdmStatus, Users, default_adm_status};
 use sea_query::{Expr, ExprTrait, PostgresQueryBuilder, Query as DbQuery};
 use sea_query_postgres::PostgresBinder;
 use serde::{Deserialize, Serialize};
@@ -163,7 +163,7 @@ pub async fn create_user(
         .ctx("create user")?;
     let created = row_to_user(&row).ctx("parse user")?;
     tx.commit().await.ctx("commit transaction")?;
-    info!(target: "patrolli::api::handlers::users::create_user", 
+    info!(target: "patrolli::api::handlers::users::create_user",
         target_user_id = %created.user_id,
         target_user = %created.username,
         allow_sso = created.allow_sso,

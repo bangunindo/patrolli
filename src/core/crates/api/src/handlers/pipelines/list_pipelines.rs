@@ -4,20 +4,18 @@
 
 use crate::OrderByDirection;
 use crate::error::ApiResultExt;
-use crate::handlers::pipelines::{
-    ManagedPipeline, PIPELINE_COLUMNS, row_to_pipeline, visible_to,
-};
+use crate::handlers::pipelines::{ManagedPipeline, PIPELINE_COLUMNS, row_to_pipeline, visible_to};
 use crate::jwt::AuthUser;
 use crate::response::{ResponseData, ResponseError};
 use crate::state::AppState;
-use patrolli::db::models::serialize_utc_as_local;
-use patrolli::db::query::generate_count_query;
-use patrolli::db::schema::{AdmStatus, Pipelines, Visibility};
 use axum::Extension;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum_extra::extract::Query as ApiQuery;
 use chrono::{DateTime, Utc};
+use patrolli::db::models::serialize_utc_as_local;
+use patrolli::db::query::generate_count_query;
+use patrolli::db::schema::{AdmStatus, Pipelines, Visibility};
 use sea_query::extension::postgres::PgExpr;
 use sea_query::{ColumnRef, Expr, IntoColumnRef, PostgresQueryBuilder, Query as DbQuery};
 use sea_query_postgres::PostgresBinder;

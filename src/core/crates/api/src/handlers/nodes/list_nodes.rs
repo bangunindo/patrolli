@@ -5,10 +5,10 @@
 use crate::error::ApiResultExt;
 use crate::response::{ResponseData, ResponseError};
 use crate::state::AppState;
-use patrolli::config::cluster::NodeMetadata;
-use patrolli::db::models::serialize_utc_as_local;
 use axum::{extract::State, http::StatusCode};
 use chrono::{DateTime, Utc};
+use patrolli::config::cluster::NodeMetadata;
+use patrolli::db::models::serialize_utc_as_local;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;

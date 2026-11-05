@@ -12,7 +12,6 @@ pub mod update_host_item;
 pub mod update_item;
 pub mod update_template_item;
 
-use patrolli::db::models::serialize_utc_as_local;
 use chrono::{DateTime, Utc};
 pub use create_host_item::create_host_item;
 pub use create_template_item::create_template_item;
@@ -20,6 +19,7 @@ pub use delete_item::delete_item;
 pub use get_item::get_item;
 pub use list_items::ItemOrderBy;
 pub use list_items::{ItemExclusivity, list_items};
+use patrolli::db::models::serialize_utc_as_local;
 use serde::{Deserialize, Serialize};
 pub use update_applied_template_item::update_applied_template_item;
 pub use update_host_item::update_host_item;

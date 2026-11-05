@@ -5,14 +5,14 @@
 use super::types::ListTemplateParams;
 use crate::error::ApiResultExt;
 use crate::response::{ResponseData, ResponseError};
-use patrolli::db::query::generate_count_query;
-use patrolli::db::schema::Templates;
 use crate::state::AppState;
-use patrolli::db::schema::{HostTemplates, Items, TemplateLinks};
 use axum::{
     extract::{Query as ApiQuery, State},
     http::StatusCode,
 };
+use patrolli::db::query::generate_count_query;
+use patrolli::db::schema::Templates;
+use patrolli::db::schema::{HostTemplates, Items, TemplateLinks};
 use sea_query::extension::postgres::PgExpr;
 use sea_query::{Expr, ExprTrait, JoinType, PostgresQueryBuilder, Query as DbQuery};
 use sea_query_postgres::PostgresBinder;

@@ -8,10 +8,10 @@ use crate::handlers::pipelines::runtime::{delete_processors, owned_processor_ids
 use crate::jwt::AuthUser;
 use crate::response::{ResponseData, ResponseError};
 use crate::state::AppState;
-use patrolli::db::schema::Pipelines;
 use axum::Extension;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use patrolli::db::schema::Pipelines;
 use sea_query::{Expr, ExprTrait, PostgresQueryBuilder, Query as DbQuery};
 use sea_query_postgres::PostgresBinder;
 use std::sync::Arc;

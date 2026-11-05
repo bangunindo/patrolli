@@ -7,8 +7,8 @@ use crate::handlers::auth::TokenResponse;
 use crate::jwt::issue_pair;
 use crate::response::{ResponseData, ResponseError};
 use crate::state::AppState;
-use patrolli::db::schema::{AdmStatus, Users};
 use axum::{Json, extract::State, http::StatusCode};
+use patrolli::db::schema::{AdmStatus, Users};
 use sea_query::{
     Asterisk, Expr, ExprTrait, Func, LockType, PostgresQueryBuilder, Query as DbQuery,
 };

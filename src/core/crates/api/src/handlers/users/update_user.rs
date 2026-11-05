@@ -6,11 +6,11 @@ use crate::error::ApiResultExt;
 use crate::handlers::users::{USER_COLUMNS, User, hash_password, not_found, row_to_user};
 use crate::response::{ResponseData, ResponseError};
 use crate::state::AppState;
-use patrolli::db::models::serialize_utc_as_local;
-use patrolli::db::schema::{AdmStatus, RefreshTokens, Users};
 use axum::extract::{Path, State};
 use axum::{Json, http::StatusCode};
 use chrono::{DateTime, Utc};
+use patrolli::db::models::serialize_utc_as_local;
+use patrolli::db::schema::{AdmStatus, RefreshTokens, Users};
 use sea_query::{Expr, ExprTrait, PostgresQueryBuilder, Query as DbQuery};
 use sea_query_postgres::PostgresBinder;
 use serde::{Deserialize, Serialize};
@@ -195,7 +195,7 @@ pub async fn update_user(
             .ctx("revoke refresh tokens")?;
     }
     tx.commit().await.ctx("commit transaction")?;
-    info!(target: "patrolli::api::handlers::users::update_user", 
+    info!(target: "patrolli::api::handlers::users::update_user",
         target_user_id = %updated.user_id,
         target_user = %updated.username,
         password_changed,

@@ -7,10 +7,10 @@ use crate::handlers::users::update_user::UpdateUserResponse;
 use crate::handlers::users::{USER_COLUMNS, not_found, row_to_user};
 use crate::response::{ResponseData, ResponseError};
 use crate::state::AppState;
-use patrolli::db::schema::Users;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::Utc;
+use patrolli::db::schema::Users;
 use sea_query::{Expr, ExprTrait, PostgresQueryBuilder, Query as DbQuery};
 use sea_query_postgres::PostgresBinder;
 use std::sync::Arc;
@@ -56,7 +56,7 @@ pub async fn unlink_sso(
         .ctx("unlink sso")?
         .ok_or_else(|| not_found(user_id))?;
     let unlinked = row_to_user(&row).ctx("parse user")?;
-    info!(target: "patrolli::api::handlers::users::unlink_sso", 
+    info!(target: "patrolli::api::handlers::users::unlink_sso",
         target_user_id = %unlinked.user_id,
         target_user = %unlinked.username,
         "user sso unlinked"

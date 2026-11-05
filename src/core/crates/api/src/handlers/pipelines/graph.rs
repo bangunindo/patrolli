@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use anyhow::{Context, bail};
 use patrolli::config::item::ItemKind;
 use patrolli::config::processor::{Config, ProcessorKind};
 use patrolli::config::sink::SinkKind;
 use patrolli::db::schema::{AdmStatus, default_adm_status};
-use anyhow::{Context, bail};
 use petgraph::acyclic::Acyclic;
 use petgraph::prelude::DiGraphMap;
 use serde::{Deserialize, Serialize};
