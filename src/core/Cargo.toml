@@ -2,11 +2,24 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 
-[package]
-name = "patrolli"
+[workspace]
+members = ["crates/api", "crates/app"]
+
+[workspace.package]
 version = "0.1.0-beta.2"
 edition = "2024"
 license = "AGPL-3.0-only"
+
+[workspace.lints.clippy]
+# Only fires on #[async_trait]/#[async_recursion] output, and its fix deletes
+# the attribute, which breaks the build.
+double_must_use = "allow"
+
+[package]
+name = "patrolli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
 ahash = "0.8.12"
@@ -197,10 +210,8 @@ prost-build = "0.14.3"
 pbjson-build = "0.9.0"
 tonic-prost-build = "0.14.6"
 
-[lints.clippy]
-# Only fires on #[async_trait]/#[async_recursion] output, and its fix deletes
-# the attribute, which breaks the build.
-double_must_use = "allow"
+[lints]
+workspace = true
 
 [profile.dev]
 # Full debuginfo (debug = 2) bloats the binary and dominates link time on a
