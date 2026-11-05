@@ -86,7 +86,7 @@ impl ResponseError {
         self
     }
 
-    pub fn to_json_value(self) -> serde_json::Value {
+    pub fn into_json_value(self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_else(|_| {
             serde_json::json!({
                 "status_code": 500,
@@ -99,8 +99,8 @@ impl ResponseError {
         })
     }
 
-    pub fn to_json_string(self) -> String {
-        self.to_json_value().to_string()
+    pub fn into_json_string(self) -> String {
+        self.into_json_value().to_string()
     }
 }
 

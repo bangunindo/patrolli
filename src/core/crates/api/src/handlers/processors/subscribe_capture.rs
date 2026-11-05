@@ -52,7 +52,7 @@ async fn handle_socket(state: Arc<AppState>, processor_id: Uuid, mut socket: Web
             let err_resp = ResponseError::from_status(StatusCode::INTERNAL_SERVER_ERROR)
                 .with_title("Failed to start capture")
                 .with_detail(format!("Error: {}", e))
-                .to_json_string();
+                .into_json_string();
             socket.send(Message::Text(err_resp.into())).await.ok();
             socket.send(Message::Close(None)).await.ok();
             return;
@@ -64,7 +64,7 @@ async fn handle_socket(state: Arc<AppState>, processor_id: Uuid, mut socket: Web
         let err_resp = ResponseError::from_status(StatusCode::INTERNAL_SERVER_ERROR)
             .with_title("Failed to start capture")
             .with_detail("Capture stream is not found")
-            .to_json_string();
+            .into_json_string();
         socket.send(Message::Text(err_resp.into())).await.ok();
         socket.send(Message::Close(None)).await.ok();
         return;
