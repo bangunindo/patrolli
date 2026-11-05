@@ -234,7 +234,7 @@ pub(crate) async fn collect_item_stats(
         Ok(v) => v,
         Err(e) => {
             // A peer that cannot answer costs us stats for this response, not correctness.
-            warn!(target: "patrolli::api::handlers::items", error = %e, "item stats unavailable, returning empty stats");
+            warn!(error = %e, "item stats unavailable, returning empty stats");
             return HashMap::new();
         }
     };
@@ -244,12 +244,12 @@ pub(crate) async fn collect_item_stats(
         // only trust stats if `since` is set and `error` is None
         let trusted_since = match (s.since, &s.error) {
             (Some(_), Some(error)) => {
-                warn!(target: "patrolli::api::handlers::items", error = ?error, "peer reported an error collecting item stats");
+                warn!(error = ?error, "peer reported an error collecting item stats");
                 None
             }
             (Some(since), None) => Some(since.with_timezone(&Utc)),
             (None, error) => {
-                warn!(target: "patrolli::api::handlers::items", error = ?error, "item stats missing the `since` field");
+                warn!(error = ?error, "item stats missing the `since` field");
                 None
             }
         };

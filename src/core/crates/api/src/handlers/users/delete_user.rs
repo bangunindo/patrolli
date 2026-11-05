@@ -52,7 +52,7 @@ pub async fn delete_user(
     if deleted == 0 {
         return Err(not_found(user_id));
     }
-    info!(target: "patrolli::api::handlers::users::delete_user", target_user_id = %user_id, "user deleted");
+    info!(target_user_id = %user_id, "user deleted");
 
     Ok(ResponseData::from_status(StatusCode::NO_CONTENT))
 }

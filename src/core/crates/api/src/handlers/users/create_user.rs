@@ -163,7 +163,7 @@ pub async fn create_user(
         .ctx("create user")?;
     let created = row_to_user(&row).ctx("parse user")?;
     tx.commit().await.ctx("commit transaction")?;
-    info!(target: "patrolli::api::handlers::users::create_user",
+    info!(
         target_user_id = %created.user_id,
         target_user = %created.username,
         allow_sso = created.allow_sso,

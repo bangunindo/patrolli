@@ -61,7 +61,7 @@ pub async fn login(
         .get(0);
 
     if user_count == 0 {
-        warn!(target: "patrolli::api::handlers::auth::login", "login attempted but no users exist");
+        warn!("login attempted but no users exist");
         return Err(ResponseError::from_status(StatusCode::UNAUTHORIZED)
             .with_title("No users found")
             .with_detail("Please configure initial user credentials using environment variables"));
@@ -86,7 +86,7 @@ pub async fn login(
         .ctx("query users")?;
 
     let Some(row) = row else {
-        warn!(target: "patrolli::api::handlers::auth::login", user = %payload.username, "login failed");
+        warn!(user = %payload.username, "login failed");
         return Err(ResponseError::from_status(StatusCode::UNAUTHORIZED)
             .with_title("Invalid credentials")
             .with_detail("Username or password is incorrect"));
@@ -99,7 +99,7 @@ pub async fn login(
     // Only reveal that the account is switched off after the password has matched.
     // Saying it any earlier would tell anyone which usernames exist.
     if adm_status != AdmStatus::Enabled as i16 {
-        warn!(target: "patrolli::api::handlers::auth::login", user_id = %user_id, user = %username, "login rejected for inactive account");
+        warn!(user_id = %user_id, user = %username, "login rejected for inactive account");
         return Err(ResponseError::from_status(StatusCode::FORBIDDEN)
             .with_title("Account is not active")
             .with_detail("Contact an administrator to re-enable this account"));
@@ -110,7 +110,7 @@ pub async fn login(
         .ctx("issue tokens")?;
 
     tx.commit().await.ctx("commit transaction")?;
-    info!(target: "patrolli::api::handlers::auth::login", user_id = %user_id, user = %username, "user logged in");
+    info!(user_id = %user_id, user = %username, "user logged in");
 
     Ok(
         ResponseData::from_status(StatusCode::OK).with_data(TokenResponse {

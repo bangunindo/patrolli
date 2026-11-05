@@ -56,7 +56,7 @@ pub async fn unlink_sso(
         .ctx("unlink sso")?
         .ok_or_else(|| not_found(user_id))?;
     let unlinked = row_to_user(&row).ctx("parse user")?;
-    info!(target: "patrolli::api::handlers::users::unlink_sso",
+    info!(
         target_user_id = %unlinked.user_id,
         target_user = %unlinked.username,
         "user sso unlinked"

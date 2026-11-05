@@ -68,7 +68,7 @@ pub async fn get_graph(
             }),
         };
         if let Err(e) = graph.add_node(node) {
-            warn!(target: "patrolli::api::handlers::processor_builder::get_graph", error = %e, "processor graph node dropped");
+            warn!(error = %e, "processor graph node dropped");
         }
         processor_map.insert(processor_id, id);
     }
@@ -99,7 +99,7 @@ pub async fn get_graph(
             }),
         };
         if let Err(e) = graph.add_node(node) {
-            warn!(target: "patrolli::api::handlers::processor_builder::get_graph", error = %e, "processor graph node dropped");
+            warn!(error = %e, "processor graph node dropped");
         }
         sink_map.insert(sink_id, id);
     }
@@ -136,7 +136,7 @@ pub async fn get_graph(
             }),
         };
         if let Err(e) = graph.add_node(node) {
-            warn!(target: "patrolli::api::handlers::processor_builder::get_graph", error = %e, "processor graph node dropped");
+            warn!(error = %e, "processor graph node dropped");
         }
     }
 
@@ -168,7 +168,7 @@ pub async fn get_graph(
             continue;
         };
         let Some(&processor_nid) = processor_map.get(&processor_id) else {
-            debug!(target: "patrolli::api::handlers::processor_builder::get_graph", processor_id = %processor_id, "item edge references unknown processor");
+            debug!(processor_id = %processor_id, "item edge references unknown processor");
             continue;
         };
 
@@ -178,7 +178,7 @@ pub async fn get_graph(
             enabled_count: enabled_count as usize,
         };
         if let Err(e) = graph.connect(items_nid, processor_nid, EdgeData::ItemsToProcessor(edge)) {
-            warn!(target: "patrolli::api::handlers::processor_builder::get_graph", error = %e, "processor graph edge dropped");
+            warn!(error = %e, "processor graph edge dropped");
         }
     }
 
@@ -193,15 +193,15 @@ pub async fn get_graph(
         let input_id: Uuid = row.get(1);
 
         let Some(&processor_nid) = processor_map.get(&processor_id) else {
-            debug!(target: "patrolli::api::handlers::processor_builder::get_graph", processor_id = %processor_id, "processor input references unknown processor");
+            debug!(processor_id = %processor_id, "processor input references unknown processor");
             continue;
         };
         let Some(&input_nid) = processor_map.get(&input_id) else {
-            debug!(target: "patrolli::api::handlers::processor_builder::get_graph", processor_id = %processor_id, input_id = %input_id, "processor input references unknown input");
+            debug!(processor_id = %processor_id, input_id = %input_id, "processor input references unknown input");
             continue;
         };
         if let Err(e) = graph.connect(input_nid, processor_nid, EdgeData::None) {
-            warn!(target: "patrolli::api::handlers::processor_builder::get_graph", error = %e, "processor graph edge dropped");
+            warn!(error = %e, "processor graph edge dropped");
         }
     }
 
@@ -216,15 +216,15 @@ pub async fn get_graph(
         let processor_id: Uuid = row.get(1);
 
         let Some(&processor_nid) = processor_map.get(&processor_id) else {
-            debug!(target: "patrolli::api::handlers::processor_builder::get_graph", sink_id = %sink_id, input_id = %processor_id, "sink input references unknown processor");
+            debug!(sink_id = %sink_id, input_id = %processor_id, "sink input references unknown processor");
             continue;
         };
         let Some(&sink_nid) = sink_map.get(&sink_id) else {
-            debug!(target: "patrolli::api::handlers::processor_builder::get_graph", sink_id = %sink_id, "sink input references unknown sink");
+            debug!(sink_id = %sink_id, "sink input references unknown sink");
             continue;
         };
         if let Err(e) = graph.connect(processor_nid, sink_nid, EdgeData::None) {
-            warn!(target: "patrolli::api::handlers::processor_builder::get_graph", error = %e, "processor graph edge dropped");
+            warn!(error = %e, "processor graph edge dropped");
         }
     }
 

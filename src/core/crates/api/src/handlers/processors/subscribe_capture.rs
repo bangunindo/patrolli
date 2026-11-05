@@ -34,7 +34,7 @@ pub async fn ws_subscribe_capture(
 ) -> Response {
     // `on_upgrade` runs the socket task outside the request span; parent the session span on it
     // explicitly so `request_id`/`user` carry over.
-    let span = info_span!(target: "patrolli::api::handlers::processors::subscribe_capture", "capture_session", processor_id = %processor_id);
+    let span = info_span!("capture_session", processor_id = %processor_id);
     ws.on_upgrade(move |socket| handle_socket(state, processor_id, socket).instrument(span))
 }
 
@@ -48,7 +48,7 @@ async fn handle_socket(state: Arc<AppState>, processor_id: Uuid, mut socket: Web
     let capture_stream = match state.inter_comm.capture(request).await {
         Ok(stream) => Some(stream),
         Err(e) => {
-            warn!(target: "patrolli::api::handlers::processors::subscribe_capture", error = %e, "failed to start capture");
+            warn!(error = %e, "failed to start capture");
             let err_resp = ResponseError::from_status(StatusCode::INTERNAL_SERVER_ERROR)
                 .with_title("Failed to start capture")
                 .with_detail(format!("Error: {}", e))
@@ -60,7 +60,7 @@ async fn handle_socket(state: Arc<AppState>, processor_id: Uuid, mut socket: Web
     };
 
     let Some(capture_stream) = capture_stream else {
-        warn!(target: "patrolli::api::handlers::processors::subscribe_capture", "failed to start capture, no capture stream");
+        warn!("failed to start capture, no capture stream");
         let err_resp = ResponseError::from_status(StatusCode::INTERNAL_SERVER_ERROR)
             .with_title("Failed to start capture")
             .with_detail("Capture stream is not found")
@@ -70,7 +70,7 @@ async fn handle_socket(state: Arc<AppState>, processor_id: Uuid, mut socket: Web
         return;
     };
 
-    debug!(target: "patrolli::api::handlers::processors::subscribe_capture", "capture session opened");
+    debug!("capture session opened");
     let mut index: u64 = 0;
     loop {
         select! {
@@ -82,7 +82,7 @@ async fn handle_socket(state: Arc<AppState>, processor_id: Uuid, mut socket: Web
                         let in_msg = match serde_json::from_slice(&captured.message_in) {
                             Ok(json) => json,
                             Err(e) => {
-                                debug!(target: "patrolli::api::handlers::processors::subscribe_capture", error = %e, "failed to parse capture message_in as json");
+                                debug!(error = %e, "failed to parse capture message_in as json");
                                 continue;
                             }
                         };
@@ -90,7 +90,7 @@ async fn handle_socket(state: Arc<AppState>, processor_id: Uuid, mut socket: Web
                             Some(msg) => match serde_json::from_slice(msg) {
                                 Ok(json) => Some(json),
                                 Err(e) => {
-                                    debug!(target: "patrolli::api::handlers::processors::subscribe_capture", error = %e, "failed to parse capture message_out as json");
+                                    debug!(error = %e, "failed to parse capture message_out as json");
                                     None
                                 }
                             },
@@ -106,13 +106,13 @@ async fn handle_socket(state: Arc<AppState>, processor_id: Uuid, mut socket: Web
                         let response_json = match serde_json::to_string(&response) {
                             Ok(json) => json,
                             Err(e) => {
-                                debug!(target: "patrolli::api::handlers::processors::subscribe_capture", error = %e, "failed to serialize capture response");
+                                debug!(error = %e, "failed to serialize capture response");
                                 continue;
                             }
                         };
 
                         if socket.send(Message::Text(response_json.into())).await.is_err() {
-                            debug!(target: "patrolli::api::handlers::processors::subscribe_capture", reason = "send_failed", "capture session closed");
+                            debug!(reason = "send_failed", "capture session closed");
                             return;
                         }
                     }
@@ -125,7 +125,7 @@ async fn handle_socket(state: Arc<AppState>, processor_id: Uuid, mut socket: Web
             ws_msg = socket.recv() => {
                 match ws_msg {
                     Some(Ok(Message::Close(_))) | None => {
-                        debug!(target: "patrolli::api::handlers::processors::subscribe_capture", reason = "client_disconnected", "capture session closed");
+                        debug!(reason = "client_disconnected", "capture session closed");
                         return;
                     }
                     Some(Ok(_)) => {
@@ -133,7 +133,7 @@ async fn handle_socket(state: Arc<AppState>, processor_id: Uuid, mut socket: Web
                         continue;
                     }
                     Some(Err(e)) => {
-                        debug!(target: "patrolli::api::handlers::processors::subscribe_capture", error = %e, reason = "websocket_error", "capture session closed");
+                        debug!(error = %e, reason = "websocket_error", "capture session closed");
                         return;
                     }
                 }
@@ -143,5 +143,5 @@ async fn handle_socket(state: Arc<AppState>, processor_id: Uuid, mut socket: Web
 
     // capture stream ended, send a close message to the client
     socket.send(Message::Close(None)).await.ok();
-    debug!(target: "patrolli::api::handlers::processors::subscribe_capture", reason = "stream_ended", "capture session closed");
+    debug!(reason = "stream_ended", "capture session closed");
 }

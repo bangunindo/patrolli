@@ -225,7 +225,7 @@ impl Oidc {
             cache.last_fetch_ok = false;
         }
 
-        info!(target: "patrolli::api::jwt", url = %self.jwks_url, "fetching JWKS");
+        info!(url = %self.jwks_url, "fetching JWKS");
         let jwks: JwkSet = self
             .http
             .get(&self.jwks_url)
@@ -247,14 +247,14 @@ impl Oidc {
                 match DecodingKey::from_jwk(jwk) {
                     Ok(key) => Some((kid, key)),
                     Err(err) => {
-                        debug!(target: "patrolli::api::jwt", kid, error = %err, "skipping unusable JWK");
+                        debug!(kid, error = %err, "skipping unusable JWK");
                         None
                     }
                 }
             })
             .collect();
 
-        debug!(target: "patrolli::api::jwt", keys = by_kid.len(), "cached signing keys");
+        debug!(keys = by_kid.len(), "cached signing keys");
         let mut cache = self.keys.write().await;
         cache.by_kid = by_kid;
         cache.last_fetch_ok = true;
@@ -285,7 +285,7 @@ impl Jwt {
             let oidc = Oidc::new(oidc)?;
             // Lazy: an identity provider outage must not stop this node starting, or
             // local login stops being a fallback.
-            info!(target: "patrolli::api::jwt", issuer = %oidc.issuer, "accepting tokens from OIDC issuer");
+            info!(issuer = %oidc.issuer, "accepting tokens from OIDC issuer");
             jwt.oidc = Some(oidc);
         }
 
@@ -446,7 +446,7 @@ pub async fn require_auth(
         .and_then(|value| value.strip_prefix("Bearer "));
 
     let Some(token) = bearer else {
-        debug!(target: "patrolli::api::jwt", "missing bearer token");
+        debug!("missing bearer token");
         return unauthorized("You must be logged in to access this resource.");
     };
     let token = token.to_string();
@@ -457,7 +457,7 @@ pub async fn require_auth(
             // Missing or unverified username claim: `username_claim_path` does not fit
             // this provider, so the token can never be accepted.
             let Some(username) = username else {
-                debug!(target: "patrolli::api::jwt", "access token has no usable username claim");
+                debug!("access token has no usable username claim");
                 return unauthorized(INVALID_TOKEN);
             };
             let row = match find_or_link_sso_user(&state.db_pool, &subject, Some(username.as_str()))
@@ -469,15 +469,15 @@ pub async fn require_auth(
             };
             // One answer for every reason, so it does not tell which usernames exist.
             let Some(row) = row else {
-                debug!(target: "patrolli::api::jwt", "sso login matches no patrolli user");
+                debug!("sso login matches no patrolli user");
                 return unauthorized("No Patrolli account exists for this login.");
             };
             if !row.get::<_, bool>("allow_sso") {
-                debug!(target: "patrolli::api::jwt", "sso login rejected, sso is disabled for the user");
+                debug!("sso login rejected, sso is disabled for the user");
                 return forbidden("SSO is disabled for this account.");
             }
             if row.get::<_, i16>("adm_status") != AdmStatus::Enabled as i16 {
-                debug!(target: "patrolli::api::jwt", "sso login rejected for inactive account");
+                debug!("sso login rejected for inactive account");
                 return forbidden("This account is disabled.");
             }
             AuthUser {
@@ -498,14 +498,14 @@ pub async fn require_auth(
                         ErrorKind::ExpiredSignature | ErrorKind::ImmatureSignature
                     ) =>
                 {
-                    debug!(target: "patrolli::api::jwt", error = %chain, "access token expired");
+                    debug!(error = %chain, "access token expired");
                     unauthorized(SESSION_EXPIRED)
                 }
                 Error::JwksFetch(_) | Error::KeysUnavailable => {
                     if matches!(err, Error::JwksFetch(_)) {
-                        warn!(target: "patrolli::api::jwt", error = %chain, "identity provider jwks fetch failed");
+                        warn!(error = %chain, "identity provider jwks fetch failed");
                     } else {
-                        debug!(target: "patrolli::api::jwt", error = %chain, "identity provider keys not available yet");
+                        debug!(error = %chain, "identity provider keys not available yet");
                     }
                     ResponseError::from_status(StatusCode::SERVICE_UNAVAILABLE)
                         .with_title("Identity provider unreachable")
@@ -517,7 +517,7 @@ pub async fn require_auth(
                 // Wrong issuer, audience, signature or shape: no retry will ever pass,
                 // usually because the cluster's `oidc` config does not match the provider.
                 _ => {
-                    debug!(target: "patrolli::api::jwt", error = %chain, "access token rejected");
+                    debug!(error = %chain, "access token rejected");
                     unauthorized(INVALID_TOKEN)
                 }
             };
@@ -612,7 +612,7 @@ pub fn spawn_expired_token_cleanup(
                     _ = interval.tick() => {
                         if let Err(err) = purge_expired(&pool).await {
                             // Retried on the next tick; stale rows are harmless until then.
-                            warn!(target: "patrolli::api::jwt", error = %err, "failed to purge expired refresh tokens");
+                            warn!(error = %err, "failed to purge expired refresh tokens");
                         }
                     }
                     _ = token.cancelled() => break,

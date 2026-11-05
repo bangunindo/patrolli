@@ -195,7 +195,7 @@ pub async fn update_user(
             .ctx("revoke refresh tokens")?;
     }
     tx.commit().await.ctx("commit transaction")?;
-    info!(target: "patrolli::api::handlers::users::update_user",
+    info!(
         target_user_id = %updated.user_id,
         target_user = %updated.username,
         password_changed,

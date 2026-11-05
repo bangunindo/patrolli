@@ -36,12 +36,12 @@ pub async fn health_check(
         Ok(conn) => match conn.query_one("SELECT 1", &[]).await {
             Ok(_) => "healthy",
             Err(e) => {
-                warn!(target: "patrolli::api::handlers::health::health_check", error = %e, "health check database probe failed");
+                warn!(error = %e, "health check database probe failed");
                 "unhealthy"
             }
         },
         Err(e) => {
-            warn!(target: "patrolli::api::handlers::health::health_check", error = %e, "health check database connection failed");
+            warn!(error = %e, "health check database connection failed");
             "unhealthy"
         }
     };

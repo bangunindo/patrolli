@@ -115,7 +115,7 @@ pub async fn change_password(
         .ctx("update password")?;
 
     if updated == 0 {
-        warn!(target: "patrolli::api::handlers::auth::change_password", "password change rejected, current password incorrect");
+        warn!("password change rejected, current password incorrect");
         return Err(ResponseError::from_status(StatusCode::UNAUTHORIZED)
             .with_title("Invalid credentials")
             .with_detail("Current password is incorrect"));
@@ -137,7 +137,7 @@ pub async fn change_password(
         .ctx("issue tokens")?;
 
     tx.commit().await.ctx("commit transaction")?;
-    info!(target: "patrolli::api::handlers::auth::change_password", "password changed, sessions revoked");
+    info!("password changed, sessions revoked");
 
     Ok(
         ResponseData::from_status(StatusCode::OK).with_data(TokenResponse {

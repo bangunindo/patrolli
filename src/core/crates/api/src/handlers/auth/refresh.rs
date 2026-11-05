@@ -70,7 +70,7 @@ pub async fn refresh(
         .ctx("look up refresh token")?;
 
     let Some(row) = row else {
-        debug!(target: "patrolli::api::handlers::auth::refresh", "refresh token rejected");
+        debug!("refresh token rejected");
         return Err(ResponseError::from_status(StatusCode::UNAUTHORIZED)
             .with_title("Unauthorized")
             .with_detail("Your session has expired. Please log in again."));
