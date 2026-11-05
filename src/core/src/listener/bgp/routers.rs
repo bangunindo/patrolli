@@ -149,6 +149,28 @@ impl Routers {
         }
     }
 
+    /// Registers routes a previous collector left in the table for `router`'s
+    /// `vrf`: they go at `keep` from now unless a session from the router
+    /// refreshes them first, as if the router had just disconnected.
+    pub fn seed(&self, router: IpAddr, vrf: SmolStr, keep: Duration) {
+        let mut routers = self.inner.lock();
+        let r = routers.entry(router).or_default();
+        r.vrfs.insert(vrf);
+        if r.live.is_none() && r.deadline.is_none() {
+            r.deadline = Some(Instant::now() + keep);
+            self.changed.notify_one();
+        }
+    }
+
+    /// How many routers have a live session.
+    pub fn live(&self) -> usize {
+        self.inner
+            .lock()
+            .values()
+            .filter(|r| r.live.is_some())
+            .count()
+    }
+
     /// The earliest armed deadline.
     pub fn next_deadline(&self) -> Option<Instant> {
         self.inner.lock().values().filter_map(|r| r.deadline).min()
@@ -294,6 +316,32 @@ mod tests {
             .await;
         assert!(superseded);
         assert_eq!(start.elapsed(), SUPERSEDE_WAIT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn seeded_routes_expire_at_keep_unless_the_router_returns() {
+        let routers = Routers::default();
+        routers.seed(ip("192.0.2.1"), "global".into(), KEEP);
+        routers.seed(ip("192.0.2.1"), "65000:1".into(), KEEP);
+        routers.seed(ip("192.0.2.2"), "global".into(), KEEP);
+        let deadline = routers.next_deadline().unwrap();
+        assert_eq!(deadline, Instant::now() + KEEP);
+
+        // 192.0.2.2 comes back: its sweep uses its own session's start
+        let (b, _) = routers
+            .attach(ip("192.0.2.2"), CancellationToken::new(), KEEP)
+            .await;
+        assert_eq!(routers.live(), 1);
+        let deadline = routers.next_deadline().unwrap();
+        let mut expired = routers.take_expired(deadline);
+        expired.sort_by_key(|e| e.router);
+        assert_eq!(expired.len(), 2);
+        let mut vrfs = expired[0].vrfs.clone();
+        vrfs.sort();
+        assert_eq!(vrfs, ["65000:1", "global"]);
+        assert_eq!(expired[1].cutoff, b.cutoff);
+        assert!(!routers.is_live(ip("192.0.2.1")));
+        assert!(routers.is_live(ip("192.0.2.2")));
     }
 
     #[tokio::test(start_paused = true)]

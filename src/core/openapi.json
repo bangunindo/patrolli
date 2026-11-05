@@ -4969,6 +4969,101 @@
         },
         "additionalProperties": false
       },
+      "BgpEvents": {
+        "type": "object",
+        "properties": {
+          "buffer_size": {
+            "type": "integer",
+            "description": "Events held between the sessions and the workers.",
+            "default": 10000,
+            "minimum": 0
+          },
+          "on_full": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OnFull"
+              }
+            ],
+            "default": "drop"
+          },
+          "routes": {
+            "type": "boolean",
+            "description": "One record per announced or withdrawn route, besides the lifecycle\nevents. A full table dump is a record per route.",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "BgpListener": {
+        "type": "object",
+        "description": "A BGP route collector: routers feed it over BMP (and, from phase 4,\npassive BGP) and their routes go into the `bgp` lookup table whose source\nnames this listener. Its records are lifecycle events and, optionally, one\nper route change.",
+        "properties": {
+          "bmp": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BmpListener",
+                "description": "BMP (RFC 7854): only the routers' Loc-RIB (RFC 9069) is read."
+              }
+            ],
+            "default": null
+          },
+          "events": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BgpEvents"
+              }
+            ],
+            "default": {
+              "buffer_size": 10000,
+              "on_full": "drop",
+              "routes": false
+            }
+          },
+          "vrfs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "VRFs kept, spelled as the table's `vrf` column (`global`, `65000:1`,\n`192.0.2.1:7`). Empty keeps every VRF.",
+            "default": []
+          }
+        },
+        "additionalProperties": false
+      },
+      "BmpListener": {
+        "type": "object",
+        "properties": {
+          "keep": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds a router's routes stay after its session is lost, for it to\nreconnect and send them again.",
+            "default": 300,
+            "minimum": 0
+          },
+          "listener": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TcpListener"
+              }
+            ],
+            "default": {
+              "address": "0.0.0.0:10179",
+              "ip_blacklist": [],
+              "ip_whitelist": []
+            }
+          },
+          "max_message_size": {
+            "type": "integer",
+            "description": "Bytes; a longer message ends the session.",
+            "default": 1048576,
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "Cef": {
         "type": "object",
         "description": "CEF (Common Event Format), inside syslog or raw.",
@@ -9102,6 +9197,24 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "required": [
+              "config",
+              "type"
+            ],
+            "properties": {
+              "config": {
+                "$ref": "#/components/schemas/BgpListener"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "bgp"
+                ]
+              }
+            }
           }
         ]
       },
@@ -9187,7 +9300,8 @@
           "syslog",
           "open_telemetry",
           "internal_logs",
-          "internal_metrics"
+          "internal_metrics",
+          "bgp"
         ]
       },
       "ListenerNode": {
@@ -9769,6 +9883,14 @@
           }
         },
         "additionalProperties": false
+      },
+      "OnFull": {
+        "type": "string",
+        "description": "What a full event channel does to the session that produced the event.",
+        "enum": [
+          "drop",
+          "wait"
+        ]
       },
       "OpenTelemetry": {
         "type": "object",

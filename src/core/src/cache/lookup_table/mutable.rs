@@ -587,6 +587,23 @@ impl Mutable {
         self.shards.iter().map(|s| s.write().compact(force)).sum()
     }
 
+    /// The partition key of every non-empty partition of a prefix table;
+    /// empty for a hash table.
+    pub fn partitions(&self) -> Vec<Box<[KeyOwned]>> {
+        self.shards
+            .iter()
+            .flat_map(|shard| {
+                let shard = shard.read();
+                shard
+                    .prefixes
+                    .iter()
+                    .filter(|(_, set)| !set.is_empty())
+                    .map(|(key, _)| key.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     pub fn pooled_strings(&self) -> usize {
         self.shards.iter().map(|s| s.read().strings.len()).sum()
     }
@@ -1400,6 +1417,24 @@ mod tests {
         assert_eq!(t.sweep_partition(&a, Some(Family::V6), u64::MAX), 0);
         assert_eq!(t.sweep_partition(&a, Some(Family::V4), u64::MAX), 1);
         assert!(t.is_empty());
+    }
+
+    #[test]
+    fn partitions_lists_the_non_empty_ones() {
+        let t = peer_table(10);
+        let _ = put_peer(&t, "peer-a", "10.0.0.0/8", "a");
+        let _ = put_peer(&t, "peer-b", "10.0.0.0/8", "b");
+        let mut keys = t.partitions();
+        keys.sort_by_key(|k| format!("{k:?}"));
+        assert_eq!(
+            keys,
+            [
+                Box::from([KeyOwned::String("peer-a".into())]),
+                Box::from([KeyOwned::String("peer-b".into())]),
+            ]
+        );
+        t.sweep_partition(&[KeyRef::String("peer-a")], None, u64::MAX);
+        assert_eq!(t.partitions().len(), 1);
     }
 
     #[test]

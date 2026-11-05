@@ -9,6 +9,7 @@
 //! messages are counted and skipped without decoding their UPDATE.
 
 use super::codec::{BmpFrames, DEFAULT_MAX_MESSAGE};
+use super::events::{Event, EventKind, EventSink};
 use super::paths::{Paths, Withdrawn};
 use super::routers::{Attachment, Routers};
 use super::stats::BmpStats;
@@ -18,10 +19,11 @@ use super::wire::update::{AsPath, SegmentKind, Update, prefixes};
 use super::wire::{Afi, BGP_UPDATE, Reader, bgp_message};
 use crate::cache::lookup_table::LookupTable;
 use crate::cache::lookup_table::bgp::{Family, PathSegment, RouteRow, RouteTable, RouteText};
+use crate::cache::lookup_table::cell::CellRef;
 use crate::cache::lookup_table::mutable::Upsert;
 use crate::config::lookup_table as cfg;
 use futures::StreamExt;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::net::{IpAddr, Ipv4Addr};
@@ -44,6 +46,8 @@ pub struct BmpConfig {
     /// how long a lost session's routes stay
     pub keep: Duration,
     pub max_message_size: usize,
+    /// the VRFs kept; `None` keeps them all
+    pub vrfs: Option<FxHashSet<SmolStr>>,
 }
 
 impl Default for BmpConfig {
@@ -51,6 +55,7 @@ impl Default for BmpConfig {
         Self {
             keep: Duration::from_secs(300),
             max_message_size: DEFAULT_MAX_MESSAGE,
+            vrfs: None,
         }
     }
 }
@@ -91,15 +96,26 @@ impl SessionEnd {
         }
     }
 
+    /// [`Self::as_str`] of each kind, by [`Self::index`].
+    pub const NAMES: [&str; Self::KINDS] = [
+        "eof",
+        "terminated",
+        "cancelled",
+        "no_initiation",
+        "frame",
+        "reset",
+        "resync",
+    ];
+
     pub fn as_str(&self) -> &'static str {
+        Self::NAMES[self.index()]
+    }
+
+    /// The decode error behind a frame or reset end.
+    pub fn error(&self) -> Option<&'static str> {
         match self {
-            Self::Eof => "eof",
-            Self::Terminated => "terminated",
-            Self::Cancelled => "cancelled",
-            Self::NoInitiation => "no_initiation",
-            Self::Frame(_) => "frame",
-            Self::Reset(_) => "reset",
-            Self::Resync => "resync",
+            Self::Frame(why) | Self::Reset(why) => Some(why),
+            _ => None,
         }
     }
 }
@@ -111,19 +127,49 @@ pub struct Collector {
     listener: Uuid,
     tables: Arc<LookupTable>,
     config: BmpConfig,
-    stats: BmpStats,
+    stats: Arc<BmpStats>,
     routers: Routers,
+    events: Option<EventSink>,
 }
 
 impl Collector {
+    /// A collector for `listener`. Routes a previous collector left in the
+    /// table go at `keep` from now unless their router comes back for them.
     pub fn new(listener: Uuid, tables: Arc<LookupTable>, config: BmpConfig) -> Self {
-        Self {
+        let c = Self {
             listener,
             tables,
             config,
-            stats: BmpStats::default(),
+            stats: Arc::default(),
             routers: Routers::default(),
+            events: None,
+        };
+        if let Some(table) = c.route_table() {
+            let partitions = table.partitions();
+            if !partitions.is_empty() {
+                debug!(partitions = partitions.len(), "bmp routes left to expire");
+            }
+            for (router, vrf) in partitions {
+                c.routers.seed(router, vrf, c.config.keep);
+            }
         }
+        c
+    }
+
+    /// Counts into `stats`, which may outlive this collector.
+    pub fn with_stats(mut self, stats: Arc<BmpStats>) -> Self {
+        self.stats = stats;
+        self
+    }
+
+    /// Sends the sessions' events to `sink`.
+    pub fn with_events(mut self, sink: EventSink) -> Self {
+        self.events = Some(sink);
+        self
+    }
+
+    pub fn events(&self) -> Option<&EventSink> {
+        self.events.as_ref()
     }
 
     pub fn stats(&self) -> &BmpStats {
@@ -162,7 +208,13 @@ impl Collector {
         debug!(superseded, "bmp session started");
 
         let mut session = Session::new(self, &attachment);
+        session.emit(EventKind::SessionUp { superseded });
         let end = session.run(stream, &cancel).await;
+        session.emit(EventKind::SessionDown {
+            reason: end.as_str(),
+            error: end.error(),
+        });
+        session.flush_events(&cancel).await;
         drop(session);
         self.routers.detach(attachment, self.config.keep);
 
@@ -208,10 +260,18 @@ impl Collector {
         let mut swept = 0;
         for e in &expired {
             BmpStats::incr(&self.stats.keep_expiries);
+            let mut rows = 0;
             if let Some(table) = &table {
                 for vrf in &e.vrfs {
-                    swept += table.sweep(e.router, vrf, None, e.cutoff);
+                    rows += table.sweep(e.router, vrf, None, e.cutoff);
                 }
+            }
+            swept += rows;
+            if let Some(events) = &self.events {
+                events.try_send(Event::new(
+                    e.router,
+                    EventKind::KeepExpired { rows: rows as u64 },
+                ));
             }
         }
         BmpStats::add(&self.stats.rows_swept, swept as u64);
@@ -241,6 +301,9 @@ type PeerKey = ([u8; 8], Ipv4Addr);
 struct Peer {
     vrf: SmolStr,
     add_path: [bool; 2],
+    /// false for a VRF the listener does not keep: its messages are only
+    /// counted
+    kept: bool,
 }
 
 /// Buffers reused across messages, so a warm session does not allocate.
@@ -263,6 +326,8 @@ struct Session<'c> {
     scratch: Scratch,
     warned_full: bool,
     warned_write: bool,
+    /// events of the message being applied, sent once it is
+    pending: Vec<Event>,
 }
 
 /// An UPDATE's prefixes in one family.
@@ -284,6 +349,22 @@ impl<'c> Session<'c> {
             scratch: Scratch::default(),
             warned_full: false,
             warned_write: false,
+            pending: Vec::new(),
+        }
+    }
+
+    /// Queues an event, if the listener sends any.
+    fn emit(&mut self, kind: EventKind) {
+        if self.c.events.is_some() {
+            self.pending.push(Event::new(self.router, kind));
+        }
+    }
+
+    async fn flush_events(&mut self, cancel: &CancellationToken) {
+        if let Some(events) = &self.c.events
+            && !self.pending.is_empty()
+        {
+            events.send_all(&mut self.pending, cancel).await;
         }
     }
 
@@ -307,6 +388,7 @@ impl<'c> Session<'c> {
                 Some(Err(e)) => return SessionEnd::Frame(e.kind()),
                 Some(Ok(frame)) => frame,
             };
+            BmpStats::add(&self.c.stats.bytes, frame.len() as u64);
 
             since_check += 1;
             if since_check >= TABLE_CHECK_MESSAGES || last_check.elapsed() >= TABLE_CHECK_INTERVAL {
@@ -317,7 +399,9 @@ impl<'c> Session<'c> {
                 }
             }
 
-            if let Err(end) = self.apply(&frame, &mut initiated) {
+            let applied = self.apply(&frame, &mut initiated);
+            self.flush_events(cancel).await;
+            if let Err(end) = applied {
                 return end;
             }
         }
@@ -394,16 +478,31 @@ impl<'c> Session<'c> {
 
     fn peer_up(&mut self, header: &PeerHeader, received_open: &[u8]) -> Result<(), SessionEnd> {
         let open = Open::parse(received_open).map_err(|e| SessionEnd::Reset(e.0))?;
-        let peer = self.peers.entry(key(header)).or_insert_with(|| Peer {
-            vrf: bmp::distinguisher_text(&header.distinguisher)
-                .map_or(SmolStr::new_static(cfg::bgp::GLOBAL_VRF), SmolStr::from),
-            add_path: [false; 2],
+        let vrfs = &self.c.config.vrfs;
+        let peer = self.peers.entry(key(header)).or_insert_with(|| {
+            let vrf = bmp::distinguisher_text(&header.distinguisher)
+                .map_or(SmolStr::new_static(cfg::bgp::GLOBAL_VRF), SmolStr::from);
+            Peer {
+                kept: vrfs.as_ref().is_none_or(|kept| kept.contains(&vrf)),
+                vrf,
+                add_path: [false; 2],
+            }
         });
+        if !peer.kept {
+            BmpStats::incr(&self.c.stats.vrf_filtered);
+            return Ok(());
+        }
         // one emulated peer per family adds to what the others announced
         for family in Afi::ALL {
             peer.add_path[family.index()] |= sends_path_ids(&open, family);
         }
-        self.c.routers.note_vrf(self.router, &peer.vrf);
+        let vrf = peer.vrf.clone();
+        self.c.routers.note_vrf(self.router, &vrf);
+        self.emit(EventKind::PeerUp {
+            vrf,
+            asn: header.asn,
+            bgp_id: header.bgp_id,
+        });
         Ok(())
     }
 
@@ -413,11 +512,22 @@ impl<'c> Session<'c> {
         let Some(peer) = self.peers.remove(&key(header)) else {
             return;
         };
+        if !peer.kept {
+            BmpStats::incr(&self.c.stats.vrf_filtered);
+            return;
+        }
+        let mut removed = 0;
         if let Some(table) = &self.table {
-            let removed = table.peer_down(self.router, &peer.vrf);
+            removed = table.peer_down(self.router, &peer.vrf);
             BmpStats::add(&self.c.stats.routes_withdrawn, removed as u64);
         }
         self.paths.drop_vrf(&peer.vrf);
+        self.emit(EventKind::PeerDown {
+            vrf: peer.vrf,
+            asn: header.asn,
+            bgp_id: header.bgp_id,
+            rows: removed as u64,
+        });
     }
 
     fn route_monitoring(&mut self, header: &PeerHeader, bgp: &[u8]) -> Result<(), SessionEnd> {
@@ -427,6 +537,10 @@ impl<'c> Session<'c> {
             BmpStats::incr(&self.c.stats.without_peer_up);
             return Ok(());
         };
+        if !peer.kept {
+            BmpStats::incr(&self.c.stats.vrf_filtered);
+            return Ok(());
+        }
         let (vrf, add_path) = (peer.vrf.clone(), peer.add_path);
         let mut r = Reader::new(bgp);
         let (kind, body) = bgp_message(&mut r).map_err(|e| SessionEnd::Reset(e.0))?;
@@ -455,18 +569,32 @@ impl<'c> Session<'c> {
             scratch: s,
             warned_full,
             warned_write,
+            pending,
             ..
         } = self;
         let stats = &c.stats;
+        let events = c.events.is_some();
+        let route_events = c.events.as_ref().is_some_and(EventSink::routes);
         if let Some((afi, safi)) = update.end_of_rib() {
             BmpStats::incr(&stats.end_of_rib);
             if let Some(family) = Afi::unicast(afi, safi) {
                 let family = cache_family(family);
+                let mut swept = 0;
                 if let Some(table) = table {
-                    let swept = table.sweep(*router, vrf, Some(family), *cutoff);
+                    swept = table.sweep(*router, vrf, Some(family), *cutoff);
                     BmpStats::add(&stats.rows_swept, swept as u64);
                 }
                 paths.sweep(vrf, Some(family), *cutoff);
+                if events {
+                    pending.push(Event::new(
+                        *router,
+                        EventKind::EndOfRib {
+                            vrf: vrf.clone(),
+                            family,
+                            rows: swept as u64,
+                        },
+                    ));
+                }
             }
             return;
         }
@@ -511,9 +639,10 @@ impl<'c> Session<'c> {
             withdrawn.extend(announced.drain(..));
         }
 
-        let Some(table) = table.as_ref() else {
+        // without a table the routes are only counted, or sent as events
+        if table.is_none() && !route_events {
             return;
-        };
+        }
         let mut write_failed = |e: anyhow::Error| {
             if !std::mem::replace(warned_write, true) {
                 error!(error = %format!("{e:#}"), "route write failed");
@@ -522,6 +651,19 @@ impl<'c> Session<'c> {
         for nlri in &withdrawn {
             let add_path = add_path[nlri.family.index()];
             for (path_id, prefix) in prefixes(nlri.bytes, nlri.family, add_path).flatten() {
+                if route_events {
+                    pending.push(Event::new(
+                        *router,
+                        EventKind::Withdraw {
+                            vrf: vrf.clone(),
+                            prefix,
+                            path_id,
+                        },
+                    ));
+                }
+                let Some(table) = table.as_ref() else {
+                    continue;
+                };
                 match paths.withdraw(table, vrf, prefix, path_id) {
                     Ok(Withdrawn::Unknown) => BmpStats::incr(&stats.unknown_withdraws),
                     Ok(_) => BmpStats::incr(&stats.routes_withdrawn),
@@ -571,6 +713,19 @@ impl<'c> Session<'c> {
                     local_pref: attrs.local_pref,
                     med: attrs.med,
                     path_id,
+                };
+                if route_events {
+                    let cells = route.cells(&mut s.text).map(CellRef::to_owned_cell);
+                    pending.push(Event::new(
+                        *router,
+                        EventKind::Announce {
+                            prefix,
+                            cells: Box::new(cells),
+                        },
+                    ));
+                }
+                let Some(table) = table.as_ref() else {
+                    continue;
                 };
                 match paths.announce(table, vrf, &route, &mut s.text) {
                     Ok(Upsert::Rejected) => {

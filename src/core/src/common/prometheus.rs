@@ -552,6 +552,59 @@ mod tests {
     }
 
     #[test]
+    fn bgp_listener_families_carry_their_own_labels() {
+        use crate::common::internal_metrics::{BgpListener, Listener};
+        let metrics = Arc::new(InternalMetrics::default());
+        let id = Uuid::now_v7();
+        metrics.listener.store(Arc::new((
+            Instant::now(),
+            vec![
+                Listener {
+                    id,
+                    name: "routes".to_string(),
+                    bgp: Some(Box::new(BgpListener {
+                        routers_live: 2,
+                        route_table: true,
+                        routes_announced: 7,
+                        sessions_closed: vec![("eof", 1), ("reset", 3)],
+                        messages: vec![("route_monitoring", 9)],
+                        ignored_families: vec![(1, 128, 4)],
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+                Listener {
+                    id: Uuid::now_v7(),
+                    name: "syslog".to_string(),
+                    ..Default::default()
+                },
+            ],
+        )));
+        let output = encode_test_metrics(metrics, false);
+        let labels = format!("listener_id=\"{id}\",listener_name=\"routes\"");
+        for line in [
+            "# TYPE patrolli_listener_bgp_routers_live gauge".to_string(),
+            format!("patrolli_listener_bgp_routers_live{{{labels}}} 2"),
+            format!("patrolli_listener_bgp_route_table{{{labels}}} 1"),
+            format!("patrolli_listener_bgp_routes_announced_total{{{labels}}} 7"),
+            format!("patrolli_listener_bgp_sessions_closed_total{{{labels},reason=\"reset\"}} 3"),
+            format!("patrolli_listener_bgp_messages_total{{{labels},type=\"route_monitoring\"}} 9"),
+            format!(
+                "patrolli_listener_bgp_ignored_families_total{{{labels},afi=\"1\",safi=\"128\"}} 4"
+            ),
+        ] {
+            assert!(output.contains(&line), "{line} missing from\n{output}");
+        }
+        // a listener of another type has no bgp series
+        assert_eq!(
+            output
+                .matches("patrolli_listener_bgp_routers_live{")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn bearer_authorization_is_exact() {
         let state = AppState {
             registry: Arc::new(Registry::default()),

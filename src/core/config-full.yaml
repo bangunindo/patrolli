@@ -597,6 +597,43 @@ listeners:
       #   cert_path: /etc/patrolli/otel.crt
       #   key_path: /etc/patrolli/otel.key
 
+  # ── BGP route collector: routers stream their routes over BMP (RFC 7854)
+  #    and the listener writes them into the `bgp` lookup table whose
+  #    source.listener names it (see lookup_tables above), which
+  #    attribute_lookup then reads to enrich flows. Only the routers' Loc-RIB
+  #    (RFC 9069) is read; Adj-RIB-In/Out messages are counted and skipped.
+  #    The router is the connection's source address. Its records are events:
+  #    each carries the router as source.address and bgp.event, one of
+  #    session_up, session_down (bgp.reason), peer_up, peer_down, end_of_rib,
+  #    keep_expired, and with events.routes announce / withdraw (bgp.prefix and
+  #    the table's columns). One worker is plenty.
+  - type: bgp
+    id: 019b77b3-df79-70a2-ab01-b43b2cf723b0
+    name: routes
+    worker_count: 1
+    batch_size: 1000
+    batch_timeout: 1000
+    config:
+      bmp:                       # required (passive BGP is planned as a sibling section)
+        listener:
+          address: 0.0.0.0:10179 # default
+          ip_whitelist: []       # mutually exclusive with ip_blacklist
+          ip_blacklist: []
+        # s a lost session's routes stay, for the router to reconnect and send
+        # them again; its End-of-RIB then sweeps what it did not re-send. 0 → 300.
+        keep: 300
+        max_message_size: 1048576  # bytes; longer ends the session. Min 131072, 0 → default
+      # VRFs kept, spelled as the table's vrf column: global, 65000:1,
+      # 192.0.2.1:7. Empty keeps every VRF.
+      vrfs: []
+      events:
+        routes: false            # also one record per announced or withdrawn route
+        # When the workers fall behind: drop (default) loses events and counts
+        # them; wait holds the session's reads, which stalls the route updates
+        # too, and a router may end a session it cannot write to.
+        on_full: drop
+        buffer_size: 10000       # events queued for the workers; 0 → default
+
   # ── Internal logs: patrolli's own log events as log records, one per event.
   #    Each record carries the event's fields and its enclosing spans' fields
   #    (sink_id, listener, item_id, ...) as attributes, plus code.namespace

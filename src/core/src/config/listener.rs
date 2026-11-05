@@ -32,6 +32,7 @@ pub enum Config {
     OpenTelemetry(OpenTelemetry),
     InternalLogs(InternalLogs),
     InternalMetrics(InternalMetrics),
+    Bgp(Box<Bgp>),
 }
 
 impl Config {
@@ -44,6 +45,7 @@ impl Config {
             Self::OpenTelemetry(open_telemetry) => open_telemetry.validate()?,
             Self::InternalLogs(internal_logs) => internal_logs.validate()?,
             Self::InternalMetrics(internal_metrics) => internal_metrics.validate()?,
+            Self::Bgp(bgp) => bgp.validate()?,
         };
         Ok(())
     }
@@ -57,6 +59,7 @@ impl Config {
             Self::OpenTelemetry(open_telemetry) => Ok(serde_json::to_value(open_telemetry)?),
             Self::InternalLogs(internal_logs) => Ok(serde_json::to_value(internal_logs)?),
             Self::InternalMetrics(internal_metrics) => Ok(serde_json::to_value(internal_metrics)?),
+            Self::Bgp(bgp) => Ok(serde_json::to_value(bgp)?),
         }
     }
 }
@@ -80,7 +83,8 @@ impl SensitiveFields for Config {
             Self::Dummy(_)
             | Self::Netflow(_)
             | Self::InternalLogs(_)
-            | Self::InternalMetrics(_) => Vec::new(),
+            | Self::InternalMetrics(_)
+            | Self::Bgp(_) => Vec::new(),
         }
     }
 }
@@ -837,6 +841,149 @@ impl InternalMetrics {
     }
 }
 
+/// A BGP route collector: routers feed it over BMP (and, from phase 4,
+/// passive BGP) and their routes go into the `bgp` lookup table whose source
+/// names this listener. Its records are lifecycle events and, optionally, one
+/// per route change.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(default, deny_unknown_fields)]
+#[schema(as = BgpListener)]
+pub struct Bgp {
+    /// BMP (RFC 7854): only the routers' Loc-RIB (RFC 9069) is read.
+    pub bmp: Option<Bmp>,
+    /// VRFs kept, spelled as the table's `vrf` column (`global`, `65000:1`,
+    /// `192.0.2.1:7`). Empty keeps every VRF.
+    #[schema(value_type = Vec<String>)]
+    pub vrfs: Vec<SmolStr>,
+    pub events: BgpEvents,
+}
+
+impl Bgp {
+    pub fn validate(&mut self) -> Result<()> {
+        let Some(bmp) = &mut self.bmp else {
+            anyhow::bail!("a bgp listener needs a `bmp` section");
+        };
+        bmp.validate()?;
+        anyhow::ensure!(
+            self.vrfs.iter().all(|v| !v.trim().is_empty()),
+            "vrfs cannot hold an empty name"
+        );
+        self.vrfs.sort_unstable();
+        self.vrfs.dedup();
+        self.events.validate();
+        Ok(())
+    }
+}
+
+/// The smallest `max_message_size`: an RFC 8654 BGP message (65535 bytes)
+/// with its BMP headers, rounded up.
+pub const BMP_MIN_MESSAGE_SIZE: usize = 1 << 17;
+
+fn default_bmp_listener() -> TcpListener {
+    TcpListener {
+        address: "0.0.0.0:10179".parse().unwrap(),
+        ip_whitelist: vec![],
+        ip_blacklist: vec![],
+    }
+}
+
+fn default_bmp_keep() -> Duration {
+    Duration::from_secs(300)
+}
+
+fn default_bmp_max_message_size() -> usize {
+    1 << 20
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(default, deny_unknown_fields)]
+#[schema(as = BmpListener)]
+pub struct Bmp {
+    pub listener: TcpListener,
+    /// Seconds a router's routes stay after its session is lost, for it to
+    /// reconnect and send them again.
+    #[serde(with = "crate::common::serde::duration_seconds")]
+    #[schema(value_type = u64, default = 300)]
+    pub keep: Duration,
+    /// Bytes; a longer message ends the session.
+    #[schema(default = 1048576)]
+    pub max_message_size: usize,
+}
+
+impl Default for Bmp {
+    fn default() -> Self {
+        Self {
+            listener: default_bmp_listener(),
+            keep: default_bmp_keep(),
+            max_message_size: default_bmp_max_message_size(),
+        }
+    }
+}
+
+impl Bmp {
+    pub fn validate(&mut self) -> Result<()> {
+        self.listener.validate()?;
+        if self.keep.is_zero() {
+            self.keep = default_bmp_keep();
+        }
+        if self.max_message_size == 0 {
+            self.max_message_size = default_bmp_max_message_size();
+        }
+        anyhow::ensure!(
+            self.max_message_size >= BMP_MIN_MESSAGE_SIZE,
+            "bmp max_message_size must be at least {BMP_MIN_MESSAGE_SIZE}"
+        );
+        Ok(())
+    }
+}
+
+/// What a full event channel does to the session that produced the event.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OnFull {
+    /// Drop the event and count it: the routes are never held up.
+    #[default]
+    Drop,
+    /// Wait for room: a stalled pipeline stalls the session's reads, and a
+    /// router may end a session it cannot write to.
+    Wait,
+}
+
+fn default_bgp_events_buffer() -> usize {
+    10_000
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(default, deny_unknown_fields)]
+#[schema(as = BgpEvents)]
+pub struct BgpEvents {
+    /// One record per announced or withdrawn route, besides the lifecycle
+    /// events. A full table dump is a record per route.
+    pub routes: bool,
+    pub on_full: OnFull,
+    /// Events held between the sessions and the workers.
+    #[schema(default = 10000)]
+    pub buffer_size: usize,
+}
+
+impl Default for BgpEvents {
+    fn default() -> Self {
+        Self {
+            routes: false,
+            on_full: OnFull::default(),
+            buffer_size: default_bgp_events_buffer(),
+        }
+    }
+}
+
+impl BgpEvents {
+    pub fn validate(&mut self) {
+        if self.buffer_size == 0 {
+            self.buffer_size = default_bgp_events_buffer();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1062,6 +1209,65 @@ config:
                 .to_string();
             assert!(err.contains("unknown field `workers`"), "{err}");
         }
+    }
+
+    fn bgp(yaml: &str) -> Result<Bgp> {
+        let mut conf: Bgp = serde_yaml_ng::from_str(yaml)?;
+        conf.validate()?;
+        Ok(conf)
+    }
+
+    #[test]
+    fn bgp_defaults_fill_an_empty_bmp_section() {
+        let conf = bgp("bmp: {}").unwrap();
+        let bmp = conf.bmp.unwrap();
+        assert_eq!(bmp.listener.address, "0.0.0.0:10179".parse().unwrap());
+        assert_eq!(bmp.keep, Duration::from_secs(300));
+        assert_eq!(bmp.max_message_size, 1 << 20);
+        assert!(conf.vrfs.is_empty());
+        assert_eq!(conf.events, BgpEvents::default());
+        assert!(!conf.events.routes);
+        assert_eq!(conf.events.on_full, OnFull::Drop);
+
+        // zero means the default
+        let conf = bgp("bmp: {keep: 0, max_message_size: 0}\nevents: {buffer_size: 0}").unwrap();
+        assert_eq!(conf.bmp.unwrap().keep, Duration::from_secs(300));
+        assert_eq!(conf.events.buffer_size, 10_000);
+    }
+
+    #[test]
+    fn bgp_needs_a_protocol_and_sane_values() {
+        for (yaml, want) in [
+            ("{}", "needs a `bmp` section"),
+            ("bmp: {max_message_size: 4096}", "max_message_size"),
+            ("bmp: {}\nvrfs: [global, ' ']", "empty name"),
+            ("bmp: {listener: {address: 0.0.0.0:0}}", "port"),
+            ("bmp: {}\nevents: {on_full: block}", "unknown variant"),
+            ("bmp: {}\nevents: {route: true}", "unknown field"),
+        ] {
+            let err = format!("{:#}", bgp(yaml).unwrap_err());
+            assert!(err.contains(want), "{yaml}: {err}");
+        }
+    }
+
+    #[test]
+    fn bgp_vrfs_are_sorted_and_deduplicated() {
+        let conf = bgp("bmp: {}\nvrfs: ['65000:1', global, '65000:1']").unwrap();
+        assert_eq!(conf.vrfs, ["65000:1", "global"]);
+    }
+
+    #[test]
+    fn bgp_round_trips_through_the_db_shape() {
+        let config = Config::Bgp(Box::new(
+            bgp("bmp: {keep: 60}\nvrfs: [global]\nevents: {routes: true, on_full: wait}").unwrap(),
+        ));
+        let rebuilt: Config = serde_json::from_value(serde_json::json!({
+            "type": ListenerKind::from(&config).to_string(),
+            "config": config.to_json_value().unwrap(),
+        }))
+        .unwrap();
+        assert_eq!(rebuilt, config);
+        assert_eq!(ListenerKind::from(&config).to_string(), "bgp");
     }
 
     #[test]

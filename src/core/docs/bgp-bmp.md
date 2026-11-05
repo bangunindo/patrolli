@@ -335,8 +335,8 @@ gives back exactly what was encoded. Phase 4's passive BGP will use the same `wi
    source owned by the listener (section 6). No `cache::route`, no new lookup processor.
 4. ~~VRF/RD~~ **Decided**: one table per listener, partitioned by `(router, vrf)`, `vrf` being
    `global` for RD 0 and the RD text otherwise. The common lookup binds `vrf: global` with an
-   `attribute_lookup` literal. Which VRFs are kept is a listener setting (phase 3). Still open:
-   mapping a flow's ingress VRF ID (IE 234, router-local) to an RD.
+   `attribute_lookup` literal. Which VRFs are kept is the listener's `vrfs` (phase 3; empty
+   keeps all). Still open: mapping a flow's ingress VRF ID (IE 234, router-local) to an RD.
 5. ~~Stale handling~~ **Decided**: Peer Down → `remove_partition`; connection loss → keep
    serving for `keep` (default 5 min); after the new dump's End-of-RIB (per address family) or
    when `keep` runs out, sweep what the dump did not refresh. A reconnect gets a whole `keep`
@@ -347,8 +347,10 @@ gives back exactly what was encoded. Phase 4's passive BGP will use the same `wi
    BMP (Kentik's model); see "Plan" in section 3. Still open: whether to ever negotiate
    ADD-PATH on the passive session.
 8. **Cluster placement** of route tables (phase 6).
-9. **Listener shape**: one `bgp` listener type with a BMP port and a BGP port, or two types
-   sharing the table source. Decide in phase 3.
+9. ~~Listener shape~~ **Decided**: one `bgp` listener type with one section per protocol
+   (`bmp:` now, `bgp:` for passive BGP in phase 4), so one table and one `attribute_lookup`
+   rule cover routers fed either way. `keep` is per protocol: BGP graceful restart brings its
+   own restart time.
 10. **Row interning**: the bench measures 395 B per route since phase 2 (~400 MB per
     full-table router). Each row also repeats its partition's `router` and `vrf` cells (48
     bytes). Acceptable for a few routers; revisit when one table carries tens of them.
@@ -391,8 +393,8 @@ lookup_tables:
   `communities` (`a:b`), `large_communities` (`a:b:c`). `origin_as` is null for an
   aggregate ending in a multi-member set, and both AS columns skip confederation segments.
   A `key` may be left out; one that is given must be exactly the fixed key.
-- **One table per listener**, not one per VRF. Which VRFs and RIB views a listener keeps is
-  the listener's config (phase 3), not the table's.
+- **One table per listener**, not one per VRF. Which VRFs a listener keeps is the listener's
+  `vrfs`, not the table's.
 - **Only the listener writes it.** `attribute_collect` refuses a `bgp` table, so pipeline
   writes can never interleave with a session's stream.
 - **TTL is always 0**; routes leave by withdrawal, Peer Down (`peer_down`, one partition) or
@@ -462,13 +464,51 @@ optional route events as log records, best effort (drop and count when full). Tw
    - Memory: the `path_id` cell takes a row's cells from 240 to 264 bytes, past jemalloc's
      256-byte class, so `bench_rib` now measures **395 B/route** (331 before).
    - Not done: a cargo-fuzz target (needs nightly; `wire/` depends only on std and ipnet so
-     it can be included), storing the Loc-RIB counts of Statistics Reports (phase 3
-     self-check).
-3. **Listener wiring**
-   - Transport through `ensure_started`, supervisor, `InternalMetrics` (akvorado's metric set
-     in section 2 is a good start).
-   - Listener config, backend API, `config-full.yaml`.
-   - Optional route events into the pipeline over flume, best effort.
+     it can be included), storing the Loc-RIB counts of Statistics Reports (the self-check,
+     still open after phase 3).
+3. **Listener wiring** — **done** (`listener::bgp::listener::BgpListener`)
+   - Config: listener `type: bgp` with `bmp: {listener, keep, max_message_size}`, `vrfs` and
+     `events: {routes, on_full, buffer_size}` (`config-full.yaml` documents each). The API
+     handlers are generic over the listener config, so the type needed no handler code and no
+     migration; `openapi.json` gained `BgpListener`, `BmpListener`, `BgpEvents`, `OnFull`.
+   - Transport as syslog's: the first worker starts it through `ensure_started`; a TCP accept
+     loop (the `TcpListener` allow/deny lists, TCP keepalive) spawns one `Collector::session`
+     per connection, and the expiry task runs beside it. A stop ends the sessions without
+     arming `keep`, so their routes stay until the table goes or a later transport expires them.
+   - **`keep` survives a transport restart**: a new `Collector` reads the table's partitions
+     (`RouteTable::partitions`) and arms `keep` for each router, as if it had just
+     disconnected. Without it, a listener config edit (which restarts the listener but keeps
+     the table) or a supervisor restart would leave a router that never comes back in the
+     table forever.
+   - **Events**: each is a log record whose `source.address` is the router (so items match
+     routers by source IP like any listener), with `bgp.event` one of `session_up`,
+     `session_down` (`bgp.reason`, `bgp.error`; a warning for frame/reset/no-Initiation),
+     `peer_up`, `peer_down`, `end_of_rib`, `keep_expired`, and with `events.routes` `announce`
+     (the row's columns under `bgp.*`) and `withdraw`. Route events go out with or without a
+     table. The session queues a message's events and sends them after applying it; with
+     `on_full: drop` a full channel loses them (`events_dropped`, also in
+     `records_dropped`), with `wait` the session waits, raced against its cancel token, so a
+     stuck pipeline stalls the routes too and a router may drop the session. The workers
+     batch events into the pipeline like syslog's; with no events wanted they idle.
+   - **Metrics**: generic listener counters (BMP bytes and messages as bytes and items,
+     events as records), plus `common::internal_metrics::Listener::bgp`, rendered as
+     `listener.bgp.*` for Prometheus and OTLP (`sessions_closed{reason}`, `messages{type}`,
+     `ignored_families{afi,safi}`, gauges `routers_live` and `route_table`) and as a `bgp`
+     block in the log signal. Counters live on the listener, so they survive transport
+     restarts. Route counts stay under `lookup_table.*`.
+   - **Validation**: in local mode, each `bgp` table must name an existing `bgp` listener and
+     no listener may fill two tables (`LocalFileConfig::check_route_tables`). Backend mode
+     cannot check this (lookup tables have no API, and the watcher reads them before the
+     listeners); there the runtime takes the lowest table id, and the `route_table` gauge
+     shows a listener writing nowhere.
+   - Tests: config and cross-checks; events from crafted streams (order, opt-in routes, drop,
+     wait and cancel, VRF filter); a successor collector expiring what the old one left;
+     the listener on a real socket (capture in, rows and pipeline records out, ip filter,
+     close keeps the routes); `tests/bgp_listener_e2e.rs` runs the binary, feeds the Loc-RIB
+     capture over TCP, enriches OTLP probes through `attribute_lookup` (`literals: {vrf:
+     global}`) and scrapes `listener.bgp.*` from the Prometheus endpoint.
+   - Not done: web form hints for the new type (`../web`, the generated client follows
+     `openapi.json`); the Statistics Report self-check; per-router metrics (cardinality).
 4. **Passive BGP**
    - OPEN validation, KEEPALIVE every hold/3, hold timer, NOTIFICATION on errors (section 3).
    - Same write path as BMP; optional TCP-MD5.

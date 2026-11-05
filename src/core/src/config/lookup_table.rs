@@ -593,8 +593,8 @@ impl Bgp {
         if self.max_rows == 0 {
             bail!("source.max_rows must be greater than zero");
         }
-        // TODO(bgp phase 2): check that `listener` names a bgp listener, once
-        // that listener type exists.
+        // that `listener` names a bgp listener is checked against the whole
+        // config: `LocalFileConfig::validate`
         Ok(())
     }
 }

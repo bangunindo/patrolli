@@ -143,6 +143,40 @@ pub struct Listener {
     pub total_records_annotate_failed: u64,
     pub total_records_dropped: u64,
     pub total_records_errored: u64,
+    /// The `bgp` listener's own counters.
+    pub bgp: Option<Box<BgpListener>>,
+}
+
+/// What a `bgp` listener's BMP sessions did, beyond the generic listener
+/// counters (BMP messages are its items, their bytes its bytes, and its events
+/// its records).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct BgpListener {
+    /// routers with a live session
+    pub routers_live: u64,
+    /// whether a `bgp` lookup table names the listener
+    pub route_table: bool,
+    pub sessions_opened: u64,
+    pub sessions_superseded: u64,
+    /// by end reason
+    pub sessions_closed: Vec<(&'static str, u64)>,
+    /// by BMP message type
+    pub messages: Vec<(&'static str, u64)>,
+    pub messages_skipped: u64,
+    pub adj_rib_messages: u64,
+    pub without_peer_up: u64,
+    pub vrf_filtered: u64,
+    pub routes_announced: u64,
+    pub routes_withdrawn: u64,
+    pub routes_rejected: u64,
+    pub unknown_withdraws: u64,
+    pub treat_as_withdraw: u64,
+    pub end_of_rib: u64,
+    pub rows_swept: u64,
+    pub keep_expiries: u64,
+    pub events_dropped: u64,
+    /// (AFI, SAFI, MP_REACH/MP_UNREACH attributes skipped)
+    pub ignored_families: Vec<(u16, u8, u64)>,
 }
 
 #[derive(Default)]

@@ -11,7 +11,7 @@
 //! follow the fixed schema in [`crate::config::lookup_table::bgp`], built from
 //! a [`RouteRow`] so the text formats live in one place.
 
-use super::cell::{CellOwned, CellRef, Delete, KeyRef, canonical};
+use super::cell::{CellOwned, CellRef, Delete, KeyOwned, KeyRef, canonical};
 use super::metrics::TableMetrics;
 use super::mutable::{Mutable, Upsert};
 pub use super::prefix::Family;
@@ -20,6 +20,7 @@ use crate::config::lookup_table as cfg;
 use anyhow::Result;
 use ipnet::IpNet;
 use smallvec::SmallVec;
+use smol_str::SmolStr;
 use std::fmt::Write;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -263,6 +264,18 @@ impl RouteTable {
     /// Removes every route of one router's VRF: the peer went down.
     pub fn peer_down(&self, router: IpAddr, vrf: &str) -> usize {
         self.table.remove_partition(&partition(&router, vrf))
+    }
+
+    /// Every (router, VRF) the table holds routes for.
+    pub fn partitions(&self) -> Vec<(IpAddr, SmolStr)> {
+        self.table
+            .partitions()
+            .iter()
+            .filter_map(|key| match &key[..] {
+                [KeyOwned::Ip(router), KeyOwned::String(vrf)] => Some((*router, vrf.clone())),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Removes the routes of one router's VRF written before `cutoff`, a

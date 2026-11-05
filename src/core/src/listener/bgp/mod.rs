@@ -6,12 +6,15 @@
 //! write the routes into a `bgp` lookup table (see `docs/bgp-bmp.md`).
 
 pub mod codec;
+pub mod events;
+pub mod listener;
 pub mod paths;
 pub mod routers;
 pub mod session;
 pub mod stats;
 pub mod wire;
 
+pub use listener::BgpListener;
 pub use session::{BmpConfig, Collector, SessionEnd};
 
 #[cfg(test)]

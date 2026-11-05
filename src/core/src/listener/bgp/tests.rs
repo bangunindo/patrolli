@@ -4,6 +4,7 @@
 
 //! Sessions end to end: captured and crafted BMP streams into a route table.
 
+use super::events::{Event, EventKind, EventSink};
 use super::wire::bmp::{self, Message, build as b};
 use super::wire::open::{self, Open, build_open, caps};
 use super::wire::update::{AsPath, SegmentKind, Update, build as u, prefixes};
@@ -12,6 +13,7 @@ use super::{BmpConfig, Collector, SessionEnd, codec::BmpFrames, stats::BmpStats}
 use crate::cache::lookup_table::LookupTable;
 use crate::cache::lookup_table::bgp::RouteTable;
 use crate::cache::lookup_table::cell::CellOwned;
+use crate::config::listener::OnFull;
 use crate::config::lookup_table as cfg;
 use bytes::BytesMut;
 use std::collections::BTreeMap;
@@ -330,6 +332,16 @@ impl Harness {
     }
 
     fn with_keep(keep: Duration) -> Self {
+        Self::with(
+            BmpConfig {
+                keep,
+                ..BmpConfig::default()
+            },
+            None,
+        )
+    }
+
+    fn with(bmp: BmpConfig, events: Option<EventSink>) -> Self {
         let registry = Arc::new(LookupTable::new());
         let listener = Uuid::now_v7();
         let config = cfg::LookupTable {
@@ -342,14 +354,11 @@ impl Harness {
             key: cfg::Bgp::key(),
         };
         registry.insert(&config).unwrap();
-        let collector = Arc::new(Collector::new(
-            listener,
-            registry.clone(),
-            BmpConfig {
-                keep,
-                ..BmpConfig::default()
-            },
-        ));
+        let mut collector = Collector::new(listener, registry.clone(), bmp);
+        if let Some(events) = events {
+            collector = collector.with_events(events);
+        }
+        let collector = Arc::new(collector);
         Self {
             registry,
             config,
@@ -849,6 +858,287 @@ async fn a_reconnect_replaces_the_live_session() {
     assert_eq!(h.table().len(), 1);
 }
 
+// ── events, VRF filter, a collector's successor ───────────────────────────
+
+/// A sink of `buffer` events, and its receiving end.
+fn sink(buffer: usize, routes: bool, on_full: OnFull) -> (EventSink, flume::Receiver<Event>) {
+    let (tx, rx) = flume::bounded(buffer);
+    (EventSink::new(tx, routes, on_full, Arc::default()), rx)
+}
+
+fn names(rx: &flume::Receiver<Event>) -> Vec<&'static str> {
+    rx.drain().map(|e| e.kind.name()).collect()
+}
+
+#[tokio::test]
+async fn events_follow_the_stream() {
+    let (events, rx) = sink(100, true, OnFull::Drop);
+    let h = Harness::with(BmpConfig::default(), Some(events));
+    let p = global_peer();
+    let mut s = start(&p, &[]);
+    s.extend(v4_route(
+        &p,
+        &["10.0.0.0/8", "10.1.0.0/16"],
+        &[64501, 64502],
+        "192.0.2.1",
+    ));
+    s.extend(v4_withdraw(&p, &["10.1.0.0/16"]));
+    s.extend(eor_v4(&p));
+    s.extend(b::peer_down(&p, 2));
+    assert_eq!(h.run(&s).await, SessionEnd::Eof);
+    let events: Vec<_> = rx.drain().collect();
+    let kinds: Vec<_> = events.iter().map(|e| e.kind.name()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "session_up",
+            "peer_up",
+            "announce",
+            "announce",
+            "withdraw",
+            "end_of_rib",
+            "peer_down",
+            "session_down"
+        ]
+    );
+    assert!(events.iter().all(|e| e.router == h.router()));
+    let EventKind::Announce { prefix, cells } = &events[2].kind else {
+        unreachable!()
+    };
+    assert_eq!(prefix.to_string(), "10.0.0.0/8");
+    // the cells are the row's: router, vrf, next hop, origin AS, ...
+    assert_eq!(cells[1], CellOwned::String("global".into()));
+    assert_eq!(cells[3], CellOwned::Integer(64502));
+    assert!(matches!(
+        &events[5].kind,
+        EventKind::EndOfRib { rows: 0, .. }
+    ));
+    assert!(matches!(
+        &events[6].kind,
+        EventKind::PeerDown { rows: 1, .. }
+    ));
+    assert_eq!(
+        events[7].kind,
+        EventKind::SessionDown {
+            reason: "eof",
+            error: None
+        }
+    );
+}
+
+#[tokio::test]
+async fn route_events_are_opt_in_and_sent_without_a_table() {
+    let (events, rx) = sink(100, false, OnFull::Drop);
+    let h = Harness::with(BmpConfig::default(), Some(events));
+    let p = global_peer();
+    let mut s = start(&p, &[]);
+    s.extend(v4_route(&p, &["10.0.0.0/8"], &[64501], "192.0.2.1"));
+    s.extend(eor_v4(&p));
+    assert_eq!(h.run(&s).await, SessionEnd::Eof);
+    assert_eq!(
+        names(&rx),
+        ["session_up", "peer_up", "end_of_rib", "session_down"]
+    );
+
+    // no table: the routes still go out as events
+    let (events, rx) = sink(100, true, OnFull::Drop);
+    let collector = Collector::new(
+        Uuid::now_v7(),
+        Arc::new(LookupTable::new()),
+        BmpConfig::default(),
+    )
+    .with_events(events);
+    let mut s = start(&p, &[]);
+    s.extend(v4_route(&p, &["10.0.0.0/8"], &[64501], "192.0.2.1"));
+    s.extend(v4_withdraw(&p, &["10.0.0.0/8"]));
+    let end = collector
+        .session(&s[..], h.router(), CancellationToken::new())
+        .await;
+    assert_eq!(end, SessionEnd::Eof);
+    assert_eq!(
+        names(&rx),
+        [
+            "session_up",
+            "peer_up",
+            "announce",
+            "withdraw",
+            "session_down"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_full_channel_drops_events_without_holding_the_routes() {
+    let (events, rx) = sink(2, true, OnFull::Drop);
+    let h = Harness::with(BmpConfig::default(), Some(events));
+    let p = global_peer();
+    let mut s = start(&p, &[]);
+    s.extend(v4_route(
+        &p,
+        &["10.0.0.0/8", "10.1.0.0/16", "10.2.0.0/16"],
+        &[64501],
+        "192.0.2.1",
+    ));
+    assert_eq!(h.run(&s).await, SessionEnd::Eof);
+    assert_eq!(h.table().len(), 3);
+    assert_eq!(names(&rx), ["session_up", "peer_up"]);
+    // three announcements and the session's end
+    assert_eq!(h.collector.events().unwrap().dropped(), 4);
+}
+
+#[tokio::test]
+async fn wait_holds_the_session_until_its_events_are_taken() {
+    let (events, rx) = sink(1, true, OnFull::Wait);
+    let h = Arc::new(Harness::with(BmpConfig::default(), Some(events)));
+    let p = global_peer();
+    let mut s = start(&p, &[]);
+    s.extend(v4_route(&p, &["10.0.0.0/8"], &[64501], "192.0.2.1"));
+    s.extend(v4_route(&p, &["10.1.0.0/16"], &[64501], "192.0.2.1"));
+
+    let (mut tx, stream) = tokio::io::duplex(1 << 16);
+    tx.write_all(&s).await.unwrap();
+    drop(tx);
+    let collector = h.collector.clone();
+    let router = h.router();
+    let session = tokio::spawn(async move {
+        collector
+            .session(stream, router, CancellationToken::new())
+            .await
+    });
+    // session_up fills the channel; peer_up waits, and with it the routes
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!session.is_finished());
+    assert!(h.table().is_empty(), "the routes wait behind the events");
+
+    let mut seen = Vec::new();
+    while let Ok(e) = rx.recv_async().await {
+        seen.push(e.kind.name());
+        if seen.len() == 5 {
+            break;
+        }
+    }
+    assert_eq!(session.await.unwrap(), SessionEnd::Eof);
+    assert_eq!(
+        seen,
+        [
+            "session_up",
+            "peer_up",
+            "announce",
+            "announce",
+            "session_down"
+        ]
+    );
+    assert_eq!(h.table().len(), 2);
+
+    // a stuck pipeline cannot hold a cancel
+    let cancel = CancellationToken::new();
+    let collector = h.collector.clone();
+    let session = tokio::spawn({
+        let cancel = cancel.clone();
+        let s = s.clone();
+        async move { collector.session(&s[..], router, cancel).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!session.is_finished());
+    cancel.cancel();
+    assert_eq!(session.await.unwrap(), SessionEnd::Cancelled);
+}
+
+#[tokio::test]
+async fn vrfs_not_kept_are_counted_only() {
+    let (events, rx) = sink(100, false, OnFull::Drop);
+    let h = Harness::with(
+        BmpConfig {
+            vrfs: Some(["global".into()].into_iter().collect()),
+            ..BmpConfig::default()
+        },
+        Some(events),
+    );
+    let global = global_peer();
+    let red = b::loc_rib(b::rd0(64500, 1));
+    let mut s = start(&global, &[]);
+    s.extend(start(&red, &[])[b::initiation("r1").len()..].to_vec());
+    s.extend(v4_route(&global, &["10.0.0.0/8"], &[64501], "192.0.2.1"));
+    s.extend(v4_route(&red, &["10.0.0.0/8"], &[64511], "192.0.2.1"));
+    s.extend(b::peer_down(&red, 6));
+    assert_eq!(h.run(&s).await, SessionEnd::Eof);
+    assert_eq!(h.table().len(), 1);
+    assert_eq!(h.cell("64500:1", "10.0.0.0/8", "origin_as"), None);
+    assert_eq!(h.stat(|s| &s.vrf_filtered), 3, "peer up, route, peer down");
+    assert_eq!(names(&rx), ["session_up", "peer_up", "session_down"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_new_collector_expires_what_the_old_one_left() {
+    let keep = Duration::from_secs(60);
+    let h = Harness::with_keep(keep);
+    let p = global_peer();
+    let (gone, back): (IpAddr, IpAddr) = (
+        "198.51.100.1".parse().unwrap(),
+        "198.51.100.2".parse().unwrap(),
+    );
+    for router in [gone, back] {
+        let mut s = start(&p, &[]);
+        s.extend(v4_route(
+            &p,
+            &["10.0.0.0/8", "10.1.0.0/16"],
+            &[64501],
+            "192.0.2.1",
+        ));
+        let end = h
+            .collector
+            .session(&s[..], router, CancellationToken::new())
+            .await;
+        assert_eq!(end, SessionEnd::Eof);
+    }
+    assert_eq!(h.table().len(), 4);
+
+    // the transport restarts: the old collector and its deadlines are gone
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let listener = match &h.config.source {
+        cfg::Source::Bgp(b) => b.listener,
+        _ => unreachable!(),
+    };
+    let next = Arc::new(Collector::new(
+        listener,
+        h.registry.clone(),
+        BmpConfig {
+            keep,
+            ..BmpConfig::default()
+        },
+    ));
+    assert_eq!(
+        next.routers().next_deadline(),
+        Some(tokio::time::Instant::now() + keep)
+    );
+
+    // one router comes back and re-sends half its routes
+    let (mut tx, rx) = tokio::io::duplex(1 << 16);
+    let session = tokio::spawn({
+        let next = next.clone();
+        async move { next.session(rx, back, CancellationToken::new()).await }
+    });
+    let mut s = start(&p, &[]);
+    s.extend(v4_route(&p, &["10.0.0.0/8"], &[64501], "192.0.2.1"));
+    tx.write_all(&s).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    let swept = next.expire(tokio::time::Instant::now() + keep);
+    assert_eq!(
+        swept, 3,
+        "all of the router that stayed away, the stale half of the other"
+    );
+    let table = h.table();
+    assert_eq!(table.len(), 1);
+    assert!(
+        table
+            .row_cells(back, "global", "10.0.0.0/8".parse().unwrap())
+            .is_some()
+    );
+    drop(tx);
+    assert_eq!(session.await.unwrap(), SessionEnd::Eof);
+}
+
 /// Bit flips, truncations and length tweaks of real and crafted messages,
 /// through a whole session: nothing a router sends may panic.
 #[tokio::test]
@@ -1158,5 +1448,138 @@ mod differential {
             let (body, want) = generate(&mut rng, add_path);
             assert_eq!(decode(&body, add_path), want, "case {case}");
         }
+    }
+}
+
+/// The listener on a real socket, run as `WorkerGroup` runs it.
+mod transport {
+    use super::*;
+    use crate::config::listener::{Bgp, BgpEvents, Bmp, TcpListener};
+    use crate::listener::bgp::BgpListener;
+    use crate::listener::test_util::{self, CLOSE_LIMIT, Port, item_for};
+    use crate::listener::{DRAIN_TIMEOUT, Listener as _};
+    use crate::{cache, config};
+    use std::net::SocketAddr;
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpStream;
+
+    type Server = test_util::Harness<BgpListener>;
+
+    /// A listener with a route table, its records belonging to one item so
+    /// they reach the pipeline.
+    async fn server(whitelist: &[&str]) -> (Server, cache::Cache, Uuid) {
+        let id = Uuid::now_v7();
+        let cache = item_for(id);
+        let table = cfg::LookupTable {
+            id: Uuid::now_v7(),
+            name: "routes".into(),
+            source: cfg::Source::Bgp(cfg::Bgp {
+                listener: id,
+                max_rows: 1000,
+            }),
+            key: cfg::Bgp::key(),
+        };
+        cache.lookup_table.insert(&table).unwrap();
+        let whitelist: Vec<IpAddr> = whitelist.iter().map(|ip| ip.parse().unwrap()).collect();
+        let build_cache = cache.clone();
+        let server = Server::start(Port::Tcp, DRAIN_TIMEOUT, move |addr: SocketAddr, sender| {
+            let mut bgp = Bgp {
+                bmp: Some(Bmp {
+                    listener: TcpListener {
+                        address: addr,
+                        ip_whitelist: whitelist.clone(),
+                        ip_blacklist: Vec::new(),
+                    },
+                    ..Bmp::default()
+                }),
+                vrfs: Vec::new(),
+                events: BgpEvents {
+                    routes: true,
+                    ..BgpEvents::default()
+                },
+            };
+            bgp.validate().unwrap();
+            let conf = config::listener::Listener::new(
+                id,
+                "routes".into(),
+                test_util::WORKERS,
+                config::Batch {
+                    batch_size: 100,
+                    batch_timeout: Duration::from_millis(50),
+                },
+                config::listener::Config::Bgp(Box::new(bgp)),
+                false,
+            );
+            let listener = BgpListener::new(conf.clone(), sender, None, build_cache.clone(), None);
+            (conf, listener)
+        })
+        .await;
+        (server, cache, id)
+    }
+
+    async fn wait_for(what: &str, check: impl AsyncFn() -> bool) {
+        let deadline = std::time::Instant::now() + CLOSE_LIMIT;
+        while !check().await {
+            assert!(std::time::Instant::now() < deadline, "{what}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_bmp_connection_fills_the_table_and_feeds_the_pipeline() {
+        let (server, cache, id) = server(&[]).await;
+        let (rows, consumer) = server.consume();
+        let feed = capture("locrib");
+        let mut router = TcpStream::connect(server.addr).await.unwrap();
+        router.write_all(&feed).await.unwrap();
+
+        let table = || cache.lookup_table.route_table_for_listener(&id).unwrap();
+        wait_for("routes written", async || {
+            server
+                .listener
+                .metrics()
+                .await
+                .bgp
+                .unwrap()
+                .routes_announced
+                == 5
+        })
+        .await;
+        assert_eq!(table().len(), 4, "two paths of one prefix show as one row");
+        let m = server.listener.metrics().await;
+        assert_eq!(m.total_bytes, feed.len() as u64);
+        assert_eq!(m.total_items, frames(&feed).len() as u64);
+        let bgp = m.bgp.unwrap();
+        assert_eq!(bgp.routers_live, 1);
+        assert!(bgp.route_table);
+        assert_eq!(bgp.sessions_opened, 1);
+
+        // session_up, peer_up, one record per route change
+        let want = 2 + bgp.routes_announced as usize + bgp.routes_withdrawn as usize;
+        test_util::Harness::<BgpListener>::wait_for_rows(&rows, want).await;
+
+        // a closing listener ends the session but keeps its routes: nothing
+        // is armed to sweep them
+        let (elapsed, _) = server.close(false).await;
+        assert!(elapsed < CLOSE_LIMIT);
+        assert_eq!(table().len(), 4);
+        let mut buf = [0; 16];
+        let read = tokio::time::timeout(CLOSE_LIMIT, router.read(&mut buf)).await;
+        assert!(matches!(read, Ok(Ok(0)) | Ok(Err(_))), "{read:?}");
+        consumer.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_ip_filter_turns_routers_away() {
+        let (server, _cache, _) = server(&["192.0.2.1"]).await;
+        let mut router = TcpStream::connect(server.addr).await.unwrap();
+        let _ = router.write_all(&capture("locrib")).await;
+        let mut buf = [0; 16];
+        let read = tokio::time::timeout(CLOSE_LIMIT, router.read(&mut buf)).await;
+        assert!(matches!(read, Ok(Ok(0)) | Ok(Err(_))), "{read:?}");
+        let bgp = server.listener.metrics().await.bgp.unwrap();
+        assert_eq!(bgp.sessions_opened, 0);
+        assert_eq!(bgp.routers_live, 0);
+        server.close(true).await;
     }
 }

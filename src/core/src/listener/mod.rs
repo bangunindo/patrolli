@@ -102,6 +102,7 @@ impl InternalMetrics {
                 .load(Ordering::Relaxed),
             total_records_dropped: self.total_records_dropped.load(Ordering::Relaxed),
             total_records_errored: self.total_records_errored.load(Ordering::Relaxed),
+            bgp: None,
         }
     }
 }
@@ -214,6 +215,13 @@ impl Worker {
                     node_id,
                 ))
             }
+            config::listener::Config::Bgp(_) => Arc::new(bgp::BgpListener::new(
+                conf.clone(),
+                channel,
+                forwarder,
+                conf_cache,
+                node_id,
+            )),
         };
         Ok(Self::with_listener(conf, listener))
     }
