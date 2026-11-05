@@ -4,6 +4,7 @@
 
 [workspace]
 members = ["crates/api", "crates/app"]
+default-members = [".", "crates/api", "crates/app"]
 
 [workspace.package]
 version = "0.1.0-beta.2"
@@ -38,7 +39,6 @@ bytes = { version = "1.12.1", features = ["serde"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 chrono-tz = { version = "0.10.4", features = ["serde"] }
 ciborium = "0.2.2"
-clap = { version = "4.6.2", features = ["derive"] }
 clickhouse = { version = "0.15.1", features = [
     "chrono",
     "lz4",
@@ -125,10 +125,8 @@ tokio-util = { version = "0.7.18", features = ["codec", "time"] }
 tonic = { version = "0.14.6", features = ["tls-aws-lc"] }
 tonic-prost = "0.14.6"
 tracing = "0.1.44"
-tracing-appender = "0.2.5"
 tracing-log = "0.2.0"
 tracing-subscriber = { version = "0.3.23", features = ["json"] }
-tracing-throttle = { version = "0.4.3", features = ["async"] }
 uuid = { version = "1.24.0", features = ["serde", "v5", "v7"] }
 xxhash-rust = { version = "0.8.17", features = ["xxh3"] }
 zstd = "0.14.0"
@@ -153,49 +151,19 @@ tokio-postgres = { version = "0.7.18", features = [
     "with-serde_json-1",
     "with-time-0_3",
 ] }
-tokio-postgres-rustls = "0.14.0"
-tower-http = { version = "0.7.0", features = [
-    "cors",
-    "trace",
-    "compression-full",
-    "decompression-full",
-] }
 utoipa = { version = "5.5.0", features = ["axum_extras", "chrono", "uuid"] }
-utoipa-swagger-ui = { version = "9.0.2", features = ["axum", "debug-embed"] }
 webpki-roots = "1.0.8"
 http-serde = "2.1.1"
-axum-extra = { version = "0.12.6", features = ["query"] }
 serde_repr = "0.1.20"
 time = "0.3.53"
 derive_more = { version = "2.1.1", features = ["debug"] }
 rand = "0.10.2"
-jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 reqwest = { version = "0.13.4", default-features = false, features = [
     "json",
     "rustls",
 ] }
 
-[target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator = { version = "0.7.0", features = [
-    "unprefixed_malloc_on_supported_platforms",
-] }
-tikv-jemalloc-ctl = { version = "0.7.0", features = ["use_std"] }
-
-[features]
-default = ["mem-profile"]
-# Heap profiling ships in the default binary but boots idle; it is armed at
-# runtime via SIGUSR1 (see `install_mem_profile_signals` in main.rs).
-# `profiling_libunwind` implies `profiling`, and pulls in a link-time dep on
-# libunwind (`libunwind-dev` to build, `libunwind8` to run).
-mem-profile = [
-    "tikv-jemallocator/profiling_libunwind",
-    "tikv-jemalloc-ctl/profiling",
-]
-
 [dev-dependencies]
-libc = "0.2.186"
-rsa = "0.9.10"
-testcontainers = "0.27.3"
 tokio = { version = "1.52.2", features = ["full", "test-util"] }
 postgres-types = "0.2.13"
 pbjson = "0.9.0"
@@ -233,17 +201,6 @@ debug = false
 inherits = "release"
 debug = true
 strip = false
-
-[[bin]]
-name = "patrolli"
-bench = false
-path = "src/main.rs"
-
-
-[[bin]]
-name = "schema_gen"
-bench = false
-path = "src/schema_gen.rs"
 
 [[bench]]
 name = "bench_channels"

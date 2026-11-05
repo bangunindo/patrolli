@@ -39,6 +39,10 @@ tikv-jemalloc-ctl = { version = "0.7.0", features = ["use_std"] }
 
 [features]
 default = ["mem-profile"]
+# Heap profiling ships in the default binary but boots idle; it is armed at
+# runtime via SIGUSR1 (see `install_mem_profile_signals` in main.rs).
+# `profiling_libunwind` implies `profiling`, and pulls in a link-time dep on
+# libunwind (`libunwind-dev` to build, `libunwind8` to run).
 mem-profile = [
     "tikv-jemallocator/profiling_libunwind",
     "tikv-jemalloc-ctl/profiling",
@@ -84,9 +88,9 @@ tonic = { version = "0.14.6", features = ["tls-aws-lc"] }
 tempfile = "3.27.0"
 
 [[bin]]
-name = "patrolli_ws"
+name = "patrolli"
 path = "src/main.rs"
 
 [[bin]]
-name = "schema_gen_ws"
+name = "schema_gen"
 path = "src/schema_gen.rs"
