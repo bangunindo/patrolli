@@ -128,6 +128,7 @@ impl Route {
             large_communities: &self.large,
             local_pref: self.local_pref,
             med: self.med,
+            path_id: None,
         }
     }
 }
@@ -371,7 +372,7 @@ fn bench_rib() {
         let _ = table.upsert(&row, &mut text).unwrap();
     }
     let started = Instant::now();
-    let swept = table.sweep(first, cfg::bgp::GLOBAL_VRF, cutoff);
+    let swept = table.sweep(first, cfg::bgp::GLOBAL_VRF, None, cutoff);
     println!(
         "sweep: {swept} stale of {} in {:.1?}",
         routes.len(),

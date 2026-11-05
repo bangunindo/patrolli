@@ -21,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+pub mod bgp;
 pub mod dummy;
 pub mod netflow;
 pub mod syslog;

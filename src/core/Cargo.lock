@@ -3429,6 +3429,9 @@ name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "is_ci"
@@ -3936,6 +3939,41 @@ dependencies = [
  "nom 7.1.3",
  "nom-derive",
  "serde",
+]
+
+[[package]]
+name = "netgauze-bgp-pkt"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15235fb499f3e2e3c7d681965f3a06a2eac1c282431215e8bd4b76f206a02703"
+dependencies = [
+ "ipnet",
+ "netgauze-iana",
+ "netgauze-parse-utils",
+ "serde",
+ "strum_macros",
+ "thiserror",
+]
+
+[[package]]
+name = "netgauze-iana"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bd05c4522521b260b0f1ae400239d65616c014b9cd0802de68ea9dcedd6d056"
+dependencies = [
+ "serde",
+ "strum_macros",
+]
+
+[[package]]
+name = "netgauze-parse-utils"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4bf8cf641ca45eef8e65ec23bd48e8ed28eeee5a558f41066d66cca06c8e3ee"
+dependencies = [
+ "ipnet",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
@@ -4584,6 +4622,8 @@ dependencies = [
  "memchr",
  "mib-rs",
  "netflow_parser",
+ "netgauze-bgp-pkt",
+ "netgauze-parse-utils",
  "nix",
  "nom 8.0.0",
  "num-bigint 0.5.1",

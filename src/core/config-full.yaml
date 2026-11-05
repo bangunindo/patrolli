@@ -386,6 +386,8 @@ monitor:
 #   #   communities        string   space separated a:b
 #   #   large_communities  string   space separated a:b:c
 #   #   local_pref, med    integer  null when absent
+#   #   path_id            integer  ADD-PATH id of the path shown (the lowest
+#   #                               live one); null without ADD-PATH
 #   # Only the listener writes it; attribute_collect refuses it. Routes leave on
 #   # withdrawal, peer down or the resync after a reconnect, never by age. Which
 #   # routes are kept (VRFs, RIB views) is the listener's config.

@@ -11,13 +11,15 @@
 //! follow the fixed schema in [`crate::config::lookup_table::bgp`], built from
 //! a [`RouteRow`] so the text formats live in one place.
 
-use super::cell::{CellRef, Delete, KeyRef, canonical};
+use super::cell::{CellOwned, CellRef, Delete, KeyRef, canonical};
 use super::metrics::TableMetrics;
 use super::mutable::{Mutable, Upsert};
+pub use super::prefix::Family;
 use super::{LookupTable, Table};
 use crate::config::lookup_table as cfg;
 use anyhow::Result;
 use ipnet::IpNet;
+use smallvec::SmallVec;
 use std::fmt::Write;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -56,6 +58,8 @@ pub struct RouteRow<'a> {
     pub large_communities: &'a [[u32; 3]],
     pub local_pref: Option<u32>,
     pub med: Option<u32>,
+    /// RFC 7911 path id, when the router sends them
+    pub path_id: Option<u32>,
 }
 
 /// Reusable buffers for the text columns of a [`RouteRow`], so rendering a
@@ -108,6 +112,7 @@ impl RouteRow<'_> {
             string(&text.large_communities),
             integer(self.local_pref),
             integer(self.med),
+            integer(self.path_id),
         ]
     }
 }
@@ -197,6 +202,24 @@ impl LookupTable {
             metrics: Arc::clone(&table.meta.metrics),
         })
     }
+
+    /// The route table whose `bgp` source names `listener`. Configuration
+    /// allows at most one; should two slip through, the lowest id wins, so
+    /// the answer is stable.
+    pub fn route_table_for_listener(&self, listener: &Uuid) -> Option<RouteTable> {
+        let tables = self.registry.load();
+        let id = tables
+            .iter()
+            .filter(|(_, table)| {
+                matches!(
+                    &table.meta().config.source,
+                    cfg::Source::Bgp(bgp) if bgp.listener == *listener
+                )
+            })
+            .map(|(id, _)| *id)
+            .min()?;
+        self.route_table(&id)
+    }
 }
 
 impl RouteTable {
@@ -243,15 +266,61 @@ impl RouteTable {
     }
 
     /// Removes the routes of one router's VRF written before `cutoff`, a
-    /// [`super::mutable::now_millis`] taken when the session (re)started. Run
-    /// it after End-of-RIB: what the router did not re-send is gone. Counted
-    /// as expired rows.
-    pub fn sweep(&self, router: IpAddr, vrf: &str, cutoff: u64) -> usize {
-        let removed = self.table.sweep_partition(&partition(&router, vrf), cutoff);
+    /// [`super::mutable::now_millis`] taken when the session (re)started,
+    /// limited to one address family when `family` is given. Run it after
+    /// End-of-RIB: what the router did not re-send is gone. Counted as expired
+    /// rows.
+    pub fn sweep(&self, router: IpAddr, vrf: &str, family: Option<Family>, cutoff: u64) -> usize {
+        let removed = self
+            .table
+            .sweep_partition(&partition(&router, vrf), family, cutoff);
         self.metrics.note_sweep(removed, 0);
         removed
     }
+
+    /// Removes one address family of a router's VRF: the Loc-RIB peer that
+    /// carried it went down while another family's peer stays up.
+    pub fn remove_family(&self, router: IpAddr, vrf: &str, family: Family) -> usize {
+        self.table
+            .sweep_partition(&partition(&router, vrf), Some(family), u64::MAX)
+    }
+
+    /// The path id of the row stored under exactly `prefix`: `None` when there
+    /// is no such row, `Some(None)` when the row has no path id.
+    pub fn shown_path(&self, router: IpAddr, vrf: &str, prefix: IpNet) -> Option<Option<u32>> {
+        let row = self.table.get_prefix(&partition(&router, vrf), prefix)?;
+        Some(match row.cells().nth(PATH_ID_CELL) {
+            Some(CellRef::Integer(id)) => u32::try_from(id).ok(),
+            _ => None,
+        })
+    }
+
+    /// The cells of the row stored under exactly `prefix`, owned, with the
+    /// time it was written, so another path can take its place and the row be
+    /// written back later.
+    pub fn row_cells(
+        &self,
+        router: IpAddr,
+        vrf: &str,
+        prefix: IpNet,
+    ) -> Option<(Box<[CellOwned]>, u64)> {
+        let row = self.table.get_prefix(&partition(&router, vrf), prefix)?;
+        Some((
+            row.cells().map(CellRef::to_owned_cell).collect(),
+            row.last_seen(),
+        ))
+    }
+
+    /// Writes cells taken from [`Self::row_cells`] or rendered earlier by
+    /// [`RouteRow::cells`]; the row is stamped now.
+    pub fn upsert_cells(&self, cells: &[CellOwned], prefix: IpNet) -> Result<Upsert> {
+        let cells: SmallVec<[CellRef<'_>; CELLS]> = cells.iter().map(CellOwned::as_ref).collect();
+        self.table.upsert_prefix(&cells, prefix)
+    }
 }
+
+/// Where [`cfg::bgp::PATH_ID`] sits among a row's cells.
+pub const PATH_ID_CELL: usize = CELLS - 1;
 
 fn partition<'a>(router: &IpAddr, vrf: &'a str) -> [KeyRef<'a>; 2] {
     [KeyRef::Ip(canonical(*router)), KeyRef::String(vrf)]
@@ -275,6 +344,7 @@ mod tests {
             large_communities: &[],
             local_pref: None,
             med: None,
+            path_id: None,
         }
     }
 
@@ -348,6 +418,7 @@ mod tests {
         assert_eq!(cells[7], CellRef::String("4200000000:1:2"));
         assert_eq!(cells[8], CellRef::Integer(200));
         assert_eq!(cells[9], CellRef::Integer(0), "a zero med is not absent");
+        assert_eq!(cells[10], CellRef::Null, "no path id without ADD-PATH");
     }
 
     #[test]
@@ -443,8 +514,8 @@ mod tests {
         let _ = routes
             .upsert(&r("192.0.2.1", "64500:1", "10.0.0.0/8"), &mut text)
             .unwrap();
-        assert_eq!(routes.sweep(router, "64500:1", cutoff), 0);
-        assert_eq!(routes.sweep(router, "global", cutoff), 1);
+        assert_eq!(routes.sweep(router, "64500:1", None, cutoff), 0);
+        assert_eq!(routes.sweep(router, "global", None, cutoff), 1);
         assert_eq!(probe("global", "10.1.2.3"), None);
         assert!(probe("64500:1", "10.1.2.3").is_some());
         assert_eq!(

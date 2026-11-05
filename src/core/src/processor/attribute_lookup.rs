@@ -1891,6 +1891,7 @@ mod tests {
                 large_communities: &[],
                 local_pref: None,
                 med: None,
+                path_id: None,
             };
             assert_eq!(routes.upsert(&row, &mut text).unwrap(), Upsert::Inserted);
         }

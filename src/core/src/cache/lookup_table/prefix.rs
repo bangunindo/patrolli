@@ -51,6 +51,22 @@ pub fn parse_prefix(raw: &str) -> Result<IpNet, PrefixError> {
     Ok(canonical(net))
 }
 
+/// An address family, for operations that touch one trie of a [`PrefixSet`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Family {
+    V4,
+    V6,
+}
+
+impl Family {
+    pub fn of(net: &IpNet) -> Self {
+        match net {
+            IpNet::V4(_) => Self::V4,
+            IpNet::V6(_) => Self::V6,
+        }
+    }
+}
+
 /// Folds a v4-mapped v6 prefix (`::ffff:0:0/96` or longer) onto v4.
 pub fn canonical(net: IpNet) -> IpNet {
     if let IpNet::V6(v6) = net

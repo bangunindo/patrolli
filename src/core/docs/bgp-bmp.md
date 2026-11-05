@@ -259,21 +259,31 @@ Why not `netgauze-bmp-service`:
   restarts. We should stop reading instead and let TCP backpressure reach the router (akvorado).
 - **Metrics through OpenTelemetry** instead of `InternalMetrics`.
 
-### Plan: own transports over the NetGauze packet crates
+### Decided: our own decoder, NetGauze only for tests (2026-11-05)
 
-- **BMP**: `FramedRead<TcpStream, BmpCodec>` in a listener transport (`ensure_started`,
-  supervisor, `JoinSet`). Reader and decoder separated by a bounded channel, message-size cap,
-  source-IP allow-list.
-- **Passive BGP** (a few hundred lines, on `Framed<TcpStream, BgpCodec>`):
-  1. Accept on the configured port and check the source against configured peers.
-  2. Read the peer's OPEN and validate peer AS and hold time.
-  3. Reply with our OPEN (4-octet ASN; no ADD-PATH unless the codec's `BgpParsingContext`
-     is set up for it via `new_from_ctx`) and a KEEPALIVE.
-  4. Run two timers: send a KEEPALIVE every hold/3; send NOTIFICATION (hold timer expired)
-     and close if nothing arrives within the hold time.
-  5. Pass UPDATEs to the RIB; on any error, send NOTIFICATION and close.
-- **Shared**: BGP message types, and both sources write the same kind of route table
-  (section 6).
+Phase 2 started on NetGauze and switched once its 0.13.0 source was read closely. Four gaps
+matter for a route table that must stay correct, because a message we cannot read may carry a
+withdraw:
+- **Confederation segments fail the message.** `AsPathSegmentType` has only `AsSet` and
+  `AsSequence`; types 3 and 4 are a parse error for the whole Route Monitoring message.
+- **No RFC 7606.** Any malformed attribute fails the whole UPDATE. Its lenient mode is not
+  reachable through `BmpCodec` (the per-peer context is private and defaults to "fail"), and
+  its AS_PATH error recovery does not skip the attribute.
+- **No message-size cap.** A bad length makes `BmpCodec` buffer forever.
+- **`FramedRead` returns `None` after a decode error**, which looks like EOF.
+
+No C/C++ library was a better base: libparsebgp (BSD-2, last commit 2021) and the OpenBMP
+collector (EPL-1.0, incompatible with AGPL, last push 2021) are unmaintained; pmacct (GPL-2.0+)
+is complete but not a library.
+
+So `src/listener/bgp/wire/` is a zero-copy decoder for exactly what the table needs: BMP v3
+framing and messages, OPEN capabilities (multiprotocol, 4-octet AS, ADD-PATH, extended
+message), and UPDATE with IPv4/IPv6 unicast, AS_PATH/AS4_PATH (all four segment types),
+NEXT_HOP / MP next hop, MED, LOCAL_PREF, communities and large communities. Errors follow RFC
+7606: a broken structure ends the session (the router redumps), a malformed route attribute
+withdraws what the message announced, anything else is ignored. NetGauze stays a
+dev-dependency: a differential test has it encode random UPDATEs and checks that our decoder
+gives back exactly what was encoded. Phase 4's passive BGP will use the same `wire` module.
 
 ---
 
@@ -300,7 +310,8 @@ Why not `netgauze-bmp-service`:
   - One row per (partition, prefix): fits Loc-RIB and passive BGP, not several neighbours'
     Adj-RIB-In in one partition (one peer's withdraw would delete another's route).
   - No row interning: each prefix owns an `Arc<MutableRow>` and its cells. Measured by
-    `bench_rib` (phase 1): **331 B per route**, 432 MiB for the 1.37M routes of an rrc26 bview.
+    `bench_rib`: **331 B per route** in phase 1 (432 MiB for the 1.37M routes of an rrc26
+    bview), **395 B** once phase 2 added the `path_id` column (see phase 2).
   - A partition lives in one shard, so a full dump write-locks that shard ~1M times.
   - `max_rows` is table-wide (default 1M); a rejected prefix makes lookups fall back to a wider
     prefix, i.e. wrong answers rather than missing ones.
@@ -327,8 +338,9 @@ Why not `netgauze-bmp-service`:
    `attribute_lookup` literal. Which VRFs are kept is a listener setting (phase 3). Still open:
    mapping a flow's ingress VRF ID (IE 234, router-local) to an RD.
 5. ~~Stale handling~~ **Decided**: Peer Down → `remove_partition`; connection loss → keep
-   serving for `keep`; after the new dump's End-of-RIB (or when `keep` runs out) sweep what
-   the dump did not refresh. Mechanics in section 6, phase 1.
+   serving for `keep` (default 5 min); after the new dump's End-of-RIB (per address family) or
+   when `keep` runs out, sweep what the dump did not refresh. A reconnect gets a whole `keep`
+   for its dump. Mechanics in section 6, phases 1 and 2.
 6. **Provider precedence**: flow-supplied AS vs routing vs lookup tables (akvorado's ordered
    providers).
 7. ~~Passive BGP in addition to BMP?~~ **Decided: both.** Passive BGP covers routers without
@@ -337,8 +349,18 @@ Why not `netgauze-bmp-service`:
 8. **Cluster placement** of route tables (phase 6).
 9. **Listener shape**: one `bgp` listener type with a BMP port and a BGP port, or two types
    sharing the table source. Decide in phase 3.
-10. **Row interning**: the phase 1 bench measured 331 B per route (~330 MB per full-table
-    router). Acceptable for a few routers; revisit when one table carries tens of them.
+10. **Row interning**: the bench measures 395 B per route since phase 2 (~400 MB per
+    full-table router). Each row also repeats its partition's `router` and `vrf` cells (48
+    bytes). Acceptable for a few routers; revisit when one table carries tens of them.
+11. ~~Router identity~~ **Decided**: the BMP session's TCP source IP is the `router`
+    partition. A new connection from the same IP ends the live one first (akvorado keys by IP
+    *and* port and keeps both copies until `keep` runs out).
+12. ~~ADD-PATH in Loc-RIB~~ **Decided**: the table shows the live path with the lowest path
+    id (`path_id` column); the session keeps the other paths' rendered cells and promotes the
+    next one when the shown path is withdrawn. A displaced row keeps its age, so a path the
+    router has not re-sent since reconnecting is never promoted.
+13. ~~Route Monitoring before Peer Up~~ **Decided**: dropped and counted. Without the Peer Up
+    OPEN the ADD-PATH state is unknown, and guessing wrong misreads every prefix.
 
 ---
 
@@ -362,9 +384,11 @@ lookup_tables:
 
 - **Columns and key come from the source** (`config::lookup_table::bgp`): key `prefix`,
   partitioned by `router` (ip) and `vrf` (string: `global` for RD 0, otherwise the RD as
-  `ASN:n` / `IP:n`). Columns: `next_hop` (ip), `origin_as`, `peer_as`, `local_pref`, `med`
-  (integer), `as_path` (space separated, sets as `{a,b}`, confederation segments as `(a b)` /
-  `[a,b]`), `communities` (`a:b`), `large_communities` (`a:b:c`). `origin_as` is null for an
+  `ASN:n` / `IP:n`; a type 2 RD whose ASN fits 16 bits is `2:ASN:n`; a locally defined
+  distinguisher is its 16 hex digits). Columns: `next_hop` (ip), `origin_as`, `peer_as`,
+  `local_pref`, `med`, `path_id` (integer; the ADD-PATH id of the path shown), `as_path`
+  (space separated, sets as `{a,b}`, confederation segments as `(a b)` / `[a,b]`),
+  `communities` (`a:b`), `large_communities` (`a:b:c`). `origin_as` is null for an
   aggregate ending in a multi-member set, and both AS columns skip confederation segments.
   A `key` may be left out; one that is given must be exactly the fixed key.
 - **One table per listener**, not one per VRF. Which VRFs and RIB views a listener keeps is
@@ -416,12 +440,30 @@ optional route events as log records, best effort (drop and count when full). Tw
      insert 1.9M routes/s; **331 B/route**; LPM 1.9M/s at addresses inside known prefixes and
      4.2M/s at random v4 (73% hit); sweeping 684k stale routes 155 ms; Peer Down of 684k
      routes 81 ms. Not yet measured: lookups while a dump is being written.
-2. **BMP session**
-   - `FramedRead<TcpStream, BmpCodec>`; Initiation must come first; message size cap; source
-     allow-list.
-   - Peer Up/Down; keep Loc-RIB, count and skip Adj-RIB-In.
-   - UPDATE → table writes; End-of-RIB → sweep; disconnect → `keep` grace, then sweep.
-   - Unit tests from captured BMP bytes; fuzz the decode path (no panics on peer input).
+2. **BMP session** — **done** (`src/listener/bgp/`; not yet reachable from config)
+   - `wire/`: the decoder above. `codec::BmpFrames` frames the stream with a 1 MiB cap.
+   - `session::Collector` is one listener's BMP state; `Collector::session(stream, router,
+     cancel)` reads one connection until it ends (`SessionEnd`: EOF, Termination, cancel, no
+     Initiation first, frame error, session reset, resync). Only Loc-RIB peers are read;
+     Adj-RIB-In/Out messages are counted and skipped undecoded.
+   - The route table is found by listener (`LookupTable::route_table_for_listener`) and
+     compared with the registry every 256 messages or 100 ms; a created, rebuilt or removed
+     table ends the session (`Resync`) so the router redumps.
+   - End-of-RIB sweeps one family of the VRF (`sweep_partition` got a family filter); Peer
+     Down of a Loc-RIB instance removes its VRF (emulated per-family peers share a key, so
+     the instance goes whole).
+   - `routers::Routers`: one live session per router (a reconnect cancels and waits for the
+     old one), and the `keep` deadline; `Collector::run_expiry` sweeps routers past it.
+   - `paths::Paths`: the ADD-PATH side map (decision 7b).
+   - `stats::BmpStats`: atomics, exported in phase 3.
+   - Tests: crafted messages; akvorado's 13 captures (vendored with attribution, decoded to
+     akvorado's expected RIB); sessions over in-memory streams with paused time; 20k mutated
+     messages through whole sessions; the NetGauze differential test.
+   - Memory: the `path_id` cell takes a row's cells from 240 to 264 bytes, past jemalloc's
+     256-byte class, so `bench_rib` now measures **395 B/route** (331 before).
+   - Not done: a cargo-fuzz target (needs nightly; `wire/` depends only on std and ipnet so
+     it can be included), storing the Loc-RIB counts of Statistics Reports (phase 3
+     self-check).
 3. **Listener wiring**
    - Transport through `ensure_started`, supervisor, `InternalMetrics` (akvorado's metric set
      in section 2 is a good start).

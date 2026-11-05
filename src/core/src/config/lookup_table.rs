@@ -623,12 +623,15 @@ pub mod bgp {
     pub const LARGE_COMMUNITIES: &str = "large_communities";
     pub const LOCAL_PREF: &str = "local_pref";
     pub const MED: &str = "med";
+    /// the ADD-PATH path id (RFC 7911) of the path the row shows; null when
+    /// the router does not send path ids
+    pub const PATH_ID: &str = "path_id";
 
     /// The value [`VRF`] holds for the default table.
     pub const GLOBAL_VRF: &str = "global";
 
     /// Every column in table order, the prefix included.
-    pub const COLUMNS: [(&str, ValueType); 11] = [
+    pub const COLUMNS: [(&str, ValueType); 12] = [
         (ROUTER, ValueType::Ip),
         (VRF, ValueType::String),
         (PREFIX, ValueType::String),
@@ -640,6 +643,7 @@ pub mod bgp {
         (LARGE_COMMUNITIES, ValueType::String),
         (LOCAL_PREF, ValueType::Integer),
         (MED, ValueType::Integer),
+        (PATH_ID, ValueType::Integer),
     ];
 }
 

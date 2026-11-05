@@ -6,7 +6,7 @@ use super::cell::{
     CellOwned, CellRef, Delete, KeyOwned, KeyRef, Lookup, hash_key, hash_key_owned, keys_eq,
 };
 use super::metrics::{ProcessorMetrics, WriteCounts};
-use super::prefix::PrefixSet;
+use super::prefix::{Family, PrefixSet};
 use super::schema::{ColumnIdx, KeyPlan, Schema};
 use crate::config::lookup_table::ValueType;
 use anyhow::{Result, bail};
@@ -59,6 +59,11 @@ impl MutableRow {
 
     pub fn last_seen(&self) -> u64 {
         self.last_seen.load(Ordering::Relaxed)
+    }
+
+    /// Every cell in column order, the key columns included.
+    pub fn cells(&self) -> impl ExactSizeIterator<Item = CellRef<'_>> {
+        self.cells.iter().map(CellOwned::as_ref)
     }
 }
 
@@ -406,6 +411,25 @@ impl Mutable {
         }
     }
 
+    /// The row stored under exactly `net` in one partition of a prefix table;
+    /// unlike [`Self::get`], a covering prefix does not answer.
+    pub fn get_prefix(&self, partition: &[KeyRef<'_>], net: IpNet) -> Option<Arc<MutableRow>> {
+        let KeyPlan::Prefix { partition: cols } = &self.key else {
+            return None;
+        };
+        if partition.len() != cols.len() {
+            return None;
+        }
+        let net = super::prefix::canonical(net);
+        let hash = hash_key(partition.iter().copied());
+        let shard = self.shard_of(hash).read();
+        shard
+            .prefixes
+            .find(hash, |(k, _)| keys_eq(k, partition))
+            .and_then(|(_, set)| set.get(&net))
+            .map(Arc::clone)
+    }
+
     /// Drops the row stored under exactly `key`: a hash key, or a prefix in
     /// one partition. A wider or narrower prefix is never touched, so removing
     /// a /24 exposes the /16 it was nested in.
@@ -481,14 +505,22 @@ impl Mutable {
     }
 
     /// Drops the rows of one partition last written before `cutoff` (in
-    /// [`now_millis`] time), returning how many went.
+    /// [`now_millis`] time), returning how many went. With a `family`, only
+    /// that family's prefixes are considered; `cutoff = u64::MAX` drops all of
+    /// them.
     ///
     /// The resync sweep of a BGP session: a re-sent route is a fresh row
     /// stamped by its upsert, so after End-of-RIB whatever still predates the
-    /// session's start was not re-announced. An emptied partition is unlinked,
-    /// as in [`Self::remove`]. Zero for a missing partition, a hash table, or a
+    /// session's start was not re-announced. End-of-RIB comes per address
+    /// family, hence the filter. An emptied partition is unlinked, as in
+    /// [`Self::remove`]. Zero for a missing partition, a hash table, or a
     /// partition tuple of the wrong arity.
-    pub fn sweep_partition(&self, partition: &[KeyRef<'_>], cutoff: u64) -> usize {
+    pub fn sweep_partition(
+        &self,
+        partition: &[KeyRef<'_>],
+        family: Option<Family>,
+        cutoff: u64,
+    ) -> usize {
         let KeyPlan::Prefix { partition: cols } = &self.key else {
             return 0;
         };
@@ -506,8 +538,8 @@ impl Mutable {
         // Collected rather than dropped in place, so the rows are freed after
         // the lock is released: a full table can stale out a million routes.
         let mut stale = Vec::new();
-        entry.get_mut().1.retain(|_, row| {
-            let keep = row.last_seen() >= cutoff;
+        entry.get_mut().1.retain(|net, row| {
+            let keep = family.is_some_and(|f| f != Family::of(&net)) || row.last_seen() >= cutoff;
             if !keep {
                 stale.push(Arc::clone(row));
             }
@@ -1315,7 +1347,7 @@ mod tests {
         // and re-announces one route
         let _ = put_peer(&t, "peer-a", "10.1.0.0/16", "new");
 
-        assert_eq!(t.sweep_partition(&a, cutoff), 1);
+        assert_eq!(t.sweep_partition(&a, None, cutoff), 1);
         assert_eq!(t.len(), 2);
         assert_eq!(at(&t, &a, "10.0.0.1"), None);
         assert_eq!(
@@ -1327,20 +1359,68 @@ mod tests {
             Some(("old".into(), net("10.0.0.0/8"))),
             "another partition is untouched"
         );
-        assert_eq!(t.sweep_partition(&a, cutoff), 0, "nothing left to sweep");
+        assert_eq!(
+            t.sweep_partition(&a, None, cutoff),
+            0,
+            "nothing left to sweep"
+        );
 
         // a partition swept empty is unlinked, releasing its key
-        assert_eq!(t.sweep_partition(&b, cutoff), 1);
+        assert_eq!(t.sweep_partition(&b, None, cutoff), 1);
         assert_eq!(t.len(), 1);
         let partitions: usize = t.shards.iter().map(|s| s.read().prefixes.len()).sum();
         assert_eq!(partitions, 1);
 
         // a missing partition, a wrong arity, or a hash table sweeps nothing
-        assert_eq!(t.sweep_partition(&[KeyRef::String("peer-z")], u64::MAX), 0);
-        assert_eq!(t.sweep_partition(&[], u64::MAX), 0);
-        assert_eq!(hash_table(10, None).sweep_partition(&a, u64::MAX), 0);
+        assert_eq!(
+            t.sweep_partition(&[KeyRef::String("peer-z")], None, u64::MAX),
+            0
+        );
+        assert_eq!(t.sweep_partition(&[], None, u64::MAX), 0);
+        assert_eq!(hash_table(10, None).sweep_partition(&a, None, u64::MAX), 0);
         assert_eq!(t.len(), 1);
         assert_eq!(stored_prefixes(&t), 1);
+    }
+
+    #[test]
+    fn a_family_sweep_leaves_the_other_family_alone() {
+        let t = peer_table(10);
+        let a = [KeyRef::String("peer-a")];
+        let _ = put_peer(&t, "peer-a", "10.0.0.0/8", "v4");
+        let _ = put_peer(&t, "peer-a", "2001:db8::/32", "v6");
+        let _ = put_peer(&t, "peer-a", "2001:db8:1::/48", "v6");
+
+        assert_eq!(t.sweep_partition(&a, Some(Family::V6), u64::MAX), 2);
+        assert_eq!(t.len(), 1);
+        assert_eq!(
+            at(&t, &a, "10.0.0.1"),
+            Some(("v4".into(), net("10.0.0.0/8")))
+        );
+        assert_eq!(at(&t, &a, "2001:db8::1"), None);
+        assert_eq!(t.sweep_partition(&a, Some(Family::V6), u64::MAX), 0);
+        assert_eq!(t.sweep_partition(&a, Some(Family::V4), u64::MAX), 1);
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn an_exact_prefix_read_ignores_covering_and_nested_prefixes() {
+        let t = peer_table(10);
+        let a = [KeyRef::String("peer-a")];
+        let _ = put_peer(&t, "peer-a", "10.0.0.0/8", "wide");
+        let _ = put_peer(&t, "peer-a", "10.1.2.0/24", "narrow");
+        let value = |row: Arc<MutableRow>| row.cells().nth(1).unwrap().to_owned_cell();
+
+        assert_eq!(
+            t.get_prefix(&a, net("10.0.0.0/8")).map(value),
+            Some(CellOwned::String("wide".into()))
+        );
+        assert!(t.get_prefix(&a, net("10.1.0.0/16")).is_none());
+        assert!(t.get_prefix(&a, net("10.1.2.0/25")).is_none());
+        assert!(
+            t.get_prefix(&[KeyRef::String("peer-b")], net("10.0.0.0/8"))
+                .is_none()
+        );
+        assert!(t.get_prefix(&[], net("10.0.0.0/8")).is_none());
     }
 
     #[test]
