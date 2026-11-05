@@ -9,7 +9,7 @@ It lives at `src/core` inside a monorepo; the sibling `src/web` is the Nuxt/Vue 
 generates its API client from the `openapi.json` produced by this crate. All commands below assume
 `src/core` as the working directory.
 
-Two binaries: `patrolli` (`src/main.rs`, the daemon) and `schema_gen` (`src/schema_gen.rs`, writes
+Two binaries: `patrolli` (`crates/app/src/main.rs`, the daemon) and `schema_gen` (`crates/app/src/schema_gen.rs`, writes
 `openapi.json`). `src/lib.rs` declares every module (`pub`, so integration tests can drive
 internals); both binaries reach them through `use patrolli::…`. Never add a `mod` for a lib module
 to `main.rs`: the binary would compile its own copy of the whole crate, doubling every rebuild and
@@ -48,24 +48,24 @@ cargo test --test otel_e2e_test -- --nocapture
 
 No test builds a patrolli image: the end-to-end tests (`otel_e2e_test`, `cluster_forwarder_e2e`,
 `config_propagation_e2e`, like `shutdown_test`) run the `patrolli` binary cargo builds for them
-(`CARGO_BIN_EXE_patrolli`), through `tests/setup::patrolli::Patrolli`. Docker is still needed for third-party
+(`CARGO_BIN_EXE_patrolli`), through `crates/app/tests/setup::patrolli::Patrolli`. Docker is still needed for third-party
 servers: `clickhouse_insert_test` and `kafka_sink_test` (their servers), `otel_e2e_test` (OTel
 collectors and telemetrygen, which reach patrolli on the host through the Docker host gateway, so a host
 firewall must let container → host traffic through), and the `cluster_*` and
 `config_propagation_e2e` binaries only for Postgres, which `PATROLLI_TEST_DATABASE_URL` replaces.
-`shutdown_test` and `lookup_table_e2e` need none. `tests/setup::setup_db` gives each test its own migrated Postgres
+`shutdown_test` and `lookup_table_e2e` need none. `crates/app/tests/setup::setup_db` gives each test its own migrated Postgres
 database: a `postgres:18-alpine` container by default, or, with `PATROLLI_TEST_DATABASE_URL` set to a
 server the user can `CREATE DATABASE` on, a fresh `patrolli_test_<uuid>` database there, dropped when
 the test's `TestDb` guard is.
 
-`tests/setup::setup_logging` writes through libtest's capture: a passing test prints nothing, a
+`crates/app/tests/setup::setup_logging` writes through libtest's capture: a passing test prints nothing, a
 failing one shows its own logs, `--nocapture` shows everything. `RUST_LOG` sets the filter in
 `tracing_subscriber::filter::Targets` syntax (`RUST_LOG=info,patrolli=trace`), default `info`.
 Third-party images are pinned to exact versions; the Kafka, Redpanda and ClickHouse servers
 the sink tests run against switch to `latest` with `PATROLLI_TEST_UPSTREAM=latest`, for catching an
 upstream release that breaks a sink. Wait for a condition with `setup::eventually`, not a sleep.
 
-`tests/bench_*.rs` are throughput harnesses, not assertions (only `bench_kafka` wants Docker, for a
+`crates/app/tests/bench_*.rs` are throughput harnesses, not assertions (only `bench_kafka` wants Docker, for a
 disposable broker). Their harness test is
 `#[ignore]`d, so a bare `cargo test` only compiles them (it still runs the few small tests next to
 it); run one in release with `cargo test --release --test <name> -- --ignored --nocapture`.
@@ -110,7 +110,7 @@ monitor::WorkerGroup   (snmp, snmp_walk, prometheus_scrape,         │
   datagram, so there is no separate sFlow listener type.
 - **UDP intake** for syslog and netflow is `common::udp_listener`: one `SO_REUSEPORT` socket per
   socket-level worker, each read by a dedicated OS thread (`udp-recv-N`, `recvmmsg`), never a tokio
-  task, so parsing load cannot starve the kernel receive queue. `tests/bench_udp_listener.rs` is its
+  task, so parsing load cannot starve the kernel receive queue. `crates/app/tests/bench_udp_listener.rs` is its
   Docker-free throughput/`RcvbufErrors` harness (`cargo test --release --test bench_udp_listener -- --ignored --nocapture`).
 - **Listener annotation** (`listener::annotate`) is where an inbound packet is matched to an item /
   host / processor by source IP or attribute match, entirely with Arrow compute kernels. Its output
@@ -159,7 +159,7 @@ axum + utoipa. Routes are declared in `api::create_router`; `/api/v1/**` and `/w
 `api::jwt::require_auth`, except `/api/v1/auth/{login,logout,refresh}` and `/health`. Swagger UI at `/swagger-ui`, spec at
 `/api-docs/openapi.json`.
 
-Convention: one file per endpoint under `src/api/handlers/<resource>/<verb_resource>.rs`, re-exported
+Convention: one file per endpoint under `crates/api/src/handlers/<resource>/<verb_resource>.rs`, re-exported
 from that resource's `mod.rs`, which also holds the resource's `#[derive(OpenApi)]` handler struct
 that `ApiDoc` nests. Responses always go through `api::response::{ResponseData, ResponseError}`.
 SQL is built with `sea-query` against the column enums in `db::schema` — no raw string SQL in
@@ -221,7 +221,7 @@ handlers.
   `global.shutdown_timeout` from the signal (`Deadline::NONE` outside shutdown); only the
   hand-over graces (`CANCEL_GRACE`, the processors' `STOP_GRACE`) ignore it. `setup_shutdown` in
   `main.rs` exits the process on a second signal (130/143) or 5s past the deadline (1), flushing
-  the log writer first (`force_exit`). `tests/shutdown_test.rs` covers this without Docker.
+  the log writer first (`force_exit`). `crates/app/tests/shutdown_test.rs` covers this without Docker.
 - **Panics are fatal**: `common::panic::install` (right after `init_logging`) sets a hook that
   logs the panic through tracing (`panicked, shutting down`, with `location`), cancels the root
   shutdown token, and the process exits with 70 after the orderly teardown, for the service
@@ -245,7 +245,7 @@ handlers.
 
 ## Logging
 
-`tracing`, with a `TracingRateLimitLayer` installed in `init_logging` (`src/main.rs`). A throttle
+`tracing`, with a `TracingRateLimitLayer` installed in `init_logging` (`crates/app/src/main.rs`). A throttle
 signature is `(level, target, message text, field values)` with `error` and `request_id` excluded,
 so **an interpolated message defeats the throttle**: every distinct error string becomes a fresh
 signature that is never suppressed and evicts the 10k-signature LRU. That is the mechanical reason
@@ -320,7 +320,7 @@ event fields and span fields as attributes.
 
 ### API layer
 
-Handlers do not log. They attach an operation label with `ApiResultExt` (`src/api/error.rs`) and let
+Handlers do not log. They attach an operation label with `ApiResultExt` (`crates/api/src/error.rs`) and let
 the conversion emit one event:
 
 ```rust
@@ -330,7 +330,7 @@ payload.validate().bad_request("Validation error")?;                          //
 
 `.ctx()` returns a generic `"Internal server error"` title — SQL, pool state and serde detail belong
 in the log, not the response body. Explicit 4xx (`NOT_FOUND`, `CONFLICT`) are built inline and are
-**not** logged; they are the caller's problem. `request_span` in `src/api/mod.rs` gives every line
+**not** logged; they are the caller's problem. `request_span` in `crates/api/src/lib.rs` gives every line
 `request_id`, `method`, `route` and `user`, so a handler event needs no context of its own.
 
 ## Gotchas
@@ -344,7 +344,7 @@ in the log, not the response body. Explicit 4xx (`NOT_FOUND`, `CONFLICT`) are bu
 the database tests instead of a container each), `PATROLLI_TEST_UPSTREAM` (`latest` to test the sinks
 against the newest Kafka, Redpanda and ClickHouse instead of the pinned versions),
 `PATROLLI_TEST_PANIC` (`processor`: the first processor batch panics; read by debug builds only, for
-`tests/shutdown_test.rs`).
+`crates/app/tests/shutdown_test.rs`).
 - SNMPv3 trap receiving (any USM user) and DES/3DES privacy (traps and polling) need
   async-snmp's authoritative engine state and DES salt state, which it refuses to build without.
   Both come from `common::snmp` (one per process): `snmpEngineBoots` is the seconds since
@@ -355,7 +355,7 @@ against the newest Kafka, Redpanda and ClickHouse instead of the pinned versions
   work on macOS — capture on Linux.
 - `src/sink/clickhouse` is `pub` (unlike its sibling sinks) purely so integration tests can drive
   the DDL and the `Payload` → Arrow conversion directly. Its schema in `record_batch::schema` and its
-  `ddl` must stay in sync; `tests/clickhouse_insert_test.rs` is what catches drift.
-- `src/sink/kafka` is `pub` for the same reason: `tests/kafka_sink_test.rs` runs `KafkaSink` against
+  `ddl` must stay in sync; `crates/app/tests/clickhouse_insert_test.rs` is what catches drift.
+- `src/sink/kafka` is `pub` for the same reason: `crates/app/tests/kafka_sink_test.rs` runs `KafkaSink` against
   Apache Kafka and Redpanda and reads its metrics after `close`. Its `flush` calls `rd_kafka_flush`
   directly because rust-rdkafka's `Producer::flush` never cuts `linger.ms` short (see the comment).
