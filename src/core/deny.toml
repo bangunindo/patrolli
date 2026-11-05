@@ -126,6 +126,8 @@ exceptions = [
     # list
     #{ allow = ["Zlib"], crate = "adler32" },
     { allow = ["AGPL-3.0-only"], crate = "patrolli" },
+    { allow = ["AGPL-3.0-only"], crate = "patrolli-api" },
+    { allow = ["AGPL-3.0-only"], crate = "patrolli-app" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,

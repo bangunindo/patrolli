@@ -1,0 +1,90 @@
+# SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+[package]
+name = "patrolli-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+patrolli.workspace = true
+patrolli-api = { path = "../api" }
+anyhow.workspace = true
+chrono-tz.workspace = true
+clap = { version = "4.6.2", features = ["derive"] }
+serde_yaml_ng.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-appender = "0.2.5"
+tracing-subscriber.workspace = true
+tracing-throttle = { version = "0.4.3", features = ["async"] }
+axum-server.workspace = true
+deadpool-postgres.workspace = true
+rustls.workspace = true
+tokio-postgres.workspace = true
+tokio-postgres-rustls = "0.14.0"
+utoipa.workspace = true
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { version = "0.7.0", features = [
+    "unprefixed_malloc_on_supported_platforms",
+] }
+tikv-jemalloc-ctl = { version = "0.7.0", features = ["use_std"] }
+
+[features]
+default = ["mem-profile"]
+# Heap profiling ships in the default binary but boots idle; it is armed at
+# runtime via SIGUSR1 (see `install_mem_profile_signals` in main.rs).
+# `profiling_libunwind` implies `profiling`, and pulls in a link-time dep on
+# libunwind (`libunwind-dev` to build, `libunwind8` to run).
+mem-profile = [
+    "tikv-jemallocator/profiling_libunwind",
+    "tikv-jemalloc-ctl/profiling",
+]
+
+[dev-dependencies]
+arc-swap.workspace = true
+arrow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+clickhouse.workspace = true
+clickhouse-ext-arrow.workspace = true
+fjall.workspace = true
+flume.workspace = true
+futures-util.workspace = true
+lz4_flex.workspace = true
+otel-arrow-dfe-pdata.workspace = true
+parking_lot.workspace = true
+prost.workspace = true
+rdkafka.workspace = true
+rustc-hash.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+uuid.workspace = true
+zstd.workspace = true
+axum.workspace = true
+sea-query.workspace = true
+sea-query-postgres.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+libc = "0.2.186"
+testcontainers = "0.27.3"
+tonic.workspace = true
+tempfile.workspace = true
+
+[[bin]]
+name = "patrolli"
+bench = false
+path = "src/main.rs"
+
+[[bin]]
+name = "schema_gen"
+bench = false
+path = "src/schema_gen.rs"
