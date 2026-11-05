@@ -3,12 +3,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::item_stats;
-use super::v1::inter_cluster_service_client::InterClusterServiceClient;
-use super::v1::inter_cluster_service_server::{InterClusterService, InterClusterServiceServer};
-use super::v1::{
-    CaptureMessage, CaptureRequest, ForwardAck, ForwardStatus, ItemStatsRequest, ItemStatsResponse,
-    NodeIdentity, PayloadBatch, SignalType,
-};
 use crate::cache::item::StatsSnapshot;
 use crate::chan::SenderChannel;
 use crate::common::internal_metrics::{
@@ -25,6 +19,14 @@ use futures::{Stream, StreamExt};
 use otel_arrow_dfe_pdata::otap::from_record_messages;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 use otel_arrow_dfe_pdata::{Consumer, OtapArrowRecords};
+use patrolli_proto::v1::inter_cluster_service_client::InterClusterServiceClient;
+use patrolli_proto::v1::inter_cluster_service_server::{
+    InterClusterService, InterClusterServiceServer,
+};
+use patrolli_proto::v1::{
+    CaptureMessage, CaptureRequest, ForwardAck, ForwardStatus, ItemStatsRequest, ItemStatsResponse,
+    NodeIdentity, PayloadBatch, SignalType,
+};
 use prost::Message;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use std::pin::Pin;

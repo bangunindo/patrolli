@@ -2,15 +2,15 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use super::v1::{
-    ForwardStatus, PayloadBatch, SignalType,
-    inter_cluster_service_client::InterClusterServiceClient,
-};
 use crate::common::internal_metrics::NodeMetrics;
 use crate::{config, payload};
 use anyhow::Result;
 use flume::Receiver;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, Producer};
+use patrolli_proto::v1::{
+    ForwardStatus, PayloadBatch, SignalType,
+    inter_cluster_service_client::InterClusterServiceClient,
+};
 use prost::Message;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -4714,6 +4714,7 @@ dependencies = [
  "otel-arrow-dfe-query-engine-languages",
  "papaya",
  "parking_lot 0.12.5",
+ "patrolli-proto",
  "pbjson",
  "pbjson-build",
  "pbjson-types",
@@ -4757,8 +4758,6 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tonic",
- "tonic-prost",
- "tonic-prost-build",
  "tracing",
  "tracing-log",
  "tracing-subscriber",
@@ -4784,6 +4783,7 @@ dependencies = [
  "http-serde",
  "jsonwebtoken",
  "patrolli",
+ "patrolli-proto",
  "petgraph",
  "rand 0.10.3",
  "reqwest",
@@ -4862,6 +4862,17 @@ dependencies = [
  "utoipa",
  "uuid",
  "zstd 0.14.3",
+]
+
+[[package]]
+name = "patrolli-proto"
+version = "0.1.0-beta.2"
+dependencies = [
+ "bytes",
+ "prost",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]

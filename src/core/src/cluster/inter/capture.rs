@@ -2,10 +2,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use crate::cluster::inter::v1::inter_cluster_service_client::InterClusterServiceClient;
-use crate::cluster::inter::v1::{CaptureMessage, CaptureRequest};
 use anyhow::Result;
 use flume::Sender;
+use patrolli_proto::v1::inter_cluster_service_client::InterClusterServiceClient;
+use patrolli_proto::v1::{CaptureMessage, CaptureRequest};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tonic::{Request, transport::Channel};

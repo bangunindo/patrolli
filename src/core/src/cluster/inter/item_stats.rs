@@ -11,7 +11,6 @@
 //! as a wrong-but-valid value on the other.
 
 use super::comm::ItemStats;
-use super::v1;
 use crate::cache;
 use crate::cache::item::{
     ACTIVITY_PLANE_BYTES, Failure, FailureKind, ItemState, Stats, StatsSnapshot,
@@ -20,6 +19,7 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use chrono::{DateTime, FixedOffset};
 use futures::{Stream, StreamExt};
+use patrolli_proto::v1;
 use prost::Message;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
