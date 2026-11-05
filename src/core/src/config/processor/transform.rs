@@ -201,20 +201,4 @@ config:
                 .unwrap_or_else(|e| panic!("{}: {e:#}", example.name));
         }
     }
-
-    #[test]
-    fn openapi_exposes_the_transform_config_and_its_comments() {
-        use utoipa::OpenApi;
-        let api = serde_json::to_value(crate::api::ApiDoc::openapi()).unwrap();
-        let transform = &api["components"]["schemas"]["Transform"];
-        assert!(!transform["description"].as_str().unwrap().is_empty());
-        let opl = &transform["oneOf"][0];
-        assert!(
-            !opl["properties"]["opl"]["description"]
-                .as_str()
-                .unwrap()
-                .is_empty()
-        );
-        assert_eq!(opl["required"], serde_json::json!(["opl"]));
-    }
 }

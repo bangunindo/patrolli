@@ -437,7 +437,7 @@ optional route events as log records, best effort (drop and count when full). Tw
    - Rebuild detection: `RouteTable::is_current` compares the handle's `Arc<Mutable>` with the
      registry's, so a session whose table was replaced reconnects (BMP) or sends ROUTE-REFRESH
      (BGP, if negotiated) to get a fresh dump.
-   - `tests/bench_rib.rs`: loads an MRT RIB dump (bgpkit-parser dev-dependency) into a `bgp`
+   - `crates/app/tests/bench_rib.rs`: loads an MRT RIB dump (bgpkit-parser dev-dependency) into a `bgp`
      table. rrc26 bview, 1.37M routes (1.11M v4), one router, release, one thread:
      insert 1.9M routes/s; **331 B/route**; LPM 1.9M/s at addresses inside known prefixes and
      4.2M/s at random v4 (73% hit); sweeping 684k stale routes 155 ms; Peer Down of 684k
@@ -504,7 +504,7 @@ optional route events as log records, best effort (drop and count when full). Tw
    - Tests: config and cross-checks; events from crafted streams (order, opt-in routes, drop,
      wait and cancel, VRF filter); a successor collector expiring what the old one left;
      the listener on a real socket (capture in, rows and pipeline records out, ip filter,
-     close keeps the routes); `tests/bgp_listener_e2e.rs` runs the binary, feeds the Loc-RIB
+     close keeps the routes); `crates/app/tests/bgp_listener_e2e.rs` runs the binary, feeds the Loc-RIB
      capture over TCP, enriches OTLP probes through `attribute_lookup` (`literals: {vrf:
      global}`) and scrapes `listener.bgp.*` from the Prometheus endpoint.
    - Not done: web form hints for the new type (`../web`, the generated client follows

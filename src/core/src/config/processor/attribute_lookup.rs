@@ -609,48 +609,4 @@ mod tests {
             Config::AttributeLookup(_)
         ));
     }
-
-    #[test]
-    fn openapi_exposes_the_lookup_config_and_its_field_comments() {
-        use utoipa::OpenApi;
-        let api = serde_json::to_value(crate::api::ApiDoc::openapi()).unwrap();
-        let schemas = &api["components"]["schemas"];
-        let lookup = &schemas["AttributeLookup"];
-        assert_eq!(lookup["properties"]["overwrite"]["default"], json!(false));
-        // Presence, not wording, as `attribute_collect`'s twin does: the point
-        // is that the doc comments reach the schema, and a phrase match breaks
-        // on any edit to them.
-        assert!(!lookup["description"].as_str().unwrap().is_empty());
-        for (field, property) in lookup["properties"].as_object().unwrap() {
-            // An optional referenced type keeps its comment on the non-null
-            // branch of the oneOf, not on the surrounding property.
-            let description = property.get("description").or_else(|| {
-                property
-                    .get("oneOf")?
-                    .as_array()?
-                    .iter()
-                    .find_map(|variant| variant.get("description"))
-            });
-            assert!(
-                description
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|s| !s.is_empty()),
-                "AttributeLookup.{field}"
-            );
-        }
-        let rule = &schemas["AttributeLookupRule"]["properties"];
-        assert!(rule.get("match").is_some());
-        assert!(rule.get("match_by").is_none());
-        for name in ["AttributeLookup", "AttributeLookupRule"] {
-            assert!(schemas[name]["properties"].get("when").is_some());
-            assert!(
-                !schemas[name]["required"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&json!("when"))
-            );
-        }
-        assert!(schemas.get("AttributeLookupInput").is_some());
-        assert!(schemas.get("AttributeLookupCast").is_some());
-    }
 }

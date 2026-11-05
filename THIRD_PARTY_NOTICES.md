@@ -18,7 +18,7 @@ changes are also released under the MIT license.
 
 ## IETF and IANA MIB modules
 
-- **Files:** `src/core/tests/mibs/` (test fixtures only)
+- **Files:** `src/core/crates/app/tests/mibs/` (test fixtures only)
 - **Source:** SNMPv2-MIB (RFC 3418), IF-MIB (RFC 2863), IANAifType-MIB
   (maintained by IANA)
 - **License:** the RFC copyright statement
