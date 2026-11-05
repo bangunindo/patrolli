@@ -12,24 +12,24 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-patrolli = { path = "../.." }
+patrolli.workspace = true
 patrolli-api = { path = "../api" }
-anyhow = "1.0.103"
-chrono-tz = { version = "0.10.4", features = ["serde"] }
+anyhow.workspace = true
+chrono-tz.workspace = true
 clap = { version = "4.6.2", features = ["derive"] }
-serde_yaml_ng = "0.10.0"
-tokio = { version = "1.53.0", features = ["full"] }
-tokio-util = { version = "0.7.18", features = ["codec", "time"] }
-tracing = "0.1.44"
+serde_yaml_ng.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
 tracing-appender = "0.2.5"
-tracing-subscriber = { version = "0.3.23", features = ["json"] }
+tracing-subscriber.workspace = true
 tracing-throttle = { version = "0.4.3", features = ["async"] }
-axum-server = { version = "0.8.0", features = ["tls-rustls"] }
-deadpool-postgres = "0.14.1"
-rustls = "0.23.37"
-tokio-postgres = { version = "0.7.18", features = ["with-uuid-1", "with-chrono-0_4", "with-serde_json-1", "with-time-0_3"] }
+axum-server.workspace = true
+deadpool-postgres.workspace = true
+rustls.workspace = true
+tokio-postgres.workspace = true
 tokio-postgres-rustls = "0.14.0"
-utoipa = { version = "5.5.0", features = ["axum_extras", "chrono", "uuid"] }
+utoipa.workspace = true
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { version = "0.7.0", features = [
@@ -49,35 +49,35 @@ mem-profile = [
 ]
 
 [dev-dependencies]
-arc-swap = "1.9.2"
-arrow = "58.3.0"
-async-trait = "0.1.89"
-bytes = { version = "1.12.1", features = ["serde"] }
-chrono = { version = "0.4.45", features = ["serde"] }
-clickhouse = { version = "0.15.1", features = ["chrono", "lz4", "zstd", "rustls-tls", "uuid"] }
-clickhouse-ext-arrow = "0.1.0"
-fjall = { version = "3.1.7", default-features = false, features = ["bytes_1"] }
-flume = "0.12.0"
-futures-util = "0.3.32"
-lz4_flex = "0.14.0"
-otel-arrow-dfe-pdata = "0.61.0"
-parking_lot = { version = "0.12.5" }
-prost = "0.14.4"
-rdkafka = { version = "^0.39.0", features = ["gssapi", "cmake-build", "ssl", "zstd"] }
-rustc-hash = "2.1.3"
-serde_json = { version = "1.0.150", features = ["arbitrary_precision", "raw_value"] }
-smol_str = { version = "0.3.6", features = ["serde"] }
-uuid = { version = "1.24.0", features = ["serde", "v5", "v7"] }
-zstd = "0.14.0"
-axum = { version = "0.8.9", features = ["macros", "http2", "ws"] }
-sea-query = { version = "1.0.1", features = ["thread-safe"] }
-sea-query-postgres = { version = "0.6.0", features = ["with-uuid", "with-chrono", "with-json", "postgres-array"] }
-rand = "0.10.2"
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+arc-swap.workspace = true
+arrow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+clickhouse.workspace = true
+clickhouse-ext-arrow.workspace = true
+fjall.workspace = true
+flume.workspace = true
+futures-util.workspace = true
+lz4_flex.workspace = true
+otel-arrow-dfe-pdata.workspace = true
+parking_lot.workspace = true
+prost.workspace = true
+rdkafka.workspace = true
+rustc-hash.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+uuid.workspace = true
+zstd.workspace = true
+axum.workspace = true
+sea-query.workspace = true
+sea-query-postgres.workspace = true
+rand.workspace = true
+reqwest.workspace = true
 libc = "0.2.186"
 testcontainers = "0.27.3"
-tonic = { version = "0.14.6", features = ["tls-aws-lc"] }
-tempfile = "3.27.0"
+tonic.workspace = true
+tempfile.workspace = true
 
 [[bin]]
 name = "patrolli"
