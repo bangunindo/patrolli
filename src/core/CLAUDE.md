@@ -6,12 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `patrolli` — the Rust core of the Patrolli monitoring / telemetry platform (crate `patrolli`, edition 2024).
 It lives at `src/core` inside a monorepo; the sibling `src/web` is the Nuxt/Vue frontend, which
-generates its API client from the `openapi.json` produced by this crate. All commands below assume
+generates its API client from the `openapi.json` produced by `schema_gen`. All commands below assume
 `src/core` as the working directory.
 
 Two binaries: `patrolli` (`crates/app/src/main.rs`, the daemon) and `schema_gen` (`crates/app/src/schema_gen.rs`, writes
-`openapi.json`). `src/lib.rs` declares every module (`pub`, so integration tests can drive
-internals); both binaries reach them through `use patrolli::…`. Never add a `mod` for a lib module
+`openapi.json`). `src/lib.rs` declares every core module (`pub`, so integration tests can drive
+internals); the REST API is the `patrolli-api` crate (`crates/api`). Both binaries reach them
+through `use patrolli::...` and `use patrolli_api::...`. Never add a `mod` for a lib module
 to `main.rs`: the binary would compile its own copy of the whole crate, doubling every rebuild and
 running each unit test twice. Unit tests live in the lib (`cargo test --lib`).
 
