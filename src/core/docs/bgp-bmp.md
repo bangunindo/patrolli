@@ -344,13 +344,16 @@ gives back exactly what was encoded. Phase 4's passive BGP will use the same `wi
 6. **Provider precedence**: flow-supplied AS vs routing vs lookup tables (akvorado's ordered
    providers).
 7. ~~Passive BGP in addition to BMP?~~ **Decided: both.** Passive BGP covers routers without
-   BMP (Kentik's model); see "Plan" in section 3. Still open: whether to ever negotiate
-   ADD-PATH on the passive session.
+   BMP (Kentik's model); see "Plan" in section 3. ADD-PATH is never offered on the passive
+   session (2026-11-05): the table shows one path per prefix and the router sends its best.
+   **Peers** (2026-11-05): any router the listener's allow/deny lists admit may peer;
+   patrolli answers with the router's own AS (iBGP, as pmacct does without
+   `bgp_daemon_as`) unless `asn` is set; an optional `peers:` list only overrides per router
+   (TCP-MD5 password, patrolli's AS). bio-rd instead requires every neighbour configured.
 8. **Cluster placement** of route tables (phase 6).
 9. ~~Listener shape~~ **Decided**: one `bgp` listener type with one section per protocol
-   (`bmp:` now, `bgp:` for passive BGP in phase 4), so one table and one `attribute_lookup`
-   rule cover routers fed either way. `keep` is per protocol: BGP graceful restart brings its
-   own restart time.
+   (`bmp:` and `bgp:`), so one table and one `attribute_lookup` rule cover routers fed either
+   way. `keep` is per protocol.
 10. **Row interning**: the bench measures 395 B per route since phase 2 (~400 MB per
     full-table router). Each row also repeats its partition's `router` and `vrf` cells (48
     bytes). Acceptable for a few routers; revisit when one table carries tens of them.
@@ -363,6 +366,18 @@ gives back exactly what was encoded. Phase 4's passive BGP will use the same `wi
     router has not re-sent since reconnecting is never promoted.
 13. ~~Route Monitoring before Peer Up~~ **Decided**: dropped and counted. Without the Peer Up
     OPEN the ADD-PATH state is unknown, and guessing wrong misreads every prefix.
+14. ~~Passive BGP retention~~ **Decided** (2026-11-05): as for BMP, a lost session's routes
+    stay for `keep` and a reconnect's End-of-RIB sweeps what it did not re-send. patrolli
+    advertises Graceful Restart with no families (RFC 4724 §3) only so that routers which send
+    End-of-RIB only under GR send it; the router's own restart time is not used. This differs
+    from pmacct and bio-rd, which both drop a peer's routes as soon as its session closes and
+    advertise no GR. Which vendors send End-of-RIB only under GR is unverified.
+15. ~~One router, both feeds~~ **Decided** (2026-11-05): a router (source IP) has one live
+    session at a time. A session of the other protocol is refused while it lasts (BGP:
+    NOTIFICATION Cease / Connection Rejected) and counted (`sessions_refused`), so two feeds
+    never write the same partitions. A reconnect over the same protocol replaces the live
+    session at once (BGP: Cease / Connection Collision to the old one); pmacct instead refuses
+    the new connection until the old one's hold time runs out.
 
 ---
 
@@ -509,10 +524,54 @@ optional route events as log records, best effort (drop and count when full). Tw
      global}`) and scrapes `listener.bgp.*` from the Prometheus endpoint.
    - Not done: web form hints for the new type (`../web`, the generated client follows
      `openapi.json`); the Statistics Report self-check; per-router metrics (cardinality).
-4. **Passive BGP**
-   - OPEN validation, KEEPALIVE every hold/3, hold timer, NOTIFICATION on errors (section 3).
-   - Same write path as BMP; optional TCP-MD5.
-   - Document the route-reflector-client requirement for iBGP.
+4. **Passive BGP** — **done** (`listener::bgp::peer`)
+   - Config: a `bgp:` section beside `bmp:` (either or both): `listener` (default
+     `0.0.0.0:179`, needs `CAP_NET_BIND_SERVICE`), `asn`, `router_id` (default the session's
+     local IPv4; required on an IPv6 listener), `hold_time` (90; 0 or ≥ 3), `keep`, and
+     `peers: [{address, password, asn}]`. Passwords are sensitive fields
+     (`bgp.peers.password`), encrypted at rest like the others.
+   - Session: patrolli waits for the router's OPEN (so it can answer with the router's AS),
+     checks it (version, hold time, BGP identifier: RFC 4271 §6.2 subcodes), then sends its
+     OPEN and KEEPALIVE. Offered: IPv4/IPv6 unicast, 4-octet AS (`AS_TRANS` above 65535),
+     route refresh, extended messages, extended next hop (RFC 8950, as pmacct and bio-rd do;
+     without it an IPv6 session carries no IPv4 routes) and Graceful Restart with no
+     families. Never ADD-PATH. Hold time is the lower of the two; KEEPALIVE every third of it.
+   - Write path: `routes::RouteWriter`, split out of the BMP session, applies UPDATEs,
+     End-of-RIB sweeps and Peer Downs for both protocols. BGP routes go into the `global`
+     VRF; a listener whose `vrfs` lacks it only counts them.
+   - The socket is split: a writer task sends KEEPALIVEs on its own timer, so they go on
+     while the reader waits on a full event channel (`on_full: wait`) and the router's
+     UPDATEs back up in TCP. The reader's hold timer counts only time spent waiting for the
+     router.
+   - Errors: a frame error (marker, length) → NOTIFICATION 1/x; an UPDATE the decoder rejects
+     → 3/1 and a reset (the router redumps on reconnect; RFC 7606 treat-as-withdraw stays
+     inside); hold timer → 4/0; an unexpected message → 5/x (RFC 6608); a stopping listener
+     → 6/2; a replaced session → 6/7. A router's NOTIFICATION ends the session with its code
+     and RFC 9003 shutdown text in the `session_down` event (`bgp.notification`,
+     `bgp.message`).
+   - A rebuilt or created table: ROUTE-REFRESH per negotiated family when the router
+     supports it (the new table is empty, so nothing is stale); otherwise Cease / Other
+     Configuration Change and a reconnect.
+   - TCP-MD5 (`listener::bgp::md5`, Linux only): one `TCP_MD5SIG` per peer on the listening
+     socket before it listens, inherited by accepted connections; an IPv4 peer of an IPv6
+     socket is set v4-mapped (as pmacct). `libc` is a Linux-only direct dependency.
+   - A dual-stack socket's v4-mapped peers are canonicalised, for BMP too, so the router is
+     the same IP a flow exporter reports.
+   - Metrics: session and message counters gained a `protocol` label
+     (`sessions_opened|superseded|refused{protocol}`, `sessions_closed{protocol,reason}`,
+     `messages{protocol,type}`), plus `notifications_sent|received{code}`. Every event
+     carries `bgp.protocol`.
+   - Tests: wire (OPEN round trip, NOTIFICATION with RFC 9003 text, BGP framing); sessions
+     over in-memory streams with paused time (`peer_tests.rs`: OPEN contents and AS choice,
+     keepalive cadence, hold timer, bad OPENs, UPDATEs and End-of-RIB after a reconnect, AS4
+     merge, malformed UPDATE, 4096-byte limit, router NOTIFICATION, table rebuild with and
+     without route refresh, keepalives while a full channel holds the reader, protocol
+     refusal both ways, collision, VRF filter); NetGauze parses every message we send; real
+     sockets (a peer filling the table, Cease on stop, MD5 signing required);
+     `crates/app/tests/bgp_listener_e2e.rs` gained a BGP router from 127.0.0.2 whose routes
+     enrich OTLP probes.
+   - Not done: TCP-AO, GTSM, a per-peer `vrf` (PE-CE sessions inside a VRF), RFC 9234 Role
+     (an eBGP router enforcing it strictly would refuse patrolli), web form hints.
 5. **Enrichment and e2e**
    - Document the `attribute_lookup` recipe, including the exporter → router mapping.
    - Docker e2e: FRR or GoBGP feeding routes plus a flow generator; assert enriched records.
@@ -551,10 +610,8 @@ GoBGP as a reference RIB is the first e2e to write.
 3. **Transport, real sockets, no Docker** (phases 2–4)
    - BMP: the test connects to the listener, writes captured or crafted bytes, checks the table
      with `setup::eventually`.
-   - Passive BGP: the test plays the router with NetGauze's `BgpCodec`, with short hold times
-     (3 s is the minimum non-zero). Cases: OPEN exchange; KEEPALIVE cadence; hold-timer expiry →
-     NOTIFICATION and close; peer not on the allow-list rejected; ADD-PATH never negotiated;
-     mid-stream disconnect → routes kept for `keep`, then swept.
+   - Passive BGP (done in phase 4, `peer_tests.rs`): the test plays the router with our own
+     builders over in-memory streams and paused time, and NetGauze checks what we send.
    - A config edit that rebuilds the table forces a reconnect.
 4. **Interop e2e with GoBGP and FRR in Docker** (phase 5). Images pinned; patrolli reached on the
    host through the Docker host gateway, as `otel_e2e_test` does.

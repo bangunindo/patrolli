@@ -10,6 +10,7 @@
 //! panic is fatal to the process). This module depends on `std` only, so a
 //! fuzz harness can include it on its own.
 
+pub mod bgp;
 pub mod bmp;
 pub mod open;
 pub mod update;

@@ -4996,8 +4996,20 @@
       },
       "BgpListener": {
         "type": "object",
-        "description": "A BGP route collector: routers feed it over BMP (and, from phase 4,\npassive BGP) and their routes go into the `bgp` lookup table whose source\nnames this listener. Its records are lifecycle events and, optionally, one\nper route change.",
+        "description": "A BGP route collector: routers feed it over BMP or passive BGP, and their\nroutes go into the `bgp` lookup table whose source names this listener.\nIts records are lifecycle events and, optionally, one per route change.",
         "properties": {
+          "bgp": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BgpPeering",
+                "description": "Passive BGP (RFC 4271): routers connect and send what they would\nannounce to a peer. Their routes go into the `global` VRF."
+              }
+            ],
+            "default": null
+          },
           "bmp": {
             "oneOf": [
               {
@@ -5029,6 +5041,100 @@
             },
             "description": "VRFs kept, spelled as the table's `vrf` column (`global`, `65000:1`,\n`192.0.2.1:7`). Empty keeps every VRF.",
             "default": []
+          }
+        },
+        "additionalProperties": false
+      },
+      "BgpPeer": {
+        "type": "object",
+        "description": "Settings for one router of a passive BGP section.",
+        "required": [
+          "address"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "The router's address, as its TCP connection comes from."
+          },
+          "asn": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "patrolli's AS toward this router, instead of the section's `asn`.",
+            "minimum": 0
+          },
+          "password": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Sensitive",
+                "description": "TCP-MD5 (RFC 2385) password; Linux only."
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "BgpPeering": {
+        "type": "object",
+        "description": "Passive BGP sessions: patrolli never connects, it waits for routers.",
+        "properties": {
+          "asn": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "patrolli's AS. Unset, patrolli answers each router with the router's\nown AS, so every session is iBGP (patrolli as a route-reflector\nclient sees the whole table).",
+            "default": null,
+            "minimum": 0
+          },
+          "hold_time": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds offered; 0 (no keepalives) or at least 3. A router offering\nless wins.",
+            "default": 90,
+            "minimum": 0
+          },
+          "keep": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds a router's routes stay after its session is lost, for it to\nreconnect and send them again.",
+            "default": 300,
+            "minimum": 0
+          },
+          "listener": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TcpListener",
+                "description": "Port 179 needs `CAP_NET_BIND_SERVICE`. The allow/deny lists decide\nwhich routers may peer."
+              }
+            ],
+            "default": {
+              "address": "0.0.0.0:179",
+              "ip_blacklist": [],
+              "ip_whitelist": []
+            }
+          },
+          "peers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BgpPeer"
+            },
+            "description": "Settings for single routers. A router needs no entry to peer.",
+            "default": []
+          },
+          "router_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "patrolli's BGP identifier. Unset, the session's local IPv4 address;\nrequired on an IPv6 listener.",
+            "default": null
           }
         },
         "additionalProperties": false

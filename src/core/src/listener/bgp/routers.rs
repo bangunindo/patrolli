@@ -11,6 +11,11 @@
 //! dump did not refresh; the `keep` deadline sweeps whatever is left after
 //! that: VRFs that never came back, routers that send no End-of-RIB, and
 //! routers that stay away.
+//!
+//! A router has one live session at a time, of either protocol. A new
+//! session of the same protocol replaces the live one (the router restarted
+//! or reconnected); one of the other protocol is refused while the live one
+//! lasts, so two feeds never write the same router's partitions.
 
 use crate::cache::lookup_table::mutable::now_millis;
 use parking_lot::Mutex;
@@ -26,10 +31,42 @@ use tokio_util::sync::CancellationToken;
 /// How long a new session waits for the one it replaces to stop writing.
 pub const SUPERSEDE_WAIT: Duration = Duration::from_secs(5);
 
+/// How a router feeds the listener.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Protocol {
+    Bmp,
+    Bgp,
+}
+
+impl Protocol {
+    pub const ALL: [Self; 2] = [Self::Bmp, Self::Bgp];
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bmp => "bmp",
+            Self::Bgp => "bgp",
+        }
+    }
+}
+
+/// A session refused because its router has a live one of the other
+/// protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Refused {
+    pub live: Protocol,
+}
+
 #[derive(Debug, Default)]
 struct Router {
     generation: u64,
     live: Option<Live>,
+    /// the protocol of the last session, for what its routes' expiry reports;
+    /// none for routes a previous collector left
+    protocol: Option<Protocol>,
     /// the VRFs (route table partitions) written for this router
     vrfs: FxHashSet<SmolStr>,
     /// when routes not refreshed by then go
@@ -39,6 +76,7 @@ struct Router {
 #[derive(Debug)]
 struct Live {
     generation: u64,
+    protocol: Protocol,
     /// the live session's start, in `now_millis` time
     cutoff: u64,
     cancel: CancellationToken,
@@ -50,6 +88,7 @@ struct Live {
 #[derive(Debug)]
 pub struct Attachment {
     pub router: IpAddr,
+    pub protocol: Protocol,
     pub generation: u64,
     /// the session's start: rows older than this were not written by it
     pub cutoff: u64,
@@ -60,6 +99,8 @@ pub struct Attachment {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Expired {
     pub router: IpAddr,
+    /// the protocol of the session that left the routes, if known
+    pub protocol: Option<Protocol>,
     pub vrfs: Vec<SmolStr>,
     /// rows written before this go: the live session's start, or the time the
     /// deadline was handled when no session is live
@@ -76,19 +117,30 @@ pub struct Routers {
 
 impl Routers {
     /// Registers a session for `router`, ending and waiting for (up to
-    /// [`SUPERSEDE_WAIT`]) a live one, so two sessions never write the same
-    /// router's routes at once. Returns whether a live session was replaced.
+    /// [`SUPERSEDE_WAIT`]) a live one of the same protocol, so two sessions
+    /// never write the same router's routes at once. Returns whether a live
+    /// session was replaced; a live session of the other protocol refuses
+    /// this one.
     pub async fn attach(
         &self,
         router: IpAddr,
+        protocol: Protocol,
         cancel: CancellationToken,
         keep: Duration,
-    ) -> (Attachment, bool) {
+    ) -> Result<(Attachment, bool), Refused> {
         let done = CancellationToken::new();
         let (attachment, previous) = {
             let mut routers = self.inner.lock();
             let r = routers.entry(router).or_default();
+            if let Some(live) = &r.live
+                && live.protocol != protocol
+            {
+                return Err(Refused {
+                    live: live.protocol,
+                });
+            }
             r.generation += 1;
+            r.protocol = Some(protocol);
             // a reconnect gets a whole `keep` to dump and send End-of-RIB
             if r.deadline.is_some() {
                 r.deadline = Some(Instant::now() + keep);
@@ -96,6 +148,7 @@ impl Routers {
             let cutoff = now_millis();
             let previous = r.live.replace(Live {
                 generation: r.generation,
+                protocol,
                 cutoff,
                 cancel,
                 done: done.clone(),
@@ -103,6 +156,7 @@ impl Routers {
             (
                 Attachment {
                     router,
+                    protocol,
                     generation: r.generation,
                     cutoff,
                     done,
@@ -117,7 +171,7 @@ impl Routers {
             // finish soon; carrying on is better than refusing the router
             let _ = tokio::time::timeout(SUPERSEDE_WAIT, previous.done.cancelled()).await;
         }
-        (attachment, superseded)
+        Ok((attachment, superseded))
     }
 
     /// Unregisters a session. Unless it was replaced or the listener is
@@ -196,6 +250,7 @@ impl Routers {
             let cutoff = r.live.as_ref().map_or(cutoff_now, |l| l.cutoff);
             expired.push(Expired {
                 router: *router,
+                protocol: r.protocol,
                 vrfs: r.vrfs.iter().cloned().collect(),
                 cutoff,
             });
@@ -212,6 +267,15 @@ impl Routers {
                 live.cancel.cancel();
             }
         }
+    }
+
+    /// Whether a newer session of the attachment's router replaced it.
+    pub fn is_replaced(&self, attachment: &Attachment) -> bool {
+        self.inner
+            .lock()
+            .get(&attachment.router)
+            .and_then(|r| r.live.as_ref())
+            .is_some_and(|l| l.generation != attachment.generation)
     }
 
     pub fn is_live(&self, router: IpAddr) -> bool {
@@ -236,8 +300,14 @@ mod tests {
     async fn a_lost_session_arms_keep_and_expires_its_router() {
         let routers = Routers::default();
         let (a, superseded) = routers
-            .attach(ip("192.0.2.1"), CancellationToken::new(), KEEP)
-            .await;
+            .attach(
+                ip("192.0.2.1"),
+                Protocol::Bmp,
+                CancellationToken::new(),
+                KEEP,
+            )
+            .await
+            .unwrap();
         assert!(!superseded);
         routers.note_vrf(a.router, &"global".into());
         assert_eq!(routers.next_deadline(), None, "a live session has none");
@@ -260,16 +330,28 @@ mod tests {
     async fn a_reconnect_extends_the_deadline_and_sweeps_with_its_own_start() {
         let routers = Routers::default();
         let (a, _) = routers
-            .attach(ip("192.0.2.1"), CancellationToken::new(), KEEP)
-            .await;
+            .attach(
+                ip("192.0.2.1"),
+                Protocol::Bmp,
+                CancellationToken::new(),
+                KEEP,
+            )
+            .await
+            .unwrap();
         routers.note_vrf(a.router, &"global".into());
         routers.detach(a, KEEP);
         let first = routers.next_deadline().unwrap();
 
         tokio::time::advance(Duration::from_secs(200)).await;
         let (b, _) = routers
-            .attach(ip("192.0.2.1"), CancellationToken::new(), KEEP)
-            .await;
+            .attach(
+                ip("192.0.2.1"),
+                Protocol::Bmp,
+                CancellationToken::new(),
+                KEEP,
+            )
+            .await
+            .unwrap();
         let extended = routers.next_deadline().unwrap();
         assert!(extended > first, "the new dump gets a whole keep");
 
@@ -286,13 +368,20 @@ mod tests {
         let routers = std::sync::Arc::new(Routers::default());
         let old_cancel = CancellationToken::new();
         let (old, _) = routers
-            .attach(ip("192.0.2.1"), old_cancel.clone(), KEEP)
-            .await;
+            .attach(ip("192.0.2.1"), Protocol::Bmp, old_cancel.clone(), KEEP)
+            .await
+            .unwrap();
 
         let r = routers.clone();
         let new = tokio::spawn(async move {
-            r.attach(ip("192.0.2.1"), CancellationToken::new(), KEEP)
-                .await
+            r.attach(
+                ip("192.0.2.1"),
+                Protocol::Bmp,
+                CancellationToken::new(),
+                KEEP,
+            )
+            .await
+            .unwrap()
         });
         old_cancel.cancelled().await;
         assert!(!new.is_finished(), "waits for the old session to stop");
@@ -308,12 +397,24 @@ mod tests {
     async fn a_stuck_session_is_waited_for_only_so_long() {
         let routers = Routers::default();
         let (_old, _) = routers
-            .attach(ip("192.0.2.1"), CancellationToken::new(), KEEP)
-            .await;
+            .attach(
+                ip("192.0.2.1"),
+                Protocol::Bmp,
+                CancellationToken::new(),
+                KEEP,
+            )
+            .await
+            .unwrap();
         let start = Instant::now();
         let (_new, superseded) = routers
-            .attach(ip("192.0.2.1"), CancellationToken::new(), KEEP)
-            .await;
+            .attach(
+                ip("192.0.2.1"),
+                Protocol::Bmp,
+                CancellationToken::new(),
+                KEEP,
+            )
+            .await
+            .unwrap();
         assert!(superseded);
         assert_eq!(start.elapsed(), SUPERSEDE_WAIT);
     }
@@ -329,8 +430,14 @@ mod tests {
 
         // 192.0.2.2 comes back: its sweep uses its own session's start
         let (b, _) = routers
-            .attach(ip("192.0.2.2"), CancellationToken::new(), KEEP)
-            .await;
+            .attach(
+                ip("192.0.2.2"),
+                Protocol::Bmp,
+                CancellationToken::new(),
+                KEEP,
+            )
+            .await
+            .unwrap();
         assert_eq!(routers.live(), 1);
         let deadline = routers.next_deadline().unwrap();
         let mut expired = routers.take_expired(deadline);
@@ -348,10 +455,56 @@ mod tests {
     async fn closing_cancels_sessions_without_arming_deadlines() {
         let routers = Routers::default();
         let cancel = CancellationToken::new();
-        let (a, _) = routers.attach(ip("192.0.2.1"), cancel.clone(), KEEP).await;
+        let (a, _) = routers
+            .attach(ip("192.0.2.1"), Protocol::Bmp, cancel.clone(), KEEP)
+            .await
+            .unwrap();
         routers.close_all();
         assert!(cancel.is_cancelled());
         routers.detach(a, KEEP);
         assert_eq!(routers.next_deadline(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_router_live_over_one_protocol_refuses_the_other() {
+        let routers = Routers::default();
+        let cancel = CancellationToken::new();
+        let (bmp, _) = routers
+            .attach(ip("192.0.2.1"), Protocol::Bmp, cancel.clone(), KEEP)
+            .await
+            .unwrap();
+        let refused = routers
+            .attach(
+                ip("192.0.2.1"),
+                Protocol::Bgp,
+                CancellationToken::new(),
+                KEEP,
+            )
+            .await;
+        assert_eq!(
+            refused.unwrap_err(),
+            Refused {
+                live: Protocol::Bmp
+            }
+        );
+        assert!(!cancel.is_cancelled(), "the live session goes on");
+        assert_eq!(routers.next_deadline(), None);
+
+        // once it is gone, the other protocol takes over and reports as such
+        routers.detach(bmp, KEEP);
+        let (bgp, superseded) = routers
+            .attach(
+                ip("192.0.2.1"),
+                Protocol::Bgp,
+                CancellationToken::new(),
+                KEEP,
+            )
+            .await
+            .unwrap();
+        assert!(!superseded);
+        routers.note_vrf(bgp.router, &"global".into());
+        routers.detach(bgp, KEEP);
+        let expired = routers.take_expired(routers.next_deadline().unwrap());
+        assert_eq!(expired[0].protocol, Some(Protocol::Bgp));
     }
 }

@@ -498,6 +498,22 @@ fn bgp_metric(bgp: &BgpListener) -> ValueOwned {
     let by = |values: &[(&'static str, u64)]| {
         ValueOwned::KvList(values.iter().map(|(name, n)| kv(name, int(*n))).collect())
     };
+    // {protocol: {name: count}}
+    let by_protocol = |values: &[(&'static str, &'static str, u64)]| {
+        let mut protocols: Vec<(&'static str, Vec<(ZStringOwned, ValueOwned)>)> = Vec::new();
+        for (protocol, name, n) in values {
+            match protocols.iter_mut().find(|(p, _)| p == protocol) {
+                Some((_, list)) => list.push(kv(name, int(*n))),
+                None => protocols.push((protocol, vec![kv(name, int(*n))])),
+            }
+        }
+        ValueOwned::KvList(
+            protocols
+                .into_iter()
+                .map(|(p, list)| kv(p, ValueOwned::KvList(list)))
+                .collect(),
+        )
+    };
     let ignored = bgp
         .ignored_families
         .iter()
@@ -512,10 +528,13 @@ fn bgp_metric(bgp: &BgpListener) -> ValueOwned {
     ValueOwned::KvList(vec![
         kv("routers_live", int(bgp.routers_live)),
         kv("route_table", ValueOwned::Bool(bgp.route_table)),
-        kv("sessions_opened", int(bgp.sessions_opened)),
-        kv("sessions_superseded", int(bgp.sessions_superseded)),
-        kv("sessions_closed", by(&bgp.sessions_closed)),
-        kv("messages", by(&bgp.messages)),
+        kv("sessions_opened", by(&bgp.sessions_opened)),
+        kv("sessions_superseded", by(&bgp.sessions_superseded)),
+        kv("sessions_refused", by(&bgp.sessions_refused)),
+        kv("sessions_closed", by_protocol(&bgp.sessions_closed)),
+        kv("messages", by_protocol(&bgp.messages)),
+        kv("notifications_sent", by(&bgp.notifications_sent)),
+        kv("notifications_received", by(&bgp.notifications_received)),
         kv("messages_skipped", int(bgp.messages_skipped)),
         kv("adj_rib_messages", int(bgp.adj_rib_messages)),
         kv("without_peer_up", int(bgp.without_peer_up)),

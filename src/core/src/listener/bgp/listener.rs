@@ -2,8 +2,9 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The `bgp` listener: a BMP server whose sessions write the route table, and
-//! workers that hand the sessions' events to the pipeline.
+//! The `bgp` listener: a BMP server and a passive BGP server whose sessions
+//! write the route table, and workers that hand the sessions' events to the
+//! pipeline.
 //!
 //! The transport belongs to the listener, as for syslog: the first worker
 //! starts it and it outlives worker restarts. The sessions write the table
@@ -13,10 +14,11 @@
 //! in the table.
 
 use super::events::{Event, EventSink};
-use super::session::{BmpConfig, Collector};
-use super::stats::BmpStats;
+use super::peer::BgpConfig;
+use super::session::{BmpConfig, Collector, CollectorConfig};
+use super::stats::Stats;
 use crate::chan::SenderChannel;
-use crate::config::listener::{Bgp, ListenerKind};
+use crate::config::listener::{Bgp, BgpPeering, ListenerKind};
 use crate::listener::InternalMetrics;
 use crate::payload::Scope;
 use crate::{cache, common, config, payload};
@@ -24,8 +26,8 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use flume::Receiver;
 use smol_str::SmolStr;
-use socket2::{SockRef, TcpKeepalive};
-use std::net::IpAddr;
+use socket2::{Domain, SockRef, Socket, TcpKeepalive, Type};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -47,10 +49,10 @@ enum State {
 
 /// A started transport. Only its tasks hold the collector, and with it the
 /// sender of `rx`'s channel, so the workers see the channel disconnect once
-/// the server and the expiry task have returned.
+/// the servers and the expiry task have returned.
 struct Running {
     rx: Receiver<Event>,
-    /// Stops the intake: the server, its sessions and the expiry task. A
+    /// Stops the intake: the servers, their sessions and the expiry task. A
     /// server that returns on its own cancels it too.
     intake: CancellationToken,
     tasks: JoinSet<()>,
@@ -78,7 +80,7 @@ pub struct BgpListener {
 
     internal_metrics: InternalMetrics,
     /// kept across transport restarts, like the generic counters
-    stats: Arc<BmpStats>,
+    stats: Arc<Stats>,
     events_dropped: Arc<AtomicU64>,
     /// the running transport's collector, for the gauges
     collector: parking_lot::Mutex<Weak<Collector>>,
@@ -138,18 +140,29 @@ impl BgpListener {
     }
 
     async fn start(&self) -> Result<Running> {
-        let bmp = self.bgp.bmp.as_ref().context("no bmp section")?;
-        let socket = TcpListener::bind(bmp.listener.address)
-            .await
-            .with_context(|| format!("bind bmp {}", bmp.listener.address))?;
+        let bmp_socket = match &self.bgp.bmp {
+            Some(bmp) => Some(
+                TcpListener::bind(bmp.listener.address)
+                    .await
+                    .with_context(|| format!("bind bmp {}", bmp.listener.address))?,
+            ),
+            None => None,
+        };
+        let bgp_socket = match &self.bgp.bgp {
+            Some(bgp) => Some(bind_bgp(bgp)?),
+            None => None,
+        };
         let (tx, rx) = flume::bounded(self.bgp.events.buffer_size);
         let vrfs = (!self.bgp.vrfs.is_empty()).then(|| self.bgp.vrfs.iter().cloned().collect());
         let collector = Collector::new(
             self.conf.id,
             self.conf_cache.lookup_table.clone(),
-            BmpConfig {
-                keep: bmp.keep,
-                max_message_size: bmp.max_message_size,
+            CollectorConfig {
+                bmp: self.bgp.bmp.as_ref().map(|bmp| BmpConfig {
+                    keep: bmp.keep,
+                    max_message_size: bmp.max_message_size,
+                }),
+                bgp: self.bgp.bgp.as_ref().map(BgpConfig::from),
                 vrfs,
             },
         )
@@ -165,22 +178,48 @@ impl BgpListener {
 
         let intake = CancellationToken::new();
         let mut tasks = JoinSet::new();
-        let filter = IpFilter {
-            whitelist: bmp.listener.ip_whitelist.clone(),
-            blacklist: bmp.listener.ip_blacklist.clone(),
-        };
-        tasks.spawn(
-            server(socket, filter, collector.clone(), intake.clone()).instrument(Span::current()),
-        );
+        if let (Some(socket), Some(bmp)) = (bmp_socket, &self.bgp.bmp) {
+            let filter = IpFilter {
+                whitelist: bmp.listener.ip_whitelist.clone(),
+                blacklist: bmp.listener.ip_blacklist.clone(),
+            };
+            tasks.spawn(
+                server(
+                    Transport::Bmp,
+                    socket,
+                    filter,
+                    collector.clone(),
+                    intake.clone(),
+                )
+                .instrument(Span::current()),
+            );
+            info!(transport = "bmp", addr = %bmp.listener.address, "server listening");
+        }
+        if let (Some(socket), Some(bgp)) = (bgp_socket, &self.bgp.bgp) {
+            let filter = IpFilter {
+                whitelist: bgp.listener.ip_whitelist.clone(),
+                blacklist: bgp.listener.ip_blacklist.clone(),
+            };
+            tasks.spawn(
+                server(
+                    Transport::Bgp,
+                    socket,
+                    filter,
+                    collector.clone(),
+                    intake.clone(),
+                )
+                .instrument(Span::current()),
+            );
+            info!(transport = "bgp", addr = %bgp.listener.address, "server listening");
+        }
         let expiry_intake = intake.clone();
         tasks.spawn(
             async move {
-                // the server going down takes the intake with it
+                // the servers going down take the intake with them
                 collector.run_expiry(expiry_intake).await;
             }
             .instrument(Span::current()),
         );
-        info!(transport = "bmp", addr = %bmp.listener.address, "server listening");
         Ok(Running { rx, intake, tasks })
     }
 
@@ -234,20 +273,70 @@ impl BgpListener {
     }
 }
 
+/// Binds the passive BGP socket, with the peers' TCP-MD5 keys set before it
+/// listens.
+fn bind_bgp(bgp: &BgpPeering) -> Result<TcpListener> {
+    let addr = bgp.listener.address;
+    let socket = Socket::new(Domain::for_address(addr), Type::STREAM, None)
+        .and_then(|s| {
+            s.set_reuse_address(true)?;
+            s.set_nonblocking(true)?;
+            s.bind(&addr.into())?;
+            Ok(s)
+        })
+        .with_context(|| format!("bind bgp {addr}"))?;
+    for peer in &bgp.peers {
+        let Some(password) = &peer.password else {
+            continue;
+        };
+        // a still encrypted password is a broken invariant: the config was
+        // decrypted when it was loaded
+        let password = password
+            .expose()
+            .with_context(|| format!("bgp peer {} password", peer.address))?;
+        #[cfg(target_os = "linux")]
+        super::md5::set_key(&socket, peer.address, password.as_bytes())
+            .with_context(|| format!("set tcp md5 key for {}", peer.address))?;
+        #[cfg(not(target_os = "linux"))]
+        anyhow::bail!("bgp peer {}: tcp md5 passwords need linux", peer.address);
+    }
+    socket
+        .listen(1024)
+        .with_context(|| format!("listen bgp {addr}"))?;
+    TcpListener::from_std(socket.into()).with_context(|| format!("listen bgp {addr}"))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Transport {
+    Bmp,
+    Bgp,
+}
+
+impl Transport {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Bmp => "bmp",
+            Self::Bgp => "bgp",
+        }
+    }
+}
+
 #[derive(Debug)]
 struct IpFilter {
     whitelist: Vec<IpAddr>,
     blacklist: Vec<IpAddr>,
 }
 
-/// Accepts BMP connections until `intake` is cancelled, then ends the
-/// sessions and waits for them.
+/// Accepts connections until `intake` is cancelled, then ends the sessions
+/// and waits for them.
 async fn server(
+    transport: Transport,
     socket: TcpListener,
     filter: IpFilter,
     collector: Arc<Collector>,
     intake: CancellationToken,
 ) {
+    let name = transport.as_str();
     // However this returns, the rest of the intake goes down with it.
     let _intake_guard = intake.clone().drop_guard();
     let mut sessions = JoinSet::new();
@@ -260,13 +349,15 @@ async fn server(
             accepted = socket.accept() => match accepted {
                 Ok(v) => v,
                 Err(e) => {
-                    warn!(transport = "bmp", error = %e, "accept failed");
+                    warn!(transport = name, error = %e, "accept failed");
                     continue;
                 }
             },
         };
-        if !common::ip_allowed(&addr.ip(), &filter.whitelist, &filter.blacklist) {
-            debug!(peer = %addr, "connection rejected by ip filter");
+        // a dual-stack socket gives IPv4 peers as v4-mapped addresses
+        let router = addr.ip().to_canonical();
+        if !common::ip_allowed(&router, &filter.whitelist, &filter.blacklist) {
+            debug!(transport = name, peer = %addr, "connection rejected by ip filter");
             continue;
         }
         let ka = TcpKeepalive::new()
@@ -274,15 +365,28 @@ async fn server(
             .with_interval(Duration::from_secs(20))
             .with_retries(4);
         if let Err(e) = SockRef::from(&stream).set_tcp_keepalive(&ka) {
-            debug!(peer = %addr, error = %e, "set tcp keepalive failed");
+            debug!(transport = name, peer = %addr, error = %e, "set tcp keepalive failed");
         }
         let (collector, cancel) = (collector.clone(), intake.child_token());
-        sessions.spawn(
-            async move {
-                collector.session(stream, addr.ip(), cancel).await;
+        match transport {
+            Transport::Bmp => sessions.spawn(
+                async move {
+                    collector.session(stream, router, cancel).await;
+                }
+                .instrument(Span::current()),
+            ),
+            Transport::Bgp => {
+                let local = stream
+                    .local_addr()
+                    .map_or(IpAddr::from([0, 0, 0, 0]), |a: SocketAddr| a.ip());
+                sessions.spawn(
+                    async move {
+                        collector.bgp_session(stream, router, local, cancel).await;
+                    }
+                    .instrument(Span::current()),
+                )
             }
-            .instrument(Span::current()),
-        );
+        };
     }
     // Free the port, then end the sessions for good: a stopping listener arms
     // no `keep`.
@@ -290,10 +394,10 @@ async fn server(
     collector.close_all();
     while let Some(res) = sessions.join_next().await {
         if let Err(e) = res {
-            error!(transport = "bmp", error = %e, "session task failed");
+            error!(transport = name, error = %e, "session task failed");
         }
     }
-    info!(transport = "bmp", "server stopped");
+    info!(transport = name, "server stopped");
 }
 
 #[async_trait]
@@ -380,10 +484,17 @@ impl crate::listener::Listener for BgpListener {
             .internal_metrics
             .get(self.conf.id, self.conf.name.to_string());
         let dropped = self.events_dropped.load(Ordering::Relaxed);
-        m.total_bytes = BmpStats::get(&self.stats.bytes);
+        m.total_bytes = Stats::get(&self.stats.bytes);
         m.total_items = self.stats.total_messages();
         m.total_records_dropped += dropped;
-        let mut bgp = self.stats.snapshot();
+        let mut protocols = Vec::with_capacity(2);
+        if self.bgp.bmp.is_some() {
+            protocols.push(super::Protocol::Bmp);
+        }
+        if self.bgp.bgp.is_some() {
+            protocols.push(super::Protocol::Bgp);
+        }
+        let mut bgp = self.stats.snapshot(&protocols);
         bgp.routers_live = self.collector().map_or(0, |c| c.routers().live() as u64);
         bgp.route_table = self
             .conf_cache

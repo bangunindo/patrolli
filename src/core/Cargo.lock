@@ -4613,6 +4613,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "ipnet",
+ "libc",
  "lz4_flex 0.14.0",
  "memchr",
  "mib-rs",

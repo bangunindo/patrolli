@@ -10,6 +10,8 @@
 //! whether a full channel drops them or holds the session up is the
 //! listener's `events.on_full`.
 
+use super::routers::Protocol;
+use super::wire::bgp::{CODE_NAMES, code_index};
 use crate::cache::lookup_table::bgp::Family;
 use crate::cache::lookup_table::cell::CellOwned;
 use crate::config::listener::OnFull;
@@ -30,6 +32,8 @@ use tokio_util::sync::CancellationToken;
 pub struct Event {
     pub time: DateTime<Utc>,
     pub router: IpAddr,
+    /// the session's protocol; none for routes whose session is unknown
+    pub protocol: Option<Protocol>,
     pub kind: EventKind,
 }
 
@@ -43,6 +47,11 @@ pub enum EventKind {
         /// [`super::SessionEnd::as_str`]
         reason: &'static str,
         error: Option<&'static str>,
+        /// the BGP NOTIFICATION that ended the session, sent or received, as
+        /// (code, subcode)
+        notification: Option<(u8, u8)>,
+        /// the router's shutdown communication (RFC 9003)
+        message: Option<SmolStr>,
     },
     PeerUp {
         vrf: SmolStr,
@@ -116,16 +125,28 @@ impl Event {
         Self {
             time: Utc::now(),
             router,
+            protocol: None,
             kind,
         }
+    }
+
+    pub fn with_protocol(mut self, protocol: Protocol) -> Self {
+        self.protocol = Some(protocol);
+        self
     }
 
     fn severity(&self) -> SeverityNumber {
         match &self.kind {
             EventKind::SessionDown {
-                reason: "frame" | "reset" | "no_initiation",
+                reason: "frame" | "reset" | "no_initiation" | "open_rejected" | "hold_timer_expired",
                 ..
             } => SeverityNumber::Warn,
+            // a router ends a session it is unhappy with by anything but Cease
+            EventKind::SessionDown {
+                reason: "notification",
+                notification: Some((code, _)),
+                ..
+            } if *code != super::wire::bgp::code::CEASE => SeverityNumber::Warn,
             _ => SeverityNumber::Info,
         }
     }
@@ -142,12 +163,27 @@ impl Event {
             };
         }
         field!("event", s(self.kind.name()));
+        if let Some(protocol) = self.protocol {
+            field!("protocol", s(protocol.as_str()));
+        }
         match &self.kind {
             EventKind::SessionUp { superseded } => field!("superseded", Value::Bool(*superseded)),
-            EventKind::SessionDown { reason, error } => {
+            EventKind::SessionDown {
+                reason,
+                error,
+                notification,
+                message,
+            } => {
                 field!("reason", s(reason));
                 if let Some(error) = error {
                     field!("error", s(error));
+                }
+                if let Some((code, subcode)) = notification {
+                    field!("notification", text(format!("{code}/{subcode}")));
+                    field!("notification_name", s(CODE_NAMES[code_index(*code)]));
+                }
+                if let Some(message) = message {
+                    field!("message", Value::String(ZString::from_ref(message)));
                 }
             }
             EventKind::PeerUp { vrf, asn, bgp_id } => {
@@ -361,7 +397,17 @@ mod tests {
     #[test]
     fn a_session_lost_to_bad_input_is_a_warning() {
         let router: IpAddr = "192.0.2.1".parse().unwrap();
-        let down = |reason, error| Event::new(router, EventKind::SessionDown { reason, error });
+        let down = |reason, error| {
+            Event::new(
+                router,
+                EventKind::SessionDown {
+                    reason,
+                    error,
+                    notification: None,
+                    message: None,
+                },
+            )
+        };
         let got = records(&[
             Event::new(router, EventKind::SessionUp { superseded: true }),
             down("eof", None),
@@ -396,5 +442,38 @@ mod tests {
             got[3].0["bgp"],
             json!({"event": "end_of_rib", "vrf": "global", "family": "ipv6", "rows_swept": 3})
         );
+    }
+
+    #[test]
+    fn a_bgp_session_down_names_its_notification() {
+        let router: IpAddr = "192.0.2.1".parse().unwrap();
+        let down = |notification, message: Option<&str>| {
+            Event::new(
+                router,
+                EventKind::SessionDown {
+                    reason: "notification",
+                    error: None,
+                    notification: Some(notification),
+                    message: message.map(SmolStr::from),
+                },
+            )
+            .with_protocol(Protocol::Bgp)
+        };
+        let got = records(&[down((6, 2), Some("maintenance")), down((3, 1), None)]);
+        assert_eq!(
+            got[0],
+            (
+                json!({"source": {"address": "192.0.2.1"}, "bgp": {
+                    "event": "session_down",
+                    "protocol": "bgp",
+                    "reason": "notification",
+                    "notification": "6/2",
+                    "notification_name": "cease",
+                    "message": "maintenance",
+                }}),
+                SeverityNumber::Info as i64
+            )
+        );
+        assert_eq!(got[1].1, SeverityNumber::Warn as i64);
     }
 }

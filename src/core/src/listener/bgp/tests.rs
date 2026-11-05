@@ -5,11 +5,12 @@
 //! Sessions end to end: captured and crafted BMP streams into a route table.
 
 use super::events::{Event, EventKind, EventSink};
+use super::routers::Protocol;
 use super::wire::bmp::{self, Message, build as b};
 use super::wire::open::{self, Open, build_open, caps};
 use super::wire::update::{AsPath, SegmentKind, Update, build as u, prefixes};
 use super::wire::{AFI_IPV4, AFI_IPV6, Afi, BGP_UPDATE, Reader, SAFI_UNICAST, bgp_message};
-use super::{BmpConfig, Collector, SessionEnd, codec::BmpFrames, stats::BmpStats};
+use super::{BmpConfig, Collector, CollectorConfig, SessionEnd, codec::BmpFrames, stats::Stats};
 use crate::cache::lookup_table::LookupTable;
 use crate::cache::lookup_table::bgp::RouteTable;
 use crate::cache::lookup_table::cell::CellOwned;
@@ -341,7 +342,7 @@ impl Harness {
         )
     }
 
-    fn with(bmp: BmpConfig, events: Option<EventSink>) -> Self {
+    fn with(collect: impl Into<CollectorConfig>, events: Option<EventSink>) -> Self {
         let registry = Arc::new(LookupTable::new());
         let listener = Uuid::now_v7();
         let config = cfg::LookupTable {
@@ -354,7 +355,7 @@ impl Harness {
             key: cfg::Bgp::key(),
         };
         registry.insert(&config).unwrap();
-        let mut collector = Collector::new(listener, registry.clone(), bmp);
+        let mut collector = Collector::new(listener, registry.clone(), collect.into());
         if let Some(events) = events {
             collector = collector.with_events(events);
         }
@@ -399,8 +400,8 @@ impl Harness {
         }
     }
 
-    fn stat(&self, f: impl Fn(&BmpStats) -> &std::sync::atomic::AtomicU64) -> u64 {
-        BmpStats::get(f(self.collector.stats()))
+    fn stat(&self, f: impl Fn(&Stats) -> &std::sync::atomic::AtomicU64) -> u64 {
+        Stats::get(f(self.collector.stats()))
     }
 }
 
@@ -528,7 +529,7 @@ async fn juniper_adj_rib_in_is_counted_and_skipped() {
     assert!(h.stat(|s| &s.adj_rib_messages) > 0);
     assert_eq!(h.stat(|s| &s.routes_announced), 0);
     assert_eq!(
-        h.stat(|s| &s.sessions_closed[SessionEnd::Terminated.index()]),
+        h.stat(|s| &s.sessions_closed[Protocol::Bmp.index()][SessionEnd::Terminated.index()]),
         1
     );
 }
@@ -854,7 +855,7 @@ async fn a_reconnect_replaces_the_live_session() {
     s.extend(v4_route(&p, &["10.0.0.0/8"], &[64501], "192.0.2.1"));
     assert_eq!(h.run(&s).await, SessionEnd::Eof);
     assert_eq!(old.await.unwrap(), SessionEnd::Cancelled);
-    assert_eq!(h.stat(|s| &s.sessions_superseded), 1);
+    assert_eq!(h.stat(|s| &s.sessions_superseded[Protocol::Bmp.index()]), 1);
     assert_eq!(h.table().len(), 1);
 }
 
@@ -921,7 +922,9 @@ async fn events_follow_the_stream() {
         events[7].kind,
         EventKind::SessionDown {
             reason: "eof",
-            error: None
+            error: None,
+            notification: None,
+            message: None,
         }
     );
 }
@@ -945,7 +948,7 @@ async fn route_events_are_opt_in_and_sent_without_a_table() {
     let collector = Collector::new(
         Uuid::now_v7(),
         Arc::new(LookupTable::new()),
-        BmpConfig::default(),
+        BmpConfig::default().into(),
     )
     .with_events(events);
     let mut s = start(&p, &[]);
@@ -1048,9 +1051,9 @@ async fn wait_holds_the_session_until_its_events_are_taken() {
 async fn vrfs_not_kept_are_counted_only() {
     let (events, rx) = sink(100, false, OnFull::Drop);
     let h = Harness::with(
-        BmpConfig {
+        CollectorConfig {
             vrfs: Some(["global".into()].into_iter().collect()),
-            ..BmpConfig::default()
+            ..CollectorConfig::bmp(BmpConfig::default())
         },
         Some(events),
     );
@@ -1105,7 +1108,8 @@ async fn a_new_collector_expires_what_the_old_one_left() {
         BmpConfig {
             keep,
             ..BmpConfig::default()
-        },
+        }
+        .into(),
     ));
     assert_eq!(
         next.routers().next_deadline(),
@@ -1454,14 +1458,19 @@ mod differential {
 /// The listener on a real socket, run as `WorkerGroup` runs it.
 mod transport {
     use super::*;
-    use crate::config::listener::{Bgp, BgpEvents, Bmp, TcpListener};
+    use crate::config::listener::{Bgp, BgpEvents, BgpPeer, BgpPeering, Bmp, TcpListener};
     use crate::listener::bgp::BgpListener;
+    use crate::listener::bgp::codec::BgpFrames;
+    use crate::listener::bgp::wire::BGP_OPEN;
+    use crate::listener::bgp::wire::bgp::{self as msg, BGP_KEEPALIVE, BGP_NOTIFICATION};
     use crate::listener::test_util::{self, CLOSE_LIMIT, Port, item_for};
     use crate::listener::{DRAIN_TIMEOUT, Listener as _};
     use crate::{cache, config};
+    use futures::StreamExt;
     use std::net::SocketAddr;
     use tokio::io::AsyncReadExt;
     use tokio::net::TcpStream;
+    use tokio_util::codec::FramedRead;
 
     type Server = test_util::Harness<BgpListener>;
 
@@ -1484,6 +1493,7 @@ mod transport {
         let build_cache = cache.clone();
         let server = Server::start(Port::Tcp, DRAIN_TIMEOUT, move |addr: SocketAddr, sender| {
             let mut bgp = Bgp {
+                bgp: None,
                 bmp: Some(Bmp {
                     listener: TcpListener {
                         address: addr,
@@ -1552,7 +1562,7 @@ mod transport {
         let bgp = m.bgp.unwrap();
         assert_eq!(bgp.routers_live, 1);
         assert!(bgp.route_table);
-        assert_eq!(bgp.sessions_opened, 1);
+        assert_eq!(bgp.sessions_opened, [("bmp", 1)]);
 
         // session_up, peer_up, one record per route change
         let want = 2 + bgp.routes_announced as usize + bgp.routes_withdrawn as usize;
@@ -1578,8 +1588,156 @@ mod transport {
         let read = tokio::time::timeout(CLOSE_LIMIT, router.read(&mut buf)).await;
         assert!(matches!(read, Ok(Ok(0)) | Ok(Err(_))), "{read:?}");
         let bgp = server.listener.metrics().await.bgp.unwrap();
-        assert_eq!(bgp.sessions_opened, 0);
+        assert_eq!(bgp.sessions_opened, [("bmp", 0)]);
         assert_eq!(bgp.routers_live, 0);
+        server.close(true).await;
+    }
+
+    /// A listener with only a `bgp` section, and a route table.
+    async fn bgp_server(peers: Vec<BgpPeer>) -> (Server, cache::Cache, Uuid) {
+        let id = Uuid::now_v7();
+        let cache = item_for(id);
+        let table = cfg::LookupTable {
+            id: Uuid::now_v7(),
+            name: "routes".into(),
+            source: cfg::Source::Bgp(cfg::Bgp {
+                listener: id,
+                max_rows: 1000,
+            }),
+            key: cfg::Bgp::key(),
+        };
+        cache.lookup_table.insert(&table).unwrap();
+        let build_cache = cache.clone();
+        let server = Server::start(Port::Tcp, DRAIN_TIMEOUT, move |addr: SocketAddr, sender| {
+            let mut bgp = Bgp {
+                bmp: None,
+                bgp: Some(BgpPeering {
+                    listener: TcpListener {
+                        address: addr,
+                        ip_whitelist: Vec::new(),
+                        ip_blacklist: Vec::new(),
+                    },
+                    peers: peers.clone(),
+                    ..BgpPeering::default()
+                }),
+                vrfs: Vec::new(),
+                events: BgpEvents::default(),
+            };
+            bgp.validate().unwrap();
+            let conf = config::listener::Listener::new(
+                id,
+                "routes".into(),
+                test_util::WORKERS,
+                config::Batch {
+                    batch_size: 100,
+                    batch_timeout: Duration::from_millis(50),
+                },
+                config::listener::Config::Bgp(Box::new(bgp)),
+                false,
+            );
+            let listener = BgpListener::new(conf.clone(), sender, None, build_cache.clone(), None);
+            (conf, listener)
+        })
+        .await;
+        (server, cache, id)
+    }
+
+    /// Plays a router over `stream`: OPEN, then the KEEPALIVE once patrolli
+    /// answered with its own.
+    async fn establish(stream: TcpStream) -> FramedRead<TcpStream, BgpFrames> {
+        let mut frames = FramedRead::new(stream, BgpFrames::default());
+        let open = msg::message(
+            BGP_OPEN,
+            &open::open_body(
+                64500,
+                90,
+                Ipv4Addr::new(198, 51, 100, 1),
+                &[
+                    caps::multiprotocol(AFI_IPV4, SAFI_UNICAST),
+                    caps::four_octet(64500),
+                ],
+            ),
+        );
+        frames.get_mut().write_all(&open).await.unwrap();
+        let kind = |f: &bytes::Bytes| f[18];
+        let ours = frames.next().await.unwrap().unwrap();
+        assert_eq!(kind(&ours), BGP_OPEN);
+        assert_eq!(kind(&frames.next().await.unwrap().unwrap()), BGP_KEEPALIVE);
+        frames.get_mut().write_all(&msg::keepalive()).await.unwrap();
+        frames
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_bgp_peer_fills_the_table_and_is_told_when_the_listener_stops() {
+        let (server, cache, id) = bgp_server(Vec::new()).await;
+        let mut router = establish(TcpStream::connect(server.addr).await.unwrap()).await;
+        let update = u::message(&u::update(
+            &[],
+            &[
+                u::origin(0),
+                u::as_path(&[(2, &[64501, 64502])]),
+                u::next_hop_attr("192.0.2.1"),
+            ],
+            &u::nlri(&["10.0.0.0/8", "10.1.0.0/16"], None),
+        ));
+        router.get_mut().write_all(&update).await.unwrap();
+
+        let table = || cache.lookup_table.route_table_for_listener(&id).unwrap();
+        wait_for("routes written", async || table().len() == 2).await;
+        let m = server.listener.metrics().await;
+        let bgp = m.bgp.unwrap();
+        assert_eq!(bgp.sessions_opened, [("bgp", 1)]);
+        assert_eq!(bgp.routers_live, 1);
+        assert_eq!(m.total_items, 3, "open, keepalive, update");
+        assert!(bgp.messages.contains(&("bgp", "update", 1)));
+
+        // stopping tells the router why, and keeps the routes
+        server.close(false).await;
+        let mut notified = None;
+        while let Some(Ok(f)) = router.next().await {
+            if f[18] == BGP_NOTIFICATION {
+                notified = Some((f[19], f[20]));
+            }
+        }
+        assert_eq!(notified, Some((6, 2)));
+        assert_eq!(table().len(), 2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_peer_with_a_password_must_sign_its_segments() {
+        use crate::config::sensitive::Sensitive;
+        use socket2::{Domain, Socket, Type};
+        let (server, _cache, _) = bgp_server(vec![BgpPeer {
+            address: "127.0.0.1".parse().unwrap(),
+            password: Some(Sensitive::Plain("s3cret".into())),
+            asn: None,
+        }])
+        .await;
+        // the listener starts with its first worker
+        wait_for("bgp server up", async || {
+            server.listener.metrics().await.total_workers > 0
+        })
+        .await;
+        let addr = server.addr;
+        let connect = move |key: Option<&'static [u8]>| {
+            tokio::task::spawn_blocking(move || {
+                let s = Socket::new(Domain::IPV4, Type::STREAM, None)?;
+                if let Some(key) = key {
+                    s.bind(&SocketAddr::new(addr.ip(), 0).into())?;
+                    crate::listener::bgp::md5::set_key(&s, addr.ip(), key)?;
+                }
+                s.connect_timeout(&addr.into(), Duration::from_millis(500))?;
+                s.set_nonblocking(true)?;
+                Ok::<_, std::io::Error>(std::net::TcpStream::from(s))
+            })
+        };
+        assert!(
+            connect(None).await.unwrap().is_err(),
+            "an unsigned syn is dropped"
+        );
+        let signed = connect(Some(b"s3cret")).await.unwrap().expect("signed");
+        establish(TcpStream::from_std(signed).unwrap()).await;
         server.close(true).await;
     }
 }

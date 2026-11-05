@@ -147,21 +147,26 @@ pub struct Listener {
     pub bgp: Option<Box<BgpListener>>,
 }
 
-/// What a `bgp` listener's BMP sessions did, beyond the generic listener
-/// counters (BMP messages are its items, their bytes its bytes, and its events
-/// its records).
+/// What a `bgp` listener's BMP and BGP sessions did, beyond the generic
+/// listener counters (messages are its items, their bytes its bytes, and its
+/// events its records).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BgpListener {
     /// routers with a live session
     pub routers_live: u64,
     /// whether a `bgp` lookup table names the listener
     pub route_table: bool,
-    pub sessions_opened: u64,
-    pub sessions_superseded: u64,
-    /// by end reason
-    pub sessions_closed: Vec<(&'static str, u64)>,
-    /// by BMP message type
-    pub messages: Vec<(&'static str, u64)>,
+    /// by protocol (`bmp`, `bgp`)
+    pub sessions_opened: Vec<(&'static str, u64)>,
+    pub sessions_superseded: Vec<(&'static str, u64)>,
+    pub sessions_refused: Vec<(&'static str, u64)>,
+    /// (protocol, end reason, count)
+    pub sessions_closed: Vec<(&'static str, &'static str, u64)>,
+    /// (protocol, message type, count)
+    pub messages: Vec<(&'static str, &'static str, u64)>,
+    /// BGP NOTIFICATIONs, by error code name
+    pub notifications_sent: Vec<(&'static str, u64)>,
+    pub notifications_received: Vec<(&'static str, u64)>,
     pub messages_skipped: u64,
     pub adj_rib_messages: u64,
     pub without_peer_up: u64,

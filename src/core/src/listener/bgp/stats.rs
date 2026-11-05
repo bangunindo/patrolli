@@ -2,9 +2,11 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Counters of one BMP listener, shared by its sessions.
+//! Counters of one bgp listener, shared by its BMP and BGP sessions.
 
+use super::routers::Protocol;
 use super::session::SessionEnd;
+use super::wire::bgp::{CODE_NAMES, code_index};
 use crate::common::internal_metrics::BgpListener;
 use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
@@ -13,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// BMP message types 0–6, then everything else.
 pub const MESSAGE_KINDS: usize = 8;
 
-/// The metric label of each message kind.
+/// The metric label of each BMP message kind.
 pub const MESSAGE_NAMES: [&str; MESSAGE_KINDS] = [
     "route_monitoring",
     "statistics_report",
@@ -25,22 +27,51 @@ pub const MESSAGE_NAMES: [&str; MESSAGE_KINDS] = [
     "other",
 ];
 
+/// BGP message types 1–5, then everything else.
+pub const BGP_MESSAGE_KINDS: usize = 6;
+
+/// The metric label of each BGP message kind, by [`bgp_message_index`].
+pub const BGP_MESSAGE_NAMES: [&str; BGP_MESSAGE_KINDS] = [
+    "other",
+    "open",
+    "update",
+    "notification",
+    "keepalive",
+    "route_refresh",
+];
+
+pub fn bgp_message_index(kind: u8) -> usize {
+    match kind {
+        1..=5 => kind as usize,
+        _ => 0,
+    }
+}
+
+type PerProtocol = [AtomicU64; 2];
+
 #[derive(Debug, Default)]
-pub struct BmpStats {
-    pub sessions_opened: AtomicU64,
-    /// by [`SessionEnd::index`]
-    pub sessions_closed: [AtomicU64; SessionEnd::KINDS],
+pub struct Stats {
+    pub sessions_opened: PerProtocol,
+    /// by protocol, then [`SessionEnd::index`]
+    pub sessions_closed: [[AtomicU64; SessionEnd::KINDS]; 2],
     /// a router reconnected while its previous session was still live
-    pub sessions_superseded: AtomicU64,
+    pub sessions_superseded: PerProtocol,
+    /// a router connected over one protocol while live over the other
+    pub sessions_refused: PerProtocol,
     /// by BMP message type
     pub messages: [AtomicU64; MESSAGE_KINDS],
+    /// by [`bgp_message_index`]
+    pub bgp_messages: [AtomicU64; BGP_MESSAGE_KINDS],
+    /// NOTIFICATIONs sent and received, by [`code_index`]
+    pub notifications_sent: [AtomicU64; CODE_NAMES.len()],
+    pub notifications_received: [AtomicU64; CODE_NAMES.len()],
     /// a message that failed to parse but carried nothing the table needs
     pub messages_skipped: AtomicU64,
     /// Adj-RIB-In / Adj-RIB-Out messages, which are not read
     pub adj_rib_messages: AtomicU64,
     /// Loc-RIB route monitoring before its Peer Up, dropped
     pub without_peer_up: AtomicU64,
-    /// Loc-RIB messages of VRFs the listener does not keep
+    /// messages of VRFs the listener does not keep
     pub vrf_filtered: AtomicU64,
     /// bytes of the messages read
     pub bytes: AtomicU64,
@@ -62,7 +93,7 @@ pub struct BmpStats {
     ignored_families: Mutex<FxHashMap<(u16, u8), u64>>,
 }
 
-impl BmpStats {
+impl Stats {
     pub fn add(counter: &AtomicU64, n: u64) {
         counter.fetch_add(n, Ordering::Relaxed);
     }
@@ -75,8 +106,20 @@ impl BmpStats {
         Self::incr(&self.messages[(kind as usize).min(MESSAGE_KINDS - 1)]);
     }
 
-    pub fn closed(&self, end: &SessionEnd) {
-        Self::incr(&self.sessions_closed[end.index()]);
+    pub fn bgp_message(&self, kind: u8) {
+        Self::incr(&self.bgp_messages[bgp_message_index(kind)]);
+    }
+
+    pub fn notification_sent(&self, code: u8) {
+        Self::incr(&self.notifications_sent[code_index(code)]);
+    }
+
+    pub fn notification_received(&self, code: u8) {
+        Self::incr(&self.notifications_received[code_index(code)]);
+    }
+
+    pub fn closed(&self, protocol: Protocol, end: &SessionEnd) {
+        Self::incr(&self.sessions_closed[protocol.index()][end.index()]);
     }
 
     pub fn ignored_family(&self, afi: u16, safi: u8) {
@@ -91,14 +134,19 @@ impl BmpStats {
         counter.load(Ordering::Relaxed)
     }
 
-    /// Every BMP message read, whatever its type.
+    /// Every BMP and BGP message read, whatever its type.
     pub fn total_messages(&self) -> u64 {
-        self.messages.iter().map(Self::get).sum()
+        self.messages
+            .iter()
+            .chain(&self.bgp_messages)
+            .map(Self::get)
+            .sum()
     }
 
-    /// The counters as a metrics snapshot; the gauges and the event drops
-    /// live elsewhere and are filled in by the caller.
-    pub fn snapshot(&self) -> BgpListener {
+    /// The counters as a metrics snapshot, with the per-protocol ones for
+    /// `protocols` only; the gauges and the event drops live elsewhere and
+    /// are filled in by the caller.
+    pub fn snapshot(&self, protocols: &[Protocol]) -> BgpListener {
         let get = Self::get;
         let mut ignored_families: Vec<_> = self
             .ignored_families()
@@ -106,19 +154,55 @@ impl BmpStats {
             .map(|((afi, safi), n)| (afi, safi, n))
             .collect();
         ignored_families.sort_unstable();
+        let per = |counters: &PerProtocol| -> Vec<(&'static str, u64)> {
+            protocols
+                .iter()
+                .map(|p| (p.as_str(), get(&counters[p.index()])))
+                .collect()
+        };
+        let mut sessions_closed = Vec::new();
+        let mut messages = Vec::new();
+        for p in protocols {
+            for end in SessionEnd::reasons(*p) {
+                sessions_closed.push((
+                    p.as_str(),
+                    SessionEnd::NAMES[*end],
+                    get(&self.sessions_closed[p.index()][*end]),
+                ));
+            }
+            match p {
+                Protocol::Bmp => messages.extend(
+                    MESSAGE_NAMES
+                        .iter()
+                        .zip(&self.messages)
+                        .map(|(name, n)| (p.as_str(), *name, get(n))),
+                ),
+                Protocol::Bgp => messages.extend(
+                    BGP_MESSAGE_NAMES
+                        .iter()
+                        .zip(&self.bgp_messages)
+                        .map(|(name, n)| (p.as_str(), *name, get(n))),
+                ),
+            }
+        }
+        let by_code = |counters: &[AtomicU64; CODE_NAMES.len()]| -> Vec<(&'static str, u64)> {
+            if !protocols.contains(&Protocol::Bgp) {
+                return Vec::new();
+            }
+            CODE_NAMES
+                .iter()
+                .zip(counters)
+                .map(|(name, n)| (*name, get(n)))
+                .collect()
+        };
         BgpListener {
-            sessions_opened: get(&self.sessions_opened),
-            sessions_superseded: get(&self.sessions_superseded),
-            sessions_closed: SessionEnd::NAMES
-                .iter()
-                .zip(&self.sessions_closed)
-                .map(|(name, n)| (*name, get(n)))
-                .collect(),
-            messages: MESSAGE_NAMES
-                .iter()
-                .zip(&self.messages)
-                .map(|(name, n)| (*name, get(n)))
-                .collect(),
+            sessions_opened: per(&self.sessions_opened),
+            sessions_superseded: per(&self.sessions_superseded),
+            sessions_refused: per(&self.sessions_refused),
+            sessions_closed,
+            messages,
+            notifications_sent: by_code(&self.notifications_sent),
+            notifications_received: by_code(&self.notifications_received),
             messages_skipped: get(&self.messages_skipped),
             adj_rib_messages: get(&self.adj_rib_messages),
             without_peer_up: get(&self.without_peer_up),

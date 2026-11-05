@@ -212,6 +212,10 @@ time = "0.3.53"
 derive_more = { version = "2.1.1", features = ["debug"] }
 rand.workspace = true
 
+# TCP_MD5SIG for passive BGP session passwords.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.186"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 postgres-types = "0.2.13"

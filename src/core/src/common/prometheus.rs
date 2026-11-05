@@ -566,8 +566,10 @@ mod tests {
                         routers_live: 2,
                         route_table: true,
                         routes_announced: 7,
-                        sessions_closed: vec![("eof", 1), ("reset", 3)],
-                        messages: vec![("route_monitoring", 9)],
+                        sessions_opened: vec![("bmp", 4), ("bgp", 5)],
+                        sessions_closed: vec![("bmp", "eof", 1), ("bgp", "reset", 3)],
+                        messages: vec![("bmp", "route_monitoring", 9), ("bgp", "update", 6)],
+                        notifications_sent: vec![("cease", 2)],
                         ignored_families: vec![(1, 128, 4)],
                         ..Default::default()
                     })),
@@ -587,8 +589,17 @@ mod tests {
             format!("patrolli_listener_bgp_routers_live{{{labels}}} 2"),
             format!("patrolli_listener_bgp_route_table{{{labels}}} 1"),
             format!("patrolli_listener_bgp_routes_announced_total{{{labels}}} 7"),
-            format!("patrolli_listener_bgp_sessions_closed_total{{{labels},reason=\"reset\"}} 3"),
-            format!("patrolli_listener_bgp_messages_total{{{labels},type=\"route_monitoring\"}} 9"),
+            format!("patrolli_listener_bgp_sessions_opened_total{{{labels},protocol=\"bgp\"}} 5"),
+            format!(
+                "patrolli_listener_bgp_sessions_closed_total{{{labels},protocol=\"bgp\",reason=\"reset\"}} 3"
+            ),
+            format!(
+                "patrolli_listener_bgp_messages_total{{{labels},protocol=\"bmp\",type=\"route_monitoring\"}} 9"
+            ),
+            format!(
+                "patrolli_listener_bgp_messages_total{{{labels},protocol=\"bgp\",type=\"update\"}} 6"
+            ),
+            format!("patrolli_listener_bgp_notifications_sent_total{{{labels},code=\"cease\"}} 2"),
             format!(
                 "patrolli_listener_bgp_ignored_families_total{{{labels},afi=\"1\",safi=\"128\"}} 4"
             ),

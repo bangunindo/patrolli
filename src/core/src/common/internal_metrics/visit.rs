@@ -917,7 +917,7 @@ fn walk_bgp_listeners<V: Visitor>(
     gauge_field(
         v,
         "listener.bgp.routers_live",
-        "Routers with a live BMP session to a bgp listener.",
+        "Routers with a live BMP or BGP session to a bgp listener.",
         Unit::None,
         samples,
         |bgp| bgp.routers_live,
@@ -935,16 +935,6 @@ fn walk_bgp_listeners<V: Visitor>(
         samples,
         [
             (
-                "listener.bgp.sessions_opened",
-                "BMP sessions a bgp listener accepted.",
-                sessions_opened
-            ),
-            (
-                "listener.bgp.sessions_superseded",
-                "BMP sessions ended because their router connected again.",
-                sessions_superseded
-            ),
-            (
                 "listener.bgp.messages_skipped",
                 "BMP messages that failed to parse but carried nothing the route table needs.",
                 messages_skipped
@@ -961,7 +951,7 @@ fn walk_bgp_listeners<V: Visitor>(
             ),
             (
                 "listener.bgp.vrf_filtered",
-                "Loc-RIB messages of VRFs the listener does not keep.",
+                "Loc-RIB and BGP UPDATE messages of VRFs the listener does not keep.",
                 vrf_filtered
             ),
             (
@@ -1023,21 +1013,77 @@ fn walk_bgp_listeners<V: Visitor>(
             })
             .collect::<Vec<_>>()
     };
+    let by_protocol =
+        |label: &'static str, values: fn(&BgpListener) -> &[(&'static str, &'static str, u64)]| {
+            samples
+                .iter()
+                .flat_map(|sample| {
+                    values(sample.item).iter().map(|(protocol, name, n)| {
+                        let mut labels = sample.labels.clone();
+                        labels.push(("protocol", Cow::Borrowed(*protocol)));
+                        labels.push((label, Cow::Borrowed(*name)));
+                        (labels, *n)
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+    for (name, help, values) in [
+        (
+            "listener.bgp.sessions_opened",
+            "Sessions a bgp listener accepted, by protocol.",
+            (|bgp| &bgp.sessions_opened) as fn(&BgpListener) -> &[(&'static str, u64)],
+        ),
+        (
+            "listener.bgp.sessions_superseded",
+            "Sessions ended because their router connected again, by protocol.",
+            |bgp| &bgp.sessions_superseded,
+        ),
+        (
+            "listener.bgp.sessions_refused",
+            "Sessions refused because their router was live over the other protocol.",
+            |bgp| &bgp.sessions_refused,
+        ),
+    ] {
+        family_u64(
+            v,
+            name,
+            help,
+            Unit::None,
+            Kind::Counter,
+            by("protocol", values),
+        )?;
+    }
     family_u64(
         v,
         "listener.bgp.sessions_closed",
-        "BMP sessions ended, by reason.",
+        "Sessions ended, by protocol and reason.",
         Unit::None,
         Kind::Counter,
-        by("reason", |bgp| &bgp.sessions_closed),
+        by_protocol("reason", |bgp| &bgp.sessions_closed),
     )?;
     family_u64(
         v,
         "listener.bgp.messages",
-        "BMP messages received, by type.",
+        "BMP and BGP messages received, by protocol and type.",
         Unit::None,
         Kind::Counter,
-        by("type", |bgp| &bgp.messages),
+        by_protocol("type", |bgp| &bgp.messages),
+    )?;
+    family_u64(
+        v,
+        "listener.bgp.notifications_sent",
+        "BGP NOTIFICATION messages sent to routers, by error code.",
+        Unit::None,
+        Kind::Counter,
+        by("code", |bgp| &bgp.notifications_sent),
+    )?;
+    family_u64(
+        v,
+        "listener.bgp.notifications_received",
+        "BGP NOTIFICATION messages received from routers, by error code.",
+        Unit::None,
+        Kind::Counter,
+        by("code", |bgp| &bgp.notifications_received),
     )?;
     family_u64(
         v,

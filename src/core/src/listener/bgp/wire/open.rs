@@ -8,11 +8,18 @@
 use super::{Afi, Reader, Result};
 use std::net::Ipv4Addr;
 
-/// Capability codes read here.
+/// Capability codes read or sent here.
 const CAP_MULTIPROTOCOL: u8 = 1;
+const CAP_ROUTE_REFRESH: u8 = 2;
+const CAP_EXTENDED_NEXT_HOP: u8 = 5;
 const CAP_EXTENDED_MESSAGE: u8 = 6;
+const CAP_GRACEFUL_RESTART: u8 = 64;
 const CAP_FOUR_OCTET_AS: u8 = 65;
 const CAP_ADD_PATH: u8 = 69;
+
+/// The 2-octet AS a 4-octet speaker puts in "My Autonomous System" when its AS
+/// does not fit (RFC 6793).
+pub const AS_TRANS: u16 = 23456;
 /// Optional parameter type of a capabilities list.
 const PARAM_CAPABILITIES: u8 = 2;
 /// RFC 9072: a non-extended parameter length of 255 followed by this type
@@ -37,6 +44,10 @@ pub struct Open {
     /// the ADD-PATH send/receive bits per unicast family, 0 when absent
     pub add_path: [u8; 2],
     pub extended_message: bool,
+    /// the sender accepts ROUTE-REFRESH (RFC 2918)
+    pub route_refresh: bool,
+    /// the restart time of a Graceful Restart capability (RFC 4724)
+    pub graceful_restart: Option<u16>,
 }
 
 impl Open {
@@ -69,6 +80,8 @@ impl Open {
             families: [false; 2],
             add_path: [0; 2],
             extended_message: false,
+            route_refresh: false,
+            graceful_restart: None,
         };
         let mut multiprotocol = false;
         while !params.is_empty() {
@@ -111,6 +124,11 @@ impl Open {
                         }
                     }
                     CAP_EXTENDED_MESSAGE => open.extended_message = true,
+                    CAP_ROUTE_REFRESH => open.route_refresh = true,
+                    CAP_GRACEFUL_RESTART => {
+                        let flags_time = cap.u16("graceful restart capability truncated")?;
+                        open.graceful_restart = Some(flags_time & 0x0fff);
+                    }
                     _ => {}
                 }
             }
@@ -132,7 +150,31 @@ pub fn sends_path_ids(open: &Open, family: Afi) -> bool {
     open.add_path[family.index()] & ADD_PATH_SEND != 0
 }
 
-/// Test helper: an OPEN body with the given capabilities, each `(code, value)`.
+/// An OPEN body (after the BGP header) with the given capabilities, each
+/// `(code, value)`. An AS above 65535 goes out as [`AS_TRANS`]; the 4-octet AS
+/// capability carries it.
+pub fn open_body(asn: u32, hold_time: u16, bgp_id: Ipv4Addr, caps: &[(u8, Vec<u8>)]) -> Vec<u8> {
+    let mut list = Vec::new();
+    for (code, value) in caps {
+        list.push(*code);
+        list.push(value.len() as u8);
+        list.extend_from_slice(value);
+    }
+    let my_as = u16::try_from(asn).unwrap_or(AS_TRANS);
+    let mut out = vec![4];
+    out.extend_from_slice(&my_as.to_be_bytes());
+    out.extend_from_slice(&hold_time.to_be_bytes());
+    out.extend_from_slice(&bgp_id.octets());
+    // one capabilities parameter; ours always fit a one-byte length
+    out.push(list.len() as u8 + 2);
+    out.push(PARAM_CAPABILITIES);
+    out.push(list.len() as u8);
+    out.extend_from_slice(&list);
+    out
+}
+
+/// Test helper: an OPEN body with the given capabilities, each in a parameter
+/// of its own, as some routers send them.
 #[cfg(test)]
 pub fn build_open(my_as: u16, bgp_id: Ipv4Addr, caps: &[(u8, Vec<u8>)]) -> Vec<u8> {
     let mut params = Vec::new();
@@ -152,8 +194,7 @@ pub fn build_open(my_as: u16, bgp_id: Ipv4Addr, caps: &[(u8, Vec<u8>)]) -> Vec<u
     out
 }
 
-/// Test helper: the capability values for the usual cases.
-#[cfg(test)]
+/// Capability values, each `(code, value)`.
 pub mod caps {
     use super::*;
     pub use crate::listener::bgp::wire::{AFI_IPV4, AFI_IPV6, SAFI_UNICAST};
@@ -183,6 +224,38 @@ pub mod caps {
             multiprotocol(AFI_IPV6, SAFI_UNICAST),
         ]
     }
+
+    pub fn route_refresh() -> (u8, Vec<u8>) {
+        (CAP_ROUTE_REFRESH, Vec::new())
+    }
+
+    pub fn extended_message() -> (u8, Vec<u8>) {
+        (CAP_EXTENDED_MESSAGE, Vec::new())
+    }
+
+    /// RFC 8950: IPv4 unicast routes may carry an IPv6 next hop.
+    pub fn extended_next_hop_v4_over_v6() -> (u8, Vec<u8>) {
+        let mut v = AFI_IPV4.to_be_bytes().to_vec();
+        v.extend_from_slice(&(SAFI_UNICAST as u16).to_be_bytes());
+        v.extend_from_slice(&AFI_IPV6.to_be_bytes());
+        (CAP_EXTENDED_NEXT_HOP, v)
+    }
+
+    /// RFC 4724 §3 with no families: the sender preserves no forwarding
+    /// state of its own, but follows the receiving speaker's procedures and
+    /// understands End-of-RIB.
+    pub fn graceful_restart_receiver() -> (u8, Vec<u8>) {
+        (CAP_GRACEFUL_RESTART, vec![0, 0])
+    }
+
+    /// A Graceful Restart capability with a restart time, as a router sends.
+    #[cfg(test)]
+    pub fn graceful_restart(restart_time: u16) -> (u8, Vec<u8>) {
+        (
+            CAP_GRACEFUL_RESTART,
+            (restart_time & 0x0fff).to_be_bytes().to_vec(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -209,6 +282,34 @@ mod tests {
         assert!(sends_path_ids(&open, Afi::V4));
         assert!(!sends_path_ids(&open, Afi::V6), "receive only");
         assert!(open.extended_message);
+    }
+
+    #[test]
+    fn our_open_reads_back_as_sent() {
+        let id = Ipv4Addr::new(192, 0, 2, 10);
+        let list = [
+            caps::multiprotocol(AFI_IPV4, SAFI_UNICAST),
+            caps::four_octet(4_200_000_000),
+            caps::route_refresh(),
+            caps::extended_message(),
+            caps::extended_next_hop_v4_over_v6(),
+            caps::graceful_restart_receiver(),
+        ];
+        let body = open_body(4_200_000_000, 90, id, &list);
+        assert_eq!(&body[1..3], &AS_TRANS.to_be_bytes());
+        let open = Open::parse(&body).unwrap();
+        assert_eq!(open.asn, 4_200_000_000);
+        assert_eq!(open.hold_time, 90);
+        assert_eq!(open.bgp_id, id);
+        assert_eq!(open.families, [true, false]);
+        assert!(open.route_refresh && open.extended_message && open.four_octet_as);
+        assert_eq!(open.graceful_restart, Some(0));
+        assert_eq!(open.add_path, [0, 0]);
+
+        let small = Open::parse(&open_body(64500, 0, id, &[])).unwrap();
+        assert_eq!((small.asn, small.hold_time), (64500, 0));
+        let gr = Open::parse(&build_open(64500, id, &[caps::graceful_restart(120)])).unwrap();
+        assert_eq!(gr.graceful_restart, Some(120));
     }
 
     #[test]
