@@ -435,7 +435,7 @@ optional route events as log records, best effort (drop and count when full). Tw
    - Rebuild detection: `RouteTable::is_current` compares the handle's `Arc<Mutable>` with the
      registry's, so a session whose table was replaced reconnects (BMP) or sends ROUTE-REFRESH
      (BGP, if negotiated) to get a fresh dump.
-   - `tests/bench_rib.rs`: loads an MRT RIB dump (bgpkit-parser dev-dependency) into a `bgp`
+   - `crates/app/tests/bench_rib.rs`: loads an MRT RIB dump (bgpkit-parser dev-dependency) into a `bgp`
      table. rrc26 bview, 1.37M routes (1.11M v4), one router, release, one thread:
      insert 1.9M routes/s; **331 B/route**; LPM 1.9M/s at addresses inside known prefixes and
      4.2M/s at random v4 (73% hit); sweeping 684k stale routes 155 ms; Peer Down of 684k

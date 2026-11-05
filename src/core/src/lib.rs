@@ -2,7 +2,6 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-pub mod api;
 pub mod cache;
 pub mod chan;
 pub mod common;
