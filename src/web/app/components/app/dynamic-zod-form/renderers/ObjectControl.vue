@@ -73,11 +73,13 @@ const childUiSchema = computed<UISchemaElement>(() => {
 
 	for (const propName of Object.keys(properties.value)) {
 		const fullPath = basePath ? `${basePath}.${propName}` : propName
+		const propSchema = properties.value[propName]
 		const ctrl = createControlElement(
 			propName,
 			fullPath,
 			formHints.value,
-			(control.value as any).rootData
+			(control.value as any).rootData,
+			propSchema
 		)
 		elements.push(ctrl)
 	}

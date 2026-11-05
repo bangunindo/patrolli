@@ -10,6 +10,7 @@ import type {
 	VerticalLayout
 } from '@jsonforms/core'
 import type { UiHint } from '@@/shared/types/dynamic-form.type'
+import { isSensitiveJsonSchema } from './sensitive.utils'
 
 /**
  * Resolves UiHint for a given path key, checking exact match, alias, suffix match, and branch alias.
@@ -73,12 +74,15 @@ export function createControlElement(
 	propKey: string,
 	fullPath: string,
 	hints: Record<string, UiHint> = {},
-	rootData?: any
+	rootData?: any,
+	propSchema?: any
 ): ControlElement {
 	const hint =
 		resolveHintForPath(fullPath, hints, rootData) ||
 		resolveHintForPath(propKey, hints, rootData) ||
 		{}
+	const isSensitive = hint.sensitive ?? (propSchema ? isSensitiveJsonSchema(propSchema) : false)
+	const widget = hint.widget || (isSensitive ? 'password' : undefined)
 	return {
 		type: 'Control',
 		scope: `#/properties/${propKey}`,
@@ -87,8 +91,8 @@ export function createControlElement(
 			placeholder: hint.placeholder,
 			description: hint.description,
 			helpText: hint.helpText,
-			sensitive: hint.sensitive,
-			widget: hint.widget,
+			sensitive: isSensitive,
+			widget,
 			options: hint.options,
 			disabled: hint.disabled,
 			readonly: hint.readonly,
@@ -121,24 +125,13 @@ export function hintsToUiSchema(
 		.filter((propKey) => !hints[propKey]?.hidden)
 		.map((propKey) => {
 			const hint = hints[propKey] || {}
-			const control: ControlElement = {
-				type: 'Control',
-				scope: `#/properties/${propKey}`,
-				...(hint.label ? { label: hint.label } : {}),
-				options: {
-					placeholder: hint.placeholder,
-					description: hint.description,
-					helpText: hint.helpText,
-					sensitive: hint.sensitive,
-					widget: hint.widget,
-					options: hint.options,
-					disabled: hint.disabled,
-					readonly: hint.readonly,
-					rules: hint.rules,
-					format: hint.format,
-					...hint
-				}
-			}
+			const control = createControlElement(
+				propKey,
+				propKey,
+				hints,
+				undefined,
+				properties[propKey]
+			)
 
 			return {
 				propKey,
