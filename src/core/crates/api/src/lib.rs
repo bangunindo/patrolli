@@ -2,10 +2,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-pub mod error;
-pub mod handlers;
+mod error;
+mod handlers;
 pub mod jwt;
-pub mod response;
+mod response;
 pub mod state;
 use utoipa::{
     Modify,
