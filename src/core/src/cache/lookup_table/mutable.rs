@@ -480,6 +480,48 @@ impl Mutable {
         removed
     }
 
+    /// Drops the rows of one partition last written before `cutoff` (in
+    /// [`now_millis`] time), returning how many went.
+    ///
+    /// The resync sweep of a BGP session: a re-sent route is a fresh row
+    /// stamped by its upsert, so after End-of-RIB whatever still predates the
+    /// session's start was not re-announced. An emptied partition is unlinked,
+    /// as in [`Self::remove`]. Zero for a missing partition, a hash table, or a
+    /// partition tuple of the wrong arity.
+    pub fn sweep_partition(&self, partition: &[KeyRef<'_>], cutoff: u64) -> usize {
+        let KeyPlan::Prefix { partition: cols } = &self.key else {
+            return 0;
+        };
+        if partition.len() != cols.len() {
+            return 0;
+        }
+        let hash = hash_key(partition.iter().copied());
+        let mut shard = self.shard_of(hash).write();
+        let Ok(mut entry) = shard
+            .prefixes
+            .find_entry(hash, |(k, _)| keys_eq(k, partition))
+        else {
+            return 0;
+        };
+        // Collected rather than dropped in place, so the rows are freed after
+        // the lock is released: a full table can stale out a million routes.
+        let mut stale = Vec::new();
+        entry.get_mut().1.retain(|_, row| {
+            let keep = row.last_seen() >= cutoff;
+            if !keep {
+                stale.push(Arc::clone(row));
+            }
+            keep
+        });
+        let emptied = entry.get().1.is_empty().then(|| entry.remove().0);
+        let removed = stale.len();
+        self.adjust_len(-(removed as i64));
+        drop(shard);
+        drop(stale);
+        drop(emptied);
+        removed
+    }
+
     /// Drops rows untouched for longer than the table's TTL. Returns how many
     /// stored entries went away.
     pub fn expire(&self, now: u64) -> usize {
@@ -1257,6 +1299,48 @@ mod tests {
         assert_eq!(t.len(), 3);
         // and a hash table has no partitions to remove
         assert_eq!(hash_table(10, None).remove_partition(&a), 0);
+    }
+
+    #[test]
+    fn a_partition_sweep_drops_only_its_own_stale_rows() {
+        let t = peer_table(10);
+        let a = [KeyRef::String("peer-a")];
+        let b = [KeyRef::String("peer-b")];
+        let _ = put_peer(&t, "peer-a", "10.0.0.0/8", "old");
+        let _ = put_peer(&t, "peer-a", "10.1.0.0/16", "old");
+        let _ = put_peer(&t, "peer-b", "10.0.0.0/8", "old");
+        // the session restarts: everything written so far predates it
+        std::thread::sleep(Duration::from_millis(2));
+        let cutoff = now_millis();
+        // and re-announces one route
+        let _ = put_peer(&t, "peer-a", "10.1.0.0/16", "new");
+
+        assert_eq!(t.sweep_partition(&a, cutoff), 1);
+        assert_eq!(t.len(), 2);
+        assert_eq!(at(&t, &a, "10.0.0.1"), None);
+        assert_eq!(
+            at(&t, &a, "10.1.0.1"),
+            Some(("new".into(), net("10.1.0.0/16")))
+        );
+        assert_eq!(
+            at(&t, &b, "10.0.0.1"),
+            Some(("old".into(), net("10.0.0.0/8"))),
+            "another partition is untouched"
+        );
+        assert_eq!(t.sweep_partition(&a, cutoff), 0, "nothing left to sweep");
+
+        // a partition swept empty is unlinked, releasing its key
+        assert_eq!(t.sweep_partition(&b, cutoff), 1);
+        assert_eq!(t.len(), 1);
+        let partitions: usize = t.shards.iter().map(|s| s.read().prefixes.len()).sum();
+        assert_eq!(partitions, 1);
+
+        // a missing partition, a wrong arity, or a hash table sweeps nothing
+        assert_eq!(t.sweep_partition(&[KeyRef::String("peer-z")], u64::MAX), 0);
+        assert_eq!(t.sweep_partition(&[], u64::MAX), 0);
+        assert_eq!(hash_table(10, None).sweep_partition(&a, u64::MAX), 0);
+        assert_eq!(t.len(), 1);
+        assert_eq!(stored_prefixes(&t), 1);
     }
 
     #[test]

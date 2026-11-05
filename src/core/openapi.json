@@ -4815,6 +4815,21 @@
         },
         "additionalProperties": false
       },
+      "AttributeLookupLiteral": {
+        "oneOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "description": "A constant probe value. Any YAML scalar but a float: it is rendered as text\nand parsed as the key column's type, the way the table parses its rows."
+      },
       "AttributeLookupMatch": {
         "type": "object",
         "description": "Bind attributes to the index already defined by the lookup table.\n\nA hash table requires exactly its configured key columns and no `point`; a\nprefix table its partition columns (possibly none) plus `point`, which\nfinds the longest stored prefix containing that address. Bindings are\nnamed, so YAML map order does not determine tuple order.",
@@ -4824,6 +4839,16 @@
             "description": "Lookup-table key/partition column -> input attribute. Empty only for an\nunpartitioned prefix lookup. The prefix column is not a probe binding.",
             "additionalProperties": {
               "$ref": "#/components/schemas/AttributeLookupInput"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "literals": {
+            "type": "object",
+            "description": "Lookup-table key/partition column -> a constant every record probes\nwith, such as `vrf: global` on a route table. Parsed as the column's type\nwhen the table resolves, so `router: 192.0.2.1` binds an ip column with\nno cast. A column is bound here or in `keys`, never both, and a hash\nkey needs at least one column from `keys`.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AttributeLookupLiteral"
             },
             "propertyNames": {
               "type": "string"

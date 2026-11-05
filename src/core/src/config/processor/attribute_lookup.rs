@@ -93,6 +93,13 @@ pub struct AttributeLookupMatch {
     /// unpartitioned prefix lookup. The prefix column is not a probe binding.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub keys: BTreeMap<String, AttributeLookupInput>,
+    /// Lookup-table key/partition column -> a constant every record probes
+    /// with, such as `vrf: global` on a route table. Parsed as the column's type
+    /// when the table resolves, so `router: 192.0.2.1` binds an ip column with
+    /// no cast. A column is bound here or in `keys`, never both, and a hash
+    /// key needs at least one column from `keys`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub literals: BTreeMap<String, AttributeLookupLiteral>,
     /// Address to look up in a prefix table; absent for a hash lookup. Always
     /// read as an IP (text, or the bare-integer form), so `cast` may be left
     /// out; if set it must be `ip`.
@@ -124,6 +131,26 @@ pub struct AttributeLookupInput {
     /// table's `point` is always an IP and needs no cast.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cast: Option<AttributeLookupCast>,
+}
+
+/// A constant probe value. Any YAML scalar but a float: it is rendered as text
+/// and parsed as the key column's type, the way the table parses its rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum AttributeLookupLiteral {
+    Bool(bool),
+    Integer(i64),
+    String(String),
+}
+
+impl AttributeLookupLiteral {
+    pub fn to_text(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Self::Bool(v) => v.to_string().into(),
+            Self::Integer(v) => v.to_string().into(),
+            Self::String(v) => v.as_str().into(),
+        }
+    }
 }
 
 /// Supported key conversions. Doubles are excluded because the lookup indexes
@@ -169,12 +196,16 @@ impl AttributeLookupRule {
         if let Some(filter) = &self.when {
             validate_when(filter, &self.table).context("when")?;
         }
-        if self.match_by.keys.is_empty() && self.match_by.point.is_none() {
-            bail!("match requires keys or a point");
+        let by = &self.match_by;
+        if by.keys.is_empty() && by.literals.is_empty() && by.point.is_none() {
+            bail!("match requires keys, literals or a point");
         }
-        for column in self.match_by.keys.keys() {
+        if let Some(column) = by.literals.keys().find(|c| by.keys.contains_key(*c)) {
+            bail!("match binds {column:?} in both keys and literals");
+        }
+        for column in by.keys.keys().chain(by.literals.keys()) {
             if column.trim().is_empty() {
-                bail!("match.keys must not contain an empty column name");
+                bail!("match.keys and match.literals must not contain an empty column name");
             }
         }
         if let Some(point) = &self.match_by.point
@@ -277,6 +308,56 @@ mod tests {
             "op": "=",
             "value": {"string": "production"}
         }})
+    }
+
+    #[test]
+    fn literals_take_any_non_float_scalar_and_round_trip() {
+        let yaml = "lookups:\n\
+                    - lookup_table: 019b77b3-df79-70a2-ab01-f43b2cf72402\n\
+                    \x20 table: record\n\
+                    \x20 match:\n\
+                    \x20   keys: {router: {key: exporter, cast: ip}}\n\
+                    \x20   literals: {vrf: global, asn: 64500, up: true}\n\
+                    \x20   point: {key: destination.address}\n\
+                    \x20 output: {dst_as: origin_as}\n";
+        let parsed: AttributeLookup = serde_yaml_ng::from_str(yaml).unwrap();
+        parsed.validate().unwrap();
+        let literals = &parsed.lookups[0].match_by.literals;
+        assert_eq!(
+            literals["vrf"],
+            AttributeLookupLiteral::String("global".into())
+        );
+        assert_eq!(literals["asn"], AttributeLookupLiteral::Integer(64500));
+        assert_eq!(literals["up"], AttributeLookupLiteral::Bool(true));
+        assert_eq!(literals["asn"].to_text(), "64500");
+
+        let back: AttributeLookup =
+            serde_json::from_value(serde_json::to_value(&parsed).unwrap()).unwrap();
+        assert_eq!(back.lookups[0].match_by.literals, *literals);
+        // and an empty map stays out of the serialized form
+        let plain = serde_json::to_value(config(vec![rule()])).unwrap();
+        assert!(plain["lookups"][0]["match"].get("literals").is_none());
+    }
+
+    #[test]
+    fn a_column_is_bound_by_keys_or_literals_not_both() {
+        let mut both = rule();
+        both["match"]["literals"] = json!({"index": 3});
+        let err = config(vec![both]).validate().unwrap_err();
+        assert!(
+            format!("{err:#}").contains("both keys and literals"),
+            "{err:#}"
+        );
+
+        let mut empty = rule();
+        empty["match"]["literals"] = json!({" ": "x"});
+        assert!(config(vec![empty]).validate().is_err());
+
+        // literals alone are a binding as far as the config can tell; whether
+        // the table accepts them is decided when it resolves
+        let mut only = rule();
+        only["match"] = json!({"literals": {"vrf": "global"}});
+        config(vec![only]).validate().unwrap();
     }
 
     #[test]
@@ -504,10 +585,14 @@ mod tests {
         let Config::AttributeLookup(config) = &processors[0].config else {
             panic!("the documented type tag must select AttributeLookup");
         };
-        assert_eq!(config.lookups.len(), 2);
+        assert_eq!(config.lookups.len(), 3);
         assert!(config.when.is_some());
         assert!(config.lookups[0].when.is_none());
         assert!(config.lookups[1].when.is_some());
+        assert_eq!(
+            config.lookups[2].match_by.literals["vrf"],
+            AttributeLookupLiteral::String("global".into())
+        );
 
         // Local mode validates its processors too, so the documented block has to
         // survive the same path a YAML deployment takes. `global.validate`

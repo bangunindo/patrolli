@@ -369,6 +369,32 @@ monitor:
 #       type: prefix
 #       prefix_column: prefix
 #       partition_columns: [peer]
+#
+#   # ── Route table, written by a BGP/BMP listener (see docs/bgp-bmp.md). The
+#   # columns and the key are fixed, so neither is given (a key spelled out must
+#   # be exactly the fixed one): prefix-keyed on `prefix`, partitioned by
+#   # `router` and `vrf`. Columns:
+#   #   router             ip       the BMP router or BGP peer the route came from
+#   #   vrf                string   `global` for the default table, otherwise the
+#   #                               route distinguisher as ASN:n or IP:n
+#   #   prefix             the key  output as CIDR text
+#   #   next_hop           ip
+#   #   origin_as          integer  last AS of the path; null for an aggregate
+#   #                               ending in a set of several ASes
+#   #   peer_as            integer  first AS of the path
+#   #   as_path            string   space separated, a set as {a,b}
+#   #   communities        string   space separated a:b
+#   #   large_communities  string   space separated a:b:c
+#   #   local_pref, med    integer  null when absent
+#   # Only the listener writes it; attribute_collect refuses it. Routes leave on
+#   # withdrawal, peer down or the resync after a reconnect, never by age. Which
+#   # routes are kept (VRFs, RIB views) is the listener's config.
+#   - id: 019b77b3-df79-70a2-ab01-f43b2cf72405
+#     name: routes
+#     source:
+#       type: bgp
+#       listener: 019b77b3-df79-70a2-ab01-b43b2cf723b0  # the listener that writes it
+#       max_rows: 4000000      # cap across every router and VRF. Default 4000000.
 
 # ──────────────────────────────────────────────────────────────────────────────
 # listeners — passive receivers. Each runs its own worker pool and feeds the
@@ -756,6 +782,18 @@ processors:
   #           "geoip.source.country": country
   #           "geoip.source.city": city
   #           "geoip.source.latitude": latitude
+  #       - lookup_table: 019b77b3-df79-70a2-ab01-f43b2cf72405 # routes
+  #         table: record
+  #         match:
+  #           keys:            # the exporter is the router whose routes apply
+  #             router: {key: source.address, cast: ip}
+  #           literals:        # key column -> a constant, parsed as the
+  #             vrf: global    # column's type; never also in keys
+  #           point: {key: nf.data.destinationIPv4Address}
+  #         output:
+  #           dst.as: origin_as
+  #           dst.as_path: as_path
+  #           dst.network: prefix
   # END attribute_lookup example
   # Missing inputs, failed casts, misses and null result cells leave outputs alone.
   # Guards use the existing AttributeFilter syntax, but spelled as maps

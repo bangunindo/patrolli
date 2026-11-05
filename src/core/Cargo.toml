@@ -191,6 +191,8 @@ criterion = { version = "0.8.2", features = ["html_reports"] }
 tempfile = "3.27.0"
 # An in-process agent for the snmp monitor tests.
 async-snmp = { version = "0.18.1", features = ["agent"] }
+# Reads MRT RIB dumps for tests/bench_rib.rs; the parser alone, no downloader.
+bgpkit-parser = { version = "0.23", default-features = false, features = ["parser"] }
 
 [build-dependencies]
 prost-build = "0.14.3"

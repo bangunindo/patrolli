@@ -729,6 +729,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bgpkit-parser"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f26438a146a77e493f9a59fca58e7a29face3581d8c2d8ba4b7f5e3c49639cc0"
+dependencies = [
+ "bitflags",
+ "bytes",
+ "chrono",
+ "ipnet",
+ "itertools 0.15.0",
+ "log",
+ "num_enum",
+ "regex",
+ "smallvec",
+ "zerocopy",
+]
+
+[[package]]
 name = "bigdecimal"
 version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -746,6 +764,9 @@ name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "bitvec"
@@ -4530,6 +4551,7 @@ dependencies = [
  "axum-extra",
  "axum-server",
  "base64 0.23.0",
+ "bgpkit-parser",
  "bytes",
  "chrono",
  "chrono-tz",

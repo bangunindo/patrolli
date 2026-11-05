@@ -479,6 +479,14 @@ fn run_rule<'a>(
             rule.lookup_table
         )
     })?;
+    if let lt::Source::Bgp(bgp) = &table.meta().config.source {
+        bail!(
+            "lookup table {} is written by bgp listener {}; only `source.type: processor` \
+             tables are writable",
+            rule.lookup_table,
+            bgp.listener
+        );
+    }
     let plan: Plan<'a> = Plan::resolve(mutable.table(), &table.meta().config, rule)?;
     // One handle per rule per batch: the outcomes are tallied without atomics and
     // reach the shared counters when it drops.
@@ -859,6 +867,17 @@ mod tests {
                 "format": {"type": "csv", "has_headers": false, "headers": ["id", "name"]},
             },
             "key": {"type": "hash", "key_columns": ["id"]},
+        }))
+        .unwrap();
+        cache.lookup_table.insert(&config).unwrap();
+        config.id
+    }
+
+    fn bgp_table(cache: &cache::Cache) -> Uuid {
+        let config: lt::LookupTable = serde_json::from_value(json!({
+            "id": Uuid::now_v7(),
+            "name": "routes",
+            "source": {"type": "bgp", "listener": Uuid::now_v7()},
         }))
         .unwrap();
         cache.lookup_table.insert(&config).unwrap();
@@ -2231,6 +2250,7 @@ mod tests {
         );
         let double_keyed = hash_table(&cache, &["load"], &[("load", lt::ValueType::Double)]);
         let file = file_table(&cache);
+        let bgp = bgp_table(&cache);
         let pl = || logs(vec![], vec![vec![kv("sid", s("a")), kv("bw", int(1))]]);
         let rule = |value: Json| {
             let cfg = config(json!({"collections": [value]}));
@@ -2277,6 +2297,13 @@ mod tests {
                 "columns": {"id": {"key": "sid"}, "name": {"key": "sid"}},
             })),
             "a file-backed table is not writable"
+        );
+        assert!(
+            rule(json!({
+                "lookup_table": bgp, "table": "record",
+                "columns": {"vrf": {"key": "sid"}},
+            })),
+            "a bgp table is written only by its listener"
         );
         assert!(
             rule(json!({

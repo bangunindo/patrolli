@@ -299,8 +299,8 @@ Why not `netgauze-bmp-service`:
     needs TTL 0 plus a separate stale sweep.
   - One row per (partition, prefix): fits Loc-RIB and passive BGP, not several neighbours'
     Adj-RIB-In in one partition (one peer's withdraw would delete another's route).
-  - No row interning: each prefix owns an `Arc<MutableRow>` and its cells. Estimated (not
-    measured) 200–300 B per route plus the trie node, ~300 MB per full-table router.
+  - No row interning: each prefix owns an `Arc<MutableRow>` and its cells. Measured by
+    `bench_rib` (phase 1): **331 B per route**, 432 MiB for the 1.37M routes of an rrc26 bview.
   - A partition lives in one shard, so a full dump write-locks that shard ~1M times.
   - `max_rows` is table-wide (default 1M); a rejected prefix makes lookups fall back to a wider
     prefix, i.e. wrong answers rather than missing ones.
@@ -322,7 +322,10 @@ Why not `netgauze-bmp-service`:
    skipped; supporting it (next-hop match or path selection) is a later phase.
 3. ~~Where enrichment runs~~ **Decided: in `cache::lookup_table`**, through a new `bgp` table
    source owned by the listener (section 6). No `cache::route`, no new lookup processor.
-4. **VRF/RD**: partition by PD/RD, map flow → VRF (ingress interface? VRF id IE 234/235).
+4. ~~VRF/RD~~ **Decided**: one table per listener, partitioned by `(router, vrf)`, `vrf` being
+   `global` for RD 0 and the RD text otherwise. The common lookup binds `vrf: global` with an
+   `attribute_lookup` literal. Which VRFs are kept is a listener setting (phase 3). Still open:
+   mapping a flow's ingress VRF ID (IE 234, router-local) to an RD.
 5. ~~Stale handling~~ **Decided**: Peer Down → `remove_partition`; connection loss → keep
    serving for `keep`; after the new dump's End-of-RIB (or when `keep` runs out) sweep what
    the dump did not refresh. Mechanics in section 6, phase 1.
@@ -334,7 +337,8 @@ Why not `netgauze-bmp-service`:
 8. **Cluster placement** of route tables (phase 6).
 9. **Listener shape**: one `bgp` listener type with a BMP port and a BGP port, or two types
    sharing the table source. Decide in phase 3.
-10. **Row interning**: only if the phase 1 bench shows memory per route is a problem.
+10. **Row interning**: the phase 1 bench measured 331 B per route (~330 MB per full-table
+    router). Acceptable for a few routers; revisit when one table carries tens of them.
 
 ---
 
@@ -342,30 +346,48 @@ Why not `netgauze-bmp-service`:
 
 ### Route table: a `bgp` lookup table source
 
-Routes go into a mutable prefix lookup table whose source is a new `cfg::Source` variant beside
-`File` and `Processor`, naming the listener that fills it (name and fields provisional):
+Routes go into a mutable prefix lookup table whose source is a `cfg::Source::Bgp` beside `File`
+and `Processor`, naming the listener that fills it (done in phase 1):
 
 ```yaml
 lookup_tables:
-  - name: routes
+  - id: <uuid>
+    name: routes
     source:
       type: bgp
       listener: <listener id>
-      max_rows: 4000000     # table-wide; size for every router's full table
+      max_rows: 4000000     # default; table-wide, size for every router's full table
     # no columns and no key: both are fixed by the source
 ```
 
-- **Columns and key come from the source**, not the user: key `prefix` partitioned by router and
-  table/VRF; columns such as origin AS, AS path, communities, large communities, next hop,
-  local pref, MED. Users cannot get them wrong. Possibly let the source drop attribute groups
-  (akvorado's `collect-aspaths`/`collect-communities`) to save memory.
+- **Columns and key come from the source** (`config::lookup_table::bgp`): key `prefix`,
+  partitioned by `router` (ip) and `vrf` (string: `global` for RD 0, otherwise the RD as
+  `ASN:n` / `IP:n`). Columns: `next_hop` (ip), `origin_as`, `peer_as`, `local_pref`, `med`
+  (integer), `as_path` (space separated, sets as `{a,b}`, confederation segments as `(a b)` /
+  `[a,b]`), `communities` (`a:b`), `large_communities` (`a:b:c`). `origin_as` is null for an
+  aggregate ending in a multi-member set, and both AS columns skip confederation segments.
+  A `key` may be left out; one that is given must be exactly the fixed key.
+- **One table per listener**, not one per VRF. Which VRFs and RIB views a listener keeps is
+  the listener's config (phase 3), not the table's.
 - **Only the listener writes it.** `attribute_collect` refuses a `bgp` table, so pipeline
   writes can never interleave with a session's stream.
-- **TTL is always 0**; staleness is handled by the sweep below.
-- **Rebuilds are visible.** The source names its listener, so when a config edit rebuilds the
-  table, the listener knows it must resync.
-- `attribute_lookup` reads it like any other prefix table: probe with the flow's address and the
-  router's partition, output the columns it wants and optionally the matched prefix.
+- **TTL is always 0**; routes leave by withdrawal, Peer Down (`peer_down`, one partition) or
+  the resync sweep.
+- **Rebuilds are visible.** `LookupTable::route_table(id)` hands the listener a `RouteTable`;
+  `is_current` is false once the table is removed or rebuilt (only a listener change rebuilds a
+  `bgp` table; a `max_rows` edit keeps the rows), and the session must then resync.
+- **Route rows** are built from `cache::lookup_table::bgp::RouteRow`, which renders the text
+  columns into reusable buffers (`RouteText`), so the format lives in one place.
+- `attribute_lookup` reads it like any other prefix table. `match.literals` binds a key column
+  to a constant, so one rule probes the global table of the flow's exporter:
+
+```yaml
+match:
+  keys:     {router: {key: source.address, cast: ip}}
+  literals: {vrf: global}
+  point:    {key: nf.data.destinationIPv4Address}
+output: {dst.as: origin_as, dst.as_path: as_path, dst.network: prefix}
+```
 
 ### Session writes the table; flume carries only pipeline output
 
@@ -379,17 +401,21 @@ optional route events as log records, best effort (drop and count when full). Tw
 
 ### Phases
 
-1. **Lookup table groundwork** (no network code)
-   - `bgp` source variant: config, validation, fixed schema and key, `attribute_collect`
-     refusing it, API and `openapi.json`, `config-full.yaml`.
-   - A stale sweep: remove the rows of one partition whose `last_seen` is older than a cutoff.
-     Upserts already stamp `last_seen`, so cutoff = session start.
-   - Rebuild detection: a generation on `Mutable`, or the session comparing its `Arc`, so a
-     session whose table was replaced reconnects (BMP) or sends ROUTE-REFRESH (BGP, if
-     negotiated) to get a fresh dump.
-   - `bench_rib`: load a RIPE RIS MRT dump (bgpkit-parser as a dev-dependency) into a prefix
-     table; measure memory per route, dump rate, and lookup latency while writing. Decides
-     whether row interning is needed now.
+1. **Lookup table groundwork** (no network code) — **done**
+   - `bgp` source: config, validation, fixed schema and key, `attribute_collect` refusing it,
+     `config-full.yaml`, `openapi.json`.
+   - `match.literals` in `attribute_lookup`, parsed once per plan with the table's own parser.
+   - Stale sweep: `Mutable::sweep_partition(partition, cutoff)` (via `RouteTable::sweep`)
+     drops the rows of one partition stamped before the cutoff. Upserts already stamp
+     `last_seen`, so cutoff = session start; counted as expired rows.
+   - Rebuild detection: `RouteTable::is_current` compares the handle's `Arc<Mutable>` with the
+     registry's, so a session whose table was replaced reconnects (BMP) or sends ROUTE-REFRESH
+     (BGP, if negotiated) to get a fresh dump.
+   - `tests/bench_rib.rs`: loads an MRT RIB dump (bgpkit-parser dev-dependency) into a `bgp`
+     table. rrc26 bview, 1.37M routes (1.11M v4), one router, release, one thread:
+     insert 1.9M routes/s; **331 B/route**; LPM 1.9M/s at addresses inside known prefixes and
+     4.2M/s at random v4 (73% hit); sweeping 684k stale routes 155 ms; Peer Down of 684k
+     routes 81 ms. Not yet measured: lookups while a dump is being written.
 2. **BMP session**
    - `FramedRead<TcpStream, BmpCodec>`; Initiation must come first; message size cap; source
      allow-list.
@@ -412,7 +438,8 @@ optional route events as log records, best effort (drop and count when full). Tw
    the node holding its session, or the routes are replicated.
 
 Later, only if needed: Adj-RIB-In (next-hop match as akvorado, or path selection), row interning,
-BMPv4 TLVs (including the Sequence Number TLV).
+BMPv4 TLVs (including the Sequence Number TLV), attribute-group toggles on the listener
+(akvorado's `collect-aspaths`/`collect-communities`) to save memory.
 
 ### Testing
 
