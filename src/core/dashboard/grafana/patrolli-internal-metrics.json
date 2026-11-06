@@ -140,7 +140,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum (rate(patrolli_sink_records_sent_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum (rate(patrolli_sink_records_sent_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "Sent",
           "refId": "A",
           "range": false,
@@ -204,7 +204,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(patrolli_sink_records_sent_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__range]))",
+          "expr": "sum(increase(patrolli_sink_records_sent_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__range]))",
           "legendFormat": "Sent",
           "refId": "A",
           "range": false,
@@ -427,7 +427,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum (rate(patrolli_listener_records_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum (rate(patrolli_listener_records_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "Listener produced",
           "refId": "A",
           "range": true,
@@ -451,7 +451,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum (rate(patrolli_sink_records_sent_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum (rate(patrolli_sink_records_sent_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "Sink sent",
           "refId": "C",
           "range": true,
@@ -546,7 +546,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum (rate(patrolli_listener_items_errored_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum (rate(patrolli_listener_items_errored_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "Listener items",
           "refId": "A",
           "range": true,
@@ -594,7 +594,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum (rate(patrolli_sink_records_errored_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum (rate(patrolli_sink_records_errored_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "Sink records",
           "refId": "D",
           "range": true,
@@ -606,7 +606,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum (rate(patrolli_sink_records_retried_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum (rate(patrolli_sink_records_retried_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "Sink records retried",
           "refId": "E",
           "range": true,
@@ -1391,7 +1391,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_engine_time_spent_seconds_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_engine_time_spent_seconds_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Engine",
           "refId": "A",
           "range": true,
@@ -1403,7 +1403,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_send_wait_time_seconds_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_send_wait_time_seconds_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Send wait",
           "refId": "B",
           "range": true,
@@ -1415,7 +1415,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_receive_wait_time_seconds_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_receive_wait_time_seconds_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Receive wait",
           "refId": "C",
           "range": true,
@@ -1886,7 +1886,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_engine_time_spent_seconds_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_engine_time_spent_seconds_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Engine",
           "refId": "A",
           "range": true,
@@ -1898,7 +1898,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_send_wait_time_seconds_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_send_wait_time_seconds_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Send wait",
           "refId": "B",
           "range": true,
@@ -1910,7 +1910,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_receive_wait_time_seconds_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_receive_wait_time_seconds_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Receive wait",
           "refId": "C",
           "range": true,
@@ -2144,7 +2144,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "100 * (sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_send_wait_time_seconds_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) / (((sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_engine_time_spent_seconds_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_send_wait_time_seconds_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_receive_wait_time_seconds_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval])))) > 0)",
+          "expr": "100 * (sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_send_wait_time_seconds_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) / (((sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_engine_time_spent_seconds_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_send_wait_time_seconds_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_receive_wait_time_seconds_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval])))) > 0)",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · listener",
           "refId": "A",
           "range": true,
@@ -2180,7 +2180,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "100 * (sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_send_wait_time_seconds_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) / (((sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_engine_time_spent_seconds_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_send_wait_time_seconds_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_receive_wait_time_seconds_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval])))) > 0)",
+          "expr": "100 * (sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_send_wait_time_seconds_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) / (((sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_engine_time_spent_seconds_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_send_wait_time_seconds_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))) + (sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_receive_wait_time_seconds_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval])))) > 0)",
           "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · sink",
           "refId": "D",
           "range": true,
@@ -2300,7 +2300,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_items_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_items_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Received",
           "refId": "A",
           "range": true,
@@ -2312,7 +2312,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_items_succeeded_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_items_succeeded_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Succeeded",
           "refId": "B",
           "range": true,
@@ -2324,7 +2324,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_items_dropped_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_items_dropped_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Dropped",
           "refId": "C",
           "range": true,
@@ -2336,7 +2336,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_items_errored_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_items_errored_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Errored",
           "refId": "D",
           "range": true,
@@ -2431,7 +2431,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_bytes_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_bytes_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Received",
           "refId": "A",
           "range": true,
@@ -2443,7 +2443,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_bytes_succeeded_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_bytes_succeeded_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Succeeded",
           "refId": "B",
           "range": true,
@@ -2455,7 +2455,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_bytes_dropped_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_bytes_dropped_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Dropped",
           "refId": "C",
           "range": true,
@@ -2467,7 +2467,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_bytes_errored_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_bytes_errored_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Errored",
           "refId": "D",
           "range": true,
@@ -2562,7 +2562,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_sent_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_sent_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Sent",
           "refId": "A",
           "range": true,
@@ -2574,7 +2574,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_forwarded_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_forwarded_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Forwarded",
           "refId": "B",
           "range": true,
@@ -2586,7 +2586,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_forward_failed_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_forward_failed_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Forward failed",
           "refId": "C",
           "range": true,
@@ -2598,7 +2598,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_annotate_failed_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_annotate_failed_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Annotation failed",
           "refId": "D",
           "range": true,
@@ -2610,7 +2610,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_dropped_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_dropped_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Dropped",
           "refId": "E",
           "range": true,
@@ -2622,7 +2622,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_errored_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_records_errored_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · Errored",
           "refId": "F",
           "range": true,
@@ -4117,7 +4117,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Received",
           "refId": "A",
           "range": true,
@@ -4129,7 +4129,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_sent_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_sent_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Sent",
           "refId": "B",
           "range": true,
@@ -4141,7 +4141,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_filtered_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_filtered_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Filtered",
           "refId": "C",
           "range": true,
@@ -4153,7 +4153,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_errored_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_errored_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Errored",
           "refId": "D",
           "range": true,
@@ -4462,7 +4462,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_engine_time_spent_seconds_total{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, listener_id, listener_name) (rate(patrolli_listener_engine_time_spent_seconds_total{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · listener",
           "refId": "A",
           "range": true,
@@ -4498,7 +4498,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_engine_time_spent_seconds_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_engine_time_spent_seconds_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · sink",
           "refId": "D",
           "range": true,
@@ -4593,7 +4593,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, listener_id, listener_name) (patrolli_listener_workers{job=~\"${job:regex,listener_id=~\"${listener:regex}\"}\",instance=~\"${instance:regex}\"})",
+          "expr": "sum by (job, instance, listener_id, listener_name) (patrolli_listener_workers{job=~\"${job:regex}\",listener_id=~\"${listener:regex}\",instance=~\"${instance:regex}\"})",
           "legendFormat": "{{job}} / {{instance}} · {{listener_name}} ({{listener_id}}) · listener",
           "refId": "A",
           "range": true,
@@ -4629,7 +4629,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, sink_id, sink_name) (patrolli_sink_workers{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"})",
+          "expr": "sum by (job, instance, sink_id, sink_name) (patrolli_sink_workers{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"})",
           "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · sink",
           "refId": "D",
           "range": true,
@@ -4737,7 +4737,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_retried_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_retried_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Retried",
           "refId": "A",
           "range": true,
@@ -4749,7 +4749,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_errored_total{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (job, instance, sink_id, sink_name) (rate(patrolli_sink_records_errored_total{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · Errored",
           "refId": "B",
           "range": true,
@@ -4844,7 +4844,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max by (job, instance, sink_id, sink_name) (patrolli_sink_records_pending_retry{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"})",
+          "expr": "max by (job, instance, sink_id, sink_name) (patrolli_sink_records_pending_retry{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"})",
           "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}})",
           "refId": "A",
           "range": true,
@@ -4932,7 +4932,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "min by (job, instance, sink_id, sink_name, endpoint) (patrolli_sink_endpoint_up{job=~\"${job:regex,sink_id=~\"${sink:regex}\"}\",instance=~\"${instance:regex}\"})",
+          "expr": "min by (job, instance, sink_id, sink_name, endpoint) (patrolli_sink_endpoint_up{job=~\"${job:regex}\",sink_id=~\"${sink:regex}\",instance=~\"${instance:regex}\"})",
           "legendFormat": "{{job}} / {{instance}} · {{sink_name}} ({{sink_id}}) · {{endpoint}}",
           "refId": "A",
           "range": true,
