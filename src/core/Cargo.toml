@@ -219,9 +219,6 @@ libc = "0.2.191"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-postgres-types = "0.2.13"
-pbjson = "0.9.0"
-pbjson-types = "0.9.0"
 criterion = { version = "0.8.2", features = ["html_reports"] }
 tempfile.workspace = true
 # An in-process agent for the snmp monitor tests.
@@ -229,10 +226,6 @@ async-snmp = { version = "0.18.1", features = ["agent"] }
 # An independent BGP encoder for the BMP decoder's differential test.
 netgauze-bgp-pkt = "0.13"
 netgauze-parse-utils = "0.13"
-
-[build-dependencies]
-prost-build = "0.14.4"
-pbjson-build = "0.9.0"
 
 [lints]
 workspace = true
