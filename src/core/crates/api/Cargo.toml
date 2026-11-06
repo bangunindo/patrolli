@@ -34,13 +34,13 @@ deadpool-postgres.workspace = true
 sea-query.workspace = true
 sea-query-postgres.workspace = true
 tokio-postgres.workspace = true
-tower-http = { version = "0.7.0", features = ["cors", "trace", "compression-full", "decompression-full"] }
+tower-http = { version = "0.7.1", features = ["cors", "trace", "compression-full", "decompression-full"] }
 utoipa.workspace = true
-utoipa-swagger-ui = { version = "9.0.2", features = ["axum", "debug-embed"] }
+utoipa-swagger-ui = { version = "10.0.2", features = ["axum"] }
 http-serde.workspace = true
 axum-extra = { version = "0.12.6", features = ["query"] }
 rand.workspace = true
-jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
 reqwest.workspace = true
 
 [dev-dependencies]

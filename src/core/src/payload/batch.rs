@@ -262,8 +262,8 @@ fn shard_one(
     key: &str,
     pool: &mut IdBitmapPool,
 ) -> Result<Vec<(Option<SmolStr>, OtapArrowRecords)>> {
-    // Guard on root rows, not items: a metrics payload whose rows carry no data
-    // points has `num_items() == 0` but still holds records we must not drop.
+    // Guard on root rows, not items: the masks below are sized to the root
+    // table, which a metrics payload can fill while carrying no data points.
     if pl.num_rows() == 0 {
         return Ok(vec![]);
     }
@@ -718,18 +718,18 @@ mod tests {
         assert!(!sparse.is_empty());
     }
 
-    /// A metric row with no data points has `num_items() == 0`; sharding must key
-    /// off the root row count so the record is not silently discarded.
+    /// A metric row with no data points is grouped like any other (the masks key
+    /// off root rows, not items), but the merge drops it: `make_item_batches`
+    /// emits no batch that holds zero items.
     #[test]
-    fn shard_keeps_metric_rows_without_data_points() {
+    fn shard_drops_metric_rows_without_data_points() {
         let mut batch = PayloadBatch::new();
         batch.push(gauge_metrics(0));
 
         let groups = batch.shard(AttrLocation::Resource, "k").unwrap();
-        assert_eq!(groups.len(), 1, "row must not be dropped");
+        assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].0.as_ref().map(|z| z.as_ref()), Some("v"));
-        let rows: usize = groups[0].1.iter().map(|p| p.num_rows()).sum();
-        assert_eq!(rows, 1);
+        assert!(groups[0].1.is_empty());
     }
 
     #[test]

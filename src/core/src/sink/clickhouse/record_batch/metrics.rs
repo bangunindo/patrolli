@@ -316,8 +316,8 @@ fn histogram_points(
     let ctx = DpContext::new(records, identity, batch, ArrowPayloadType::HistogramDpAttrs)?;
 
     let mut columns = vec![
-        u64_or_zero(ctx.col(consts::HISTOGRAM_COUNT), ctx.len)?,
-        f64_or_zero(ctx.col(consts::HISTOGRAM_SUM), ctx.len)?,
+        u64_or_zero(ctx.col(consts::COUNT), ctx.len)?,
+        f64_or_zero(ctx.col(consts::SUM), ctx.len)?,
         list_or_empty(
             ctx.col(consts::HISTOGRAM_BUCKET_COUNTS),
             ctx.len,
@@ -364,8 +364,8 @@ fn exp_histogram_points(
     let buckets = |side: &str, member: &str| struct_field(batch, side, member);
 
     let mut columns = vec![
-        u64_or_zero(ctx.col(consts::HISTOGRAM_COUNT), ctx.len)?,
-        f64_or_zero(ctx.col(consts::HISTOGRAM_SUM), ctx.len)?,
+        u64_or_zero(ctx.col(consts::COUNT), ctx.len)?,
+        f64_or_zero(ctx.col(consts::SUM), ctx.len)?,
         i32_or_zero(ctx.col(consts::EXP_HISTOGRAM_SCALE), ctx.len)?,
         u64_or_zero(ctx.col(consts::EXP_HISTOGRAM_ZERO_COUNT), ctx.len)?,
         i32_or_zero(
@@ -431,8 +431,8 @@ fn summary_points(
 
     // Summary is the one datapoint type with no exemplars.
     let columns = vec![
-        u64_or_zero(ctx.col(consts::SUMMARY_COUNT), ctx.len)?,
-        f64_or_zero(ctx.col(consts::SUMMARY_SUM), ctx.len)?,
+        u64_or_zero(ctx.col(consts::COUNT), ctx.len)?,
+        f64_or_zero(ctx.col(consts::SUM), ctx.len)?,
         quantiles,
         values,
         ctx.flags.clone(),

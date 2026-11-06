@@ -16,14 +16,14 @@ patrolli.workspace = true
 patrolli-api = { path = "../api" }
 anyhow.workspace = true
 chrono-tz.workspace = true
-clap = { version = "4.6.2", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"] }
 serde_yaml_ng.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 tracing-appender = "0.2.5"
 tracing-subscriber.workspace = true
-tracing-throttle = { version = "0.4.3", features = ["async"] }
+tracing-throttle = { version = "0.4.4", features = ["async"] }
 axum-server.workspace = true
 deadpool-postgres.workspace = true
 rustls.workspace = true
@@ -74,8 +74,8 @@ sea-query.workspace = true
 sea-query-postgres.workspace = true
 rand.workspace = true
 reqwest.workspace = true
-libc = "0.2.186"
-testcontainers = "0.27.3"
+libc = "0.2.191"
+testcontainers = "0.28.0"
 tonic.workspace = true
 tempfile.workspace = true
 flate2.workspace = true
