@@ -792,11 +792,9 @@ const GOBGP_ROUTES: &[(&str, &str, &[&str], &str)] = &[
     ),
 ];
 
-async fn gobgp_inject(router: &GoBgp, skip: &[&str]) {
+async fn gobgp_inject(router: &GoBgp) {
     for (family, prefix, attrs, _) in GOBGP_ROUTES {
-        if !skip.contains(prefix) {
-            router.add(family, prefix, attrs).await;
-        }
+        router.add(family, prefix, attrs).await;
     }
 }
 
@@ -912,7 +910,7 @@ async fn gobgp_passive_bgp() {
     let router = GoBgp::start(gobgp_config(&gateway, Some(bed.ports.bgp), None), None).await;
     let peer = bed.router("bgp").await;
 
-    gobgp_inject(&router, &[]).await;
+    gobgp_inject(&router).await;
     bed.expect("GoBGP's routes", &gobgp_expect(&router).await)
         .await;
 
@@ -984,7 +982,8 @@ async fn gobgp_expect_without(router: &GoBgp, gone: &str) -> Vec<(&'static str, 
 }
 
 /// GoBGP reports its Loc-RIB over BMP, path ids included; it sends no
-/// End-of-RIB, so a route lost across a restart goes when `keep` runs out.
+/// End-of-RIB, so a route lost while the session was down goes when `keep`
+/// runs out.
 #[tokio::test]
 async fn gobgp_bmp_loc_rib() {
     setup::setup_logging();
@@ -993,7 +992,7 @@ async fn gobgp_bmp_loc_rib() {
     let router = GoBgp::start(gobgp_config(&gateway, None, Some(bed.ports.bmp)), None).await;
     bed.router("bmp").await;
 
-    gobgp_inject(&router, &[]).await;
+    gobgp_inject(&router).await;
     bed.expect("GoBGP's Loc-RIB", &gobgp_expect(&router).await)
         .await;
 
@@ -1002,10 +1001,20 @@ async fn gobgp_bmp_loc_rib() {
     bed.expect("the /24 withdrawn", &[("203.0.113.9", covering)])
         .await;
 
-    // a restart loses GoBGP's RIB; all but one route come back
-    router.0.stop().await.unwrap();
-    router.0.start().await.unwrap();
-    gobgp_inject(&router, &["203.0.113.0/24", "198.51.100.0/24"]).await;
+    // the session drops and a route goes while it is down; the reconnect
+    // dumps the others again. Not a container restart: Docker may hand the
+    // container another address, and routes are keyed by the session's.
+    let station = format!("{gateway}:{}", bed.ports.bmp);
+    router.gobgp(&["bmp", "del", &station]).await;
+    wait_for("the session to go down", async || {
+        bed.events("bmp", "session_down")
+            .first()
+            .map(|_| ())
+            .context("no session_down yet")
+    })
+    .await;
+    router.del("ipv4", "198.51.100.0/24").await;
+    router.gobgp(&["bmp", "add", &station, "local-rib"]).await;
     bed.counter_at_least(
         "patrolli_listener_bgp_sessions_opened_total",
         &[r#"protocol="bmp""#],
