@@ -16,7 +16,7 @@ use super::wire::Afi;
 use super::wire::update::{AsPath, SegmentKind, Update, prefixes};
 use crate::cache::lookup_table::bgp::{Family, PathSegment, RouteRow, RouteTable, RouteText};
 use crate::cache::lookup_table::cell::CellRef;
-use crate::cache::lookup_table::mutable::Upsert;
+use crate::cache::lookup_table::mutable::{SharedRow, Upsert};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::net::IpAddr;
@@ -290,6 +290,9 @@ impl<'c> RouteWriter<'c> {
 
         for nlri in &announced {
             let add_path = add_path[nlri.family.index()];
+            // without path ids the prefixes share every cell: one row, built
+            // on the first and stored under all of them (`Err` once it failed)
+            let mut shared: Option<Result<SharedRow, ()>> = None;
             for (path_id, prefix) in prefixes(nlri.bytes, nlri.family, add_path).flatten() {
                 let route = RouteRow {
                     router: *router,
@@ -313,7 +316,21 @@ impl<'c> RouteWriter<'c> {
                 let Some(table) = table.as_ref() else {
                     continue;
                 };
-                match paths.announce(table, vrf, &route, &mut s.text) {
+                let written = if path_id.is_none() {
+                    let row = shared.get_or_insert_with(|| {
+                        table.row(&route, &mut s.text).map_err(&mut write_failed)
+                    });
+                    match row {
+                        Ok(row) => Ok(table.upsert_row(row, prefix)),
+                        Err(()) => {
+                            Stats::incr(&stats.routes_rejected);
+                            continue;
+                        }
+                    }
+                } else {
+                    paths.announce(table, vrf, &route, &mut s.text)
+                };
+                match written {
                     Ok(Upsert::Rejected) => {
                         Stats::incr(&stats.routes_rejected);
                         if !std::mem::replace(warned_full, true) {
