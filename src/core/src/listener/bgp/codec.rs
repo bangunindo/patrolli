@@ -4,9 +4,12 @@
 
 //! Splits a BMP or BGP byte stream into messages.
 
-use super::wire::BGP_HEADER_LEN;
-use super::wire::bgp::{MAX_EXTENDED_MESSAGE, MAX_MESSAGE, code, subcode};
+use super::wire::bgp::{
+    BGP_KEEPALIVE, BGP_NOTIFICATION, BGP_ROUTE_REFRESH, MAX_EXTENDED_MESSAGE, MAX_MESSAGE, code,
+    subcode,
+};
 use super::wire::bmp::{COMMON_HEADER_LEN, CommonHeader, VERSION};
+use super::wire::{BGP_HEADER_LEN, BGP_OPEN, BGP_UPDATE};
 use bytes::{Bytes, BytesMut};
 use std::io;
 use tokio_util::codec::Decoder;
@@ -86,6 +89,8 @@ pub enum BgpFrameError {
     Marker,
     #[error("bgp message length {0} is out of bounds")]
     Length(u16),
+    #[error("unknown bgp message type {0}")]
+    Type(u8),
 }
 
 impl BgpFrameError {
@@ -95,6 +100,7 @@ impl BgpFrameError {
             Self::Io(_) => "io",
             Self::Marker => "marker",
             Self::Length(_) => "length",
+            Self::Type(_) => "bad message type",
         }
     }
 
@@ -113,9 +119,17 @@ impl BgpFrameError {
                 subcode::BAD_MESSAGE_LENGTH,
                 len.to_be_bytes().to_vec(),
             )),
+            Self::Type(kind) => {
+                Some((code::MESSAGE_HEADER, subcode::BAD_MESSAGE_TYPE, vec![*kind]))
+            }
         }
     }
 }
+
+/// The shortest OPEN, UPDATE and NOTIFICATION (RFC 4271 §4.2, §4.3, §4.5).
+const MIN_OPEN: u16 = 29;
+const MIN_UPDATE: u16 = 23;
+const MIN_NOTIFICATION: u16 = 21;
 
 /// One whole BGP message per item, header included. Messages are at most
 /// 4096 bytes until extended messages are negotiated (RFC 8654).
@@ -150,6 +164,18 @@ impl Decoder for BgpFrames {
         }
         let len = u16::from_be_bytes([head[16], head[17]]);
         if (len as usize) < BGP_HEADER_LEN || len as usize > self.max {
+            return Err(BgpFrameError::Length(len));
+        }
+        // RFC 4271 §6.1: each type's own length bounds, and only known types
+        let fits = match head[18] {
+            BGP_OPEN => len >= MIN_OPEN,
+            BGP_UPDATE => len >= MIN_UPDATE,
+            BGP_NOTIFICATION => len >= MIN_NOTIFICATION,
+            BGP_KEEPALIVE => len as usize == BGP_HEADER_LEN,
+            BGP_ROUTE_REFRESH => true,
+            kind => return Err(BgpFrameError::Type(kind)),
+        };
+        if !fits {
             return Err(BgpFrameError::Length(len));
         }
         let len = len as usize;
@@ -230,6 +256,32 @@ mod tests {
             let err = codec.decode(&mut BytesMut::from(&f[..])).unwrap_err();
             assert!(matches!(err, BgpFrameError::Length(l) if l == len), "{len}");
             assert_eq!(err.notification(), Some((1, 2, len.to_be_bytes().to_vec())));
+        }
+
+        // RFC 4271 §6.1: each type's length bounds, Bad Message Length with
+        // the length as data
+        for (kind, len) in [(1u8, 28u16), (2, 22), (3, 20), (4, 20), (4, 23)] {
+            let f = message(kind, &vec![0; len as usize - 19]);
+            let err = codec.decode(&mut BytesMut::from(&f[..])).unwrap_err();
+            assert!(
+                matches!(err, BgpFrameError::Length(l) if l == len),
+                "{kind} {len}"
+            );
+            assert_eq!(err.notification(), Some((1, 2, len.to_be_bytes().to_vec())));
+        }
+        for (kind, len) in [(1u8, 29usize), (2, 23), (3, 21), (4, 19), (5, 23)] {
+            let f = message(kind, &vec![0; len - 19]);
+            assert!(
+                codec.decode(&mut BytesMut::from(&f[..])).unwrap().is_some(),
+                "{kind}"
+            );
+        }
+        // and Bad Message Type with the type
+        for kind in [0u8, 6, 255] {
+            let f = message(kind, &[]);
+            let err = codec.decode(&mut BytesMut::from(&f[..])).unwrap_err();
+            assert!(matches!(err, BgpFrameError::Type(k) if k == kind));
+            assert_eq!(err.notification(), Some((1, 3, vec![kind])));
         }
 
         // 4097 bytes is fine once extended messages are on

@@ -13,6 +13,10 @@
 //! Graceful Restart with no families (RFC 4724 §3: it only asks for
 //! End-of-RIB). It never offers ADD-PATH: the table shows one path per prefix.
 //!
+//! It announces nothing. The only UPDATEs it sends are the End-of-RIB markers
+//! RFC 4724 asks for once Established, one per negotiated family, which carry
+//! no route.
+//!
 //! The socket is split. A writer task sends the KEEPALIVEs on its own timer,
 //! so they keep going while the reader waits on a full event channel
 //! (`on_full: wait`): the router's UPDATEs then back up in TCP, and its hold
@@ -29,7 +33,7 @@ use super::wire::bgp::{
     self as msg, BGP_KEEPALIVE, BGP_NOTIFICATION, BGP_ROUTE_REFRESH, Notification, code, subcode,
 };
 use super::wire::open::{Open, caps, open_body};
-use super::wire::update::Update;
+use super::wire::update::{Session, Update};
 use super::wire::{AFI_IPV4, AFI_IPV6, Afi, BGP_HEADER_LEN, BGP_OPEN, BGP_UPDATE, SAFI_UNICAST};
 use crate::config::listener::BgpPeering;
 use crate::config::lookup_table as cfg;
@@ -69,6 +73,8 @@ pub struct BgpConfig {
     pub router_id: Option<Ipv4Addr>,
     /// patrolli's AS toward single routers
     pub peer_asn: FxHashMap<IpAddr, u32>,
+    /// the hold time offered to single routers
+    pub peer_hold_time: FxHashMap<IpAddr, u16>,
 }
 
 impl Default for BgpConfig {
@@ -79,6 +85,7 @@ impl Default for BgpConfig {
             asn: None,
             router_id: None,
             peer_asn: FxHashMap::default(),
+            peer_hold_time: FxHashMap::default(),
         }
     }
 }
@@ -94,6 +101,11 @@ impl From<&BgpPeering> for BgpConfig {
                 .peers
                 .iter()
                 .filter_map(|p| Some((p.address.to_canonical(), p.asn?)))
+                .collect(),
+            peer_hold_time: conf
+                .peers
+                .iter()
+                .filter_map(|p| Some((p.address.to_canonical(), p.hold_time?)))
                 .collect(),
         }
     }
@@ -349,7 +361,19 @@ impl PeerSession<'_> {
                 "unsupported version",
             ));
         }
-        let open = Open::parse(body).map_err(|e| (0, Vec::new(), e.0))?;
+        // a recognized parameter that is malformed: subcode 0 (RFC 4271 §6.2)
+        let open = Open::parse(body).map_err(|e| (subcode::UNSPECIFIC, Vec::new(), e.0))?;
+        if open.unknown_parameter.is_some() {
+            return Err((
+                subcode::UNSUPPORTED_OPTIONAL_PARAMETER,
+                Vec::new(),
+                "unsupported optional parameter",
+            ));
+        }
+        if open.asn == 0 {
+            // RFC 7607 §2
+            return Err((subcode::BAD_PEER_AS, Vec::new(), "peer as 0"));
+        }
         if matches!(open.hold_time, 1 | 2) {
             return Err((
                 subcode::UNACCEPTABLE_HOLD_TIME,
@@ -384,9 +408,10 @@ impl PeerSession<'_> {
                 }
             },
             (BGP_NOTIFICATION, body) => return self.received_notification(body),
-            _ => {
-                // RFC 6608: unexpected message in OpenSent
-                self.notify(code::FSM, 1, &[]);
+            (kind, _) => {
+                // RFC 6608 §4: the data is the unexpected type (the codec
+                // refused unknown ones with 1/3)
+                self.notify(code::FSM, subcode::UNEXPECTED_IN_OPEN_SENT, &[kind]);
                 return SessionEnd::Reset("expected an open");
             }
         };
@@ -394,7 +419,10 @@ impl PeerSession<'_> {
         let my_as = (self.config.peer_asn.get(&router).copied())
             .or(self.config.asn)
             .unwrap_or(open.asn);
-        let hold = match (self.config.hold_time, open.hold_time) {
+        // RFC 4271 §10: configurable per peer
+        let hold_time =
+            (self.config.peer_hold_time.get(&router).copied()).unwrap_or(self.config.hold_time);
+        let hold = match (hold_time, open.hold_time) {
             (0, _) | (_, 0) => 0,
             (ours, theirs) => ours.min(theirs),
         };
@@ -402,7 +430,7 @@ impl PeerSession<'_> {
             BGP_OPEN,
             &open_body(
                 my_as,
-                self.config.hold_time,
+                hold_time,
                 self.bgp_id,
                 &[
                     caps::multiprotocol(AFI_IPV4, SAFI_UNICAST),
@@ -434,9 +462,9 @@ impl PeerSession<'_> {
         match split(&frame) {
             (BGP_KEEPALIVE, _) => {}
             (BGP_NOTIFICATION, body) => return self.received_notification(body),
-            _ => {
-                // RFC 6608: unexpected message in OpenConfirm
-                self.notify(code::FSM, 2, &[]);
+            (kind, _) => {
+                // RFC 6608 §4
+                self.notify(code::FSM, subcode::UNEXPECTED_IN_OPEN_CONFIRM, &[kind]);
                 return SessionEnd::Reset("expected a keepalive");
             }
         }
@@ -448,6 +476,17 @@ impl PeerSession<'_> {
             hold_time = hold.map_or(0, |h| h.as_secs()),
             "bgp session established"
         );
+        // RFC 4724 §3, §4.2: the initial update is done (patrolli announces
+        // nothing), so End-of-RIB for each family both sides carry
+        for family in Afi::ALL {
+            if open.families[family.index()] {
+                let afi = match family {
+                    Afi::V4 => AFI_IPV4,
+                    Afi::V6 => AFI_IPV6,
+                };
+                self.out.send(msg::end_of_rib(afi, SAFI_UNICAST));
+            }
+        }
         let vrf = SmolStr::new_static(cfg::bgp::GLOBAL_VRF);
         let kept = self.c.config().keeps_vrf(&vrf);
         if kept {
@@ -467,7 +506,12 @@ impl PeerSession<'_> {
         } else {
             Vec::new()
         };
-        let asn4 = open.four_octet_as;
+        let session = Session {
+            asn4: open.four_octet_as,
+            add_path: [false; 2],
+            // no confederation is configured: another AS is external
+            external: my_as != open.asn,
+        };
         let mut since_check = 0;
         let mut last_check = Instant::now();
         loop {
@@ -504,19 +548,22 @@ impl PeerSession<'_> {
             }
 
             match split(&frame) {
-                (BGP_UPDATE, body) if kept => match Update::parse(body, asn4, [false; 2]) {
-                    Ok(update) => self.w.apply_update(&vrf, asn4, [false; 2], &update),
+                (BGP_UPDATE, body) if kept => match Update::read(body, session) {
+                    Ok(update) => {
+                        self.w
+                            .apply_update(&vrf, session.asn4, session.add_path, &update);
+                    }
                     Err(e) => {
-                        self.notify(code::UPDATE_MESSAGE, subcode::MALFORMED_ATTRIBUTE_LIST, &[]);
-                        return SessionEnd::Reset(e.0);
+                        self.notify(code::UPDATE_MESSAGE, e.subcode, &e.data);
+                        return SessionEnd::Reset(e.reason);
                     }
                 },
                 (BGP_UPDATE, _) => Stats::incr(&self.c.stats().vrf_filtered),
                 (BGP_KEEPALIVE | BGP_ROUTE_REFRESH, _) => {}
                 (BGP_NOTIFICATION, body) => return self.received_notification(body),
                 (BGP_OPEN, _) => {
-                    // RFC 6608: unexpected message in Established
-                    self.notify(code::FSM, 3, &[]);
+                    // RFC 6608 §4
+                    self.notify(code::FSM, subcode::UNEXPECTED_IN_ESTABLISHED, &[BGP_OPEN]);
                     return SessionEnd::Reset("open on an established session");
                 }
                 (other, _) => {

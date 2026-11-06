@@ -178,7 +178,9 @@ impl Router {
         }
     }
 
-    /// OPEN, our OPEN back, KEEPALIVEs both ways; returns patrolli's OPEN.
+    /// OPEN, our OPEN back, KEEPALIVEs both ways, then patrolli's
+    /// End-of-RIB for each family the router's OPEN carries; returns
+    /// patrolli's OPEN.
     async fn establish(&mut self, open: Vec<u8>) -> Open {
         self.send(&open).await;
         let (kind, body) = self.recv().await.expect("an open");
@@ -186,15 +188,37 @@ impl Router {
         let ours = Open::parse(&body).unwrap();
         assert_eq!(self.recv().await.unwrap().0, BGP_KEEPALIVE);
         self.send(&msg::keepalive()).await;
+        self.end_of_ribs(&open).await;
         ours
+    }
+
+    /// patrolli's End-of-RIB markers once Established (RFC 4724): one per
+    /// family of the router's `open`, IPv4 first.
+    async fn end_of_ribs(&mut self, open: &[u8]) {
+        let theirs = Open::parse(&open[19..]).unwrap();
+        for (i, afi) in [AFI_IPV4, AFI_IPV6].into_iter().enumerate() {
+            if theirs.families[i] {
+                let (kind, body) = self.recv().await.expect("an end-of-rib");
+                assert_eq!(
+                    msg::message(kind, &body),
+                    msg::end_of_rib(afi, SAFI_UNICAST)
+                );
+            }
+        }
     }
 
     /// A NOTIFICATION's code and subcode, then the stream's end.
     async fn notified(&mut self) -> (u8, u8) {
+        let (code, subcode, _) = self.notified_with_data().await;
+        (code, subcode)
+    }
+
+    /// A NOTIFICATION's code, subcode and data, then the stream's end.
+    async fn notified_with_data(&mut self) -> (u8, u8, Vec<u8>) {
         let (kind, body) = self.recv_other().await.expect("a notification");
         assert_eq!(kind, BGP_NOTIFICATION, "{body:?}");
         assert!(self.recv_other().await.is_none(), "closed after it");
-        (body[0], body[1])
+        (body[0], body[1], body[2..].to_vec())
     }
 }
 
@@ -354,6 +378,90 @@ async fn a_configured_as_wins_and_a_peer_override_over_it() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_peer_can_have_its_own_hold_time() {
+    // RFC 4271 §10: configurable per peer
+    let mut config = BgpConfig::default();
+    config.peer_hold_time.insert(ROUTER.parse().unwrap(), 30);
+    let bed = Bed::new(config);
+    let (mut router, _session, _cancel) = bed.connect();
+    let ours = router.establish(open(64500, 90)).await;
+    assert_eq!(ours.hold_time, 30);
+    let start = tokio::time::Instant::now();
+    assert_eq!(router.recv().await.unwrap().0, BGP_KEEPALIVE);
+    assert_eq!(start.elapsed(), Duration::from_secs(10));
+}
+
+#[tokio::test]
+async fn end_of_rib_is_the_only_update_patrolli_sends() {
+    let bed = Bed::new(BgpConfig::default());
+    for list in [
+        // no multiprotocol capability: IPv4 unicast only
+        Vec::new(),
+        vec![caps::multiprotocol(AFI_IPV6, SAFI_UNICAST)],
+        caps::v4_v6().to_vec(),
+    ] {
+        let (mut router, session, cancel) = bed.connect();
+        // checks one End-of-RIB per family of the router's OPEN (RFC 4724)
+        router.establish(open_with(64500, 90, &list)).await;
+        router.send(&v4_route(&["10.0.0.0/8"], &[64501])).await;
+        router.send(&v6_route(&["2001:db8::/32"], &[64501])).await;
+        router
+            .send(&msg::route_refresh(AFI_IPV4, SAFI_UNICAST))
+            .await;
+        router.send(&eor_v4()).await;
+        cancel.cancel();
+        // after them, until it closes: never an UPDATE
+        while let Some((kind, _)) = router.recv().await {
+            assert_ne!(kind, BGP_UPDATE, "{list:?}");
+        }
+        assert_eq!(ended(session).await, SessionEnd::Cancelled);
+    }
+}
+
+#[tokio::test]
+async fn an_external_peer_is_read_as_one() {
+    let bed = Bed::new(BgpConfig {
+        asn: Some(65000),
+        ..BgpConfig::default()
+    });
+    let (mut router, _session, _cancel) = bed.connect();
+    router.establish(open(64500, 90)).await;
+    let route = |path: Vec<u8>, extra: Vec<Vec<u8>>, net: &str| {
+        let mut attrs = vec![u::origin(0), path, u::next_hop_attr("192.0.2.1")];
+        attrs.extend(extra);
+        update(u::update(&[], &attrs, &u::nlri(&[net], None)))
+    };
+    // RFC 4271 §5.1.5: LOCAL_PREF from an external peer is ignored;
+    // RFC 8092 §3: a repeated large community is removed
+    router
+        .send(&route(
+            u::as_path(&[(2, &[64500])]),
+            vec![
+                u::local_pref(200),
+                u::large_communities(&[[64500, 2, 3], [64500, 1, 1], [64500, 2, 3]]),
+            ],
+            "10.0.0.0/8",
+        ))
+        .await;
+    // RFC 5065 §5: a confederation segment from it is a malformed AS_PATH
+    router
+        .send(&route(
+            u::as_path(&[(3, &[65001]), (2, &[64500])]),
+            vec![],
+            "10.1.0.0/16",
+        ))
+        .await;
+    eventually(|| bed.stat(|s| &s.treat_as_withdraw) == 1).await;
+    assert_eq!(bed.text("10.0.0.0/8", "local_pref").unwrap(), "null");
+    assert_eq!(
+        bed.text("10.0.0.0/8", "large_communities").unwrap(),
+        "64500:1:1 64500:2:3"
+    );
+    assert_eq!(bed.text("10.1.0.0/16", "origin_as"), None);
+    assert_eq!(bed.table().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
 async fn keepalives_go_out_at_a_third_of_the_hold_time() {
     let bed = Bed::new(BgpConfig::default());
     let (mut router, _session, _cancel) = bed.connect();
@@ -415,7 +523,18 @@ async fn a_bad_open_is_refused_with_its_reason() {
     v3[19] = 3;
     let same_id = msg::message(BGP_OPEN, &open_body(64500, 90, ours, &[]));
     let zero_id = msg::message(BGP_OPEN, &open_body(64500, 90, Ipv4Addr::UNSPECIFIED, &[]));
+    // a parameter of type 1 (the deprecated authentication), length 0
+    let mut auth = open_body(64500, 90, ROUTER_ID, &[]);
+    auth[9] += 2;
+    auth.extend_from_slice(&[1, 0]);
+    let auth = msg::message(BGP_OPEN, &auth);
     for (first, want, end) in [
+        (open(0, 90), (2, 2), SessionEnd::OpenRejected("peer as 0")),
+        (
+            auth,
+            (2, 4),
+            SessionEnd::OpenRejected("unsupported optional parameter"),
+        ),
         (v3, (2, 1), SessionEnd::OpenRejected("unsupported version")),
         (
             open(64500, 2),
@@ -443,11 +562,11 @@ async fn a_bad_open_is_refused_with_its_reason() {
         assert_eq!(router.notified().await, want, "{end:?}");
         assert_eq!(ended(session).await, end);
     }
-    assert_eq!(bed.stat(|s| &s.notifications_sent[2]), 4);
-    assert_eq!(bed.stat(|s| &s.sessions_opened[Protocol::Bgp.index()]), 5);
+    assert_eq!(bed.stat(|s| &s.notifications_sent[2]), 6);
+    assert_eq!(bed.stat(|s| &s.sessions_opened[Protocol::Bgp.index()]), 7);
     assert_eq!(
         bed.stat(|s| &s.sessions_closed[Protocol::Bgp.index()][9]),
-        4,
+        6,
         "open_rejected"
     );
 }
@@ -522,11 +641,100 @@ async fn a_two_octet_router_has_its_as4_path_merged() {
 }
 
 #[tokio::test]
+async fn errors_are_notified_with_their_subcode_and_data() {
+    let bed = Bed::new(BgpConfig::default());
+    let nh6 = "2001:db8::1"
+        .parse::<std::net::Ipv6Addr>()
+        .unwrap()
+        .octets();
+    let bad_reach = u::mp_reach(
+        AFI_IPV6,
+        SAFI_UNICAST,
+        &nh6[..4],
+        &u::nlri(&["2001:db8::/32"], None),
+    );
+    let bad_med = u::attr(u::OPTIONAL, 4, &[1]);
+    // (when, message, NOTIFICATION code, subcode and data)
+    #[derive(Clone, Copy, PartialEq)]
+    enum At {
+        OpenSent,
+        OpenConfirm,
+        Established,
+    }
+    type Notification = (u8, u8, Vec<u8>);
+    let cases: Vec<(At, Vec<u8>, Notification)> = vec![
+        // RFC 4271 §6.1: an unknown type in any state, a KEEPALIVE with a
+        // body
+        (At::OpenSent, msg::message(9, &[]), (1, 3, vec![9])),
+        (At::Established, msg::message(9, &[]), (1, 3, vec![9])),
+        (
+            At::Established,
+            msg::message(BGP_KEEPALIVE, &[0]),
+            (1, 2, vec![0, 20]),
+        ),
+        // RFC 6608 §4: the unexpected type as data
+        (At::OpenSent, msg::keepalive(), (5, 1, vec![BGP_KEEPALIVE])),
+        (
+            At::OpenConfirm,
+            v4_route(&["10.0.0.0/8"], &[64501]),
+            (5, 2, vec![BGP_UPDATE]),
+        ),
+        (At::Established, open(64500, 90), (5, 3, vec![BGP_OPEN])),
+        // RFC 4271 §6.3: a broken NLRI field
+        (
+            At::Established,
+            update(u::update(&[], &[], &[33, 10, 0, 0, 0, 0])),
+            (3, 10, vec![]),
+        ),
+        // RFC 4760 §7, RFC 7606 §7.11: an IPv6 next hop of 4 bytes
+        (
+            At::Established,
+            update(u::update(
+                &[],
+                &[u::origin(0), u::as_path(&[]), bad_reach.clone()],
+                &[],
+            )),
+            (3, 9, bad_reach),
+        ),
+        // RFC 7606 §5.2: a bad attribute and nothing reachable
+        (
+            At::Established,
+            update(u::update(
+                &u::nlri(&["10.0.0.0/8"], None),
+                std::slice::from_ref(&bad_med),
+                &[],
+            )),
+            (3, 5, bad_med),
+        ),
+    ];
+    for (at, message, want) in cases {
+        let (mut router, session, _cancel) = bed.connect();
+        match at {
+            At::OpenSent => {}
+            At::OpenConfirm => {
+                router.send(&open(64500, 90)).await;
+                assert_eq!(router.recv().await.unwrap().0, BGP_OPEN);
+                assert_eq!(router.recv().await.unwrap().0, BGP_KEEPALIVE);
+            }
+            At::Established => {
+                router.establish(open(64500, 90)).await;
+            }
+        }
+        router.send(&message).await;
+        assert_eq!(router.notified_with_data().await, want);
+        assert!(matches!(
+            ended(session).await,
+            SessionEnd::Reset(_) | SessionEnd::Frame(_)
+        ));
+    }
+}
+
+#[tokio::test]
 async fn a_malformed_update_resets_the_session() {
     let bed = Bed::new(BgpConfig::default());
     let (mut router, session, _cancel) = bed.connect();
     router.establish(open(64500, 90)).await;
-    // an attribute claiming more bytes than the message holds
+    // the attributes claiming more bytes than the message holds
     let mut body = u::update(&[], &[u::origin(0)], &[]);
     let attrs_len_at = 2;
     body[attrs_len_at..attrs_len_at + 2].copy_from_slice(&40u16.to_be_bytes());
@@ -655,6 +863,7 @@ async fn keepalives_go_on_while_a_full_channel_holds_the_reader() {
     assert_eq!(router.recv().await.unwrap().0, BGP_OPEN);
     assert_eq!(router.recv().await.unwrap().0, BGP_KEEPALIVE);
     router.send(&msg::keepalive()).await;
+    router.end_of_ribs(&open(64500, 9)).await;
     router.send(&v4_route(&["10.0.0.0/8"], &[64501])).await;
 
     // session_up fills the channel: peer_up, and the reader with it, wait.

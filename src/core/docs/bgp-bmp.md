@@ -280,8 +280,15 @@ So `src/listener/bgp/wire/` is a zero-copy decoder for exactly what the table ne
 framing and messages, OPEN capabilities (multiprotocol, 4-octet AS, ADD-PATH, extended
 message), and UPDATE with IPv4/IPv6 unicast, AS_PATH/AS4_PATH (all four segment types),
 NEXT_HOP / MP next hop, MED, LOCAL_PREF, communities and large communities. Errors follow RFC
-7606: a broken structure ends the session (the router redumps), a malformed route attribute
-withdraws what the message announced, anything else is ignored. NetGauze stays a
+7606 to the letter: a broken structure, an incorrect MP_REACH/MP_UNREACH (an MP next hop of
+an unexpected length included, §7.11) or a malformed attribute with no reachable NLRI (§5.2)
+ends the session (the router redumps); a malformed or missing route attribute, wrong
+Optional/Transitive flags or an attribute overrunning the attribute field (§4) withdraws
+what the message announced; ATOMIC_AGGREGATE, AGGREGATOR and the AS4 attributes are
+discarded when malformed. Also checked: AS 0 (RFC 7607), confederation segments from an
+external peer (RFC 5065 §5), LOCAL_PREF/ORIGINATOR_ID/CLUSTER_LIST from one discarded, the
+RFC 6793 §4.2.3 AGGREGATOR rule and confederation segments in the AS4 merge, redundant large
+communities removed (RFC 8092 §3). BMP feeds go through the same rules, read as internal. NetGauze stays a
 dev-dependency: a differential test has it encode random UPDATEs and checks that our decoder
 gives back exactly what was encoded. Phase 4's passive BGP will use the same `wire` module.
 
@@ -536,11 +543,15 @@ optional route events as log records, best effort (drop and count when full). Tw
    - Config: a `bgp:` section beside `bmp:` (either or both): `listener` (default
      `0.0.0.0:179`, needs `CAP_NET_BIND_SERVICE`), `asn`, `router_id` (default the session's
      local IPv4; required on an IPv6 listener), `hold_time` (90; 0 or ≥ 3), `keep`, and
-     `peers: [{address, password, asn}]`. Passwords are sensitive fields
+     `peers: [{address, password, asn, hold_time}]` (a per-peer hold time, as RFC 4271 §10
+     requires). Passwords are sensitive fields
      (`bgp.peers.password`), encrypted at rest like the others.
    - Session: patrolli waits for the router's OPEN (so it can answer with the router's AS),
-     checks it (version, hold time, BGP identifier: RFC 4271 §6.2 subcodes), then sends its
-     OPEN and KEEPALIVE. Offered: IPv4/IPv6 unicast, 4-octet AS (`AS_TRANS` above 65535),
+     checks it (version, peer AS 0 (RFC 7607), hold time, BGP identifier, optional
+     parameters other than capabilities: RFC 4271 §6.2 subcodes), then sends its OPEN and
+     KEEPALIVE. Once Established it sends the End-of-RIB of each family both sides carry
+     (RFC 4724 §4.2; a restarting router waits for it) — the only UPDATEs it ever sends, and
+     they carry no route. Offered: IPv4/IPv6 unicast, 4-octet AS (`AS_TRANS` above 65535),
      route refresh, extended messages, extended next hop (RFC 8950, as pmacct and bio-rd do;
      without it an IPv6 session carries no IPv4 routes) and Graceful Restart with no
      families. Never ADD-PATH. Hold time is the lower of the two; KEEPALIVE every third of it.
@@ -551,10 +562,14 @@ optional route events as log records, best effort (drop and count when full). Tw
      while the reader waits on a full event channel (`on_full: wait`) and the router's
      UPDATEs back up in TCP. The reader's hold timer counts only time spent waiting for the
      router.
-   - Errors: a frame error (marker, length) → NOTIFICATION 1/x; an UPDATE the decoder rejects
-     → 3/1 and a reset (the router redumps on reconnect; RFC 7606 treat-as-withdraw stays
-     inside); hold timer → 4/0; an unexpected message → 5/x (RFC 6608); a stopping listener
-     → 6/2; a replaced session → 6/7. A router's NOTIFICATION ends the session with its code
+   - Errors: a frame error → NOTIFICATION 1/x (marker; length, per type too, with the length
+     as data; an unknown type with the type, RFC 4271 §6.1); an UPDATE that needs a session
+     reset → 3/x with RFC 4271 §6.3's subcode and data (Invalid Network Field for a broken
+     NLRI or withdrawn field, Optional Attribute Error with the attribute for an incorrect
+     MP_REACH/MP_UNREACH per RFC 4760 §7, the attribute's own subcode when a malformed
+     attribute comes with no reachable NLRI per RFC 7606 §5.2); hold timer → 4/0; an
+     unexpected message → 5/x with its type as data (RFC 6608); a stopping listener → 6/2; a
+     replaced session → 6/7. A router's NOTIFICATION ends the session with its code
      and RFC 9003 shutdown text in the `session_down` event (`bgp.notification`,
      `bgp.message`).
    - A rebuilt or created table: ROUTE-REFRESH per negotiated family when the router

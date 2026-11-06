@@ -48,6 +48,9 @@ pub struct Open {
     pub route_refresh: bool,
     /// the restart time of a Graceful Restart capability (RFC 4724)
     pub graceful_restart: Option<u16>,
+    /// the first optional parameter that is not a capabilities list, which a
+    /// BGP session refuses (RFC 4271 §6.2)
+    pub unknown_parameter: Option<u8>,
 }
 
 impl Open {
@@ -60,9 +63,10 @@ impl Open {
         let bgp_id = Ipv4Addr::from(r.u32("open truncated")?);
         let mut params_len = r.u8("open truncated")? as usize;
         let mut extended = false;
-        if params_len == 255 {
-            // RFC 9072 §2: the first parameter type is 255 and a two-byte
-            // length follows
+        if params_len != 0 {
+            // RFC 9072 §2: a first parameter type of 255 means the extended
+            // encoding, whatever the one-byte length says (it is then
+            // ignored), and a two-byte length follows
             let mut peek = r;
             if peek.u8("open truncated")? == PARAM_EXTENDED {
                 r = peek;
@@ -82,6 +86,7 @@ impl Open {
             extended_message: false,
             route_refresh: false,
             graceful_restart: None,
+            unknown_parameter: None,
         };
         let mut multiprotocol = false;
         while !params.is_empty() {
@@ -93,6 +98,8 @@ impl Open {
             };
             let mut value = params.sub(len, "open parameter truncated")?;
             if kind != PARAM_CAPABILITIES {
+                // RFC 4271 §6.2; a type 255 here is one too (RFC 9072 §3)
+                open.unknown_parameter.get_or_insert(kind);
                 continue;
             }
             while !value.is_empty() {
@@ -338,6 +345,25 @@ mod tests {
         body.extend_from_slice(&cap);
         let open = Open::parse(&body).unwrap();
         assert_eq!(open.asn, 65536);
+        assert_eq!(open.unknown_parameter, None);
+
+        // RFC 9072 §2: the one-byte length is ignored once the type is 255,
+        // whatever it is
+        for len in [1, 9, 254] {
+            body[9] = len;
+            assert_eq!(Open::parse(&body).unwrap().asn, 65536, "{len}");
+        }
+    }
+
+    #[test]
+    fn a_parameter_that_is_not_capabilities_is_reported() {
+        // RFC 4271 §6.2: type 1 (the deprecated authentication), length 0
+        let mut body = build_open(64500, Ipv4Addr::LOCALHOST, &caps::v4_v6());
+        body[9] += 2;
+        body.extend_from_slice(&[1, 0]);
+        let open = Open::parse(&body).unwrap();
+        assert_eq!(open.unknown_parameter, Some(1));
+        assert_eq!(open.families, [true, true], "the rest still read");
     }
 
     #[test]

@@ -629,8 +629,8 @@ impl<'c> Session<'c> {
         if kind != BGP_UPDATE {
             return Err(SessionEnd::Reset("route monitoring without an update"));
         }
-        let update =
-            Update::parse(body, header.asn4(), add_path).map_err(|e| SessionEnd::Reset(e.0))?;
+        let update = Update::parse(body, header.asn4(), add_path)
+            .map_err(|e| SessionEnd::Reset(e.reason))?;
         self.w.apply_update(&vrf, header.asn4(), add_path, &update);
         Ok(())
     }

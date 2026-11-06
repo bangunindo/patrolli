@@ -141,9 +141,12 @@ impl Routers {
             }
             r.generation += 1;
             r.protocol = Some(protocol);
-            // a reconnect gets a whole `keep` to dump and send End-of-RIB
-            if r.deadline.is_some() {
+            // a reconnect gets a whole `keep` to dump and send End-of-RIB,
+            // whether the old session had ended or is replaced now; the
+            // deadline then sweeps what the new one did not refresh
+            if r.deadline.is_some() || r.live.is_some() {
                 r.deadline = Some(Instant::now() + keep);
+                self.changed.notify_one();
             }
             let cutoff = now_millis();
             let previous = r.live.replace(Live {
@@ -385,12 +388,24 @@ mod tests {
         });
         old_cancel.cancelled().await;
         assert!(!new.is_finished(), "waits for the old session to stop");
-        // the old session ends: replaced, so it arms nothing
+        // the old session ends: replaced, so its detach arms nothing more
         routers.detach(old, KEEP);
         let (new, superseded) = new.await.unwrap();
         assert!(superseded);
-        assert_eq!(routers.next_deadline(), None);
         assert!(routers.is_live(new.router));
+
+        // the replacing session got a whole `keep` (armed at attach, before
+        // the wait): what it has not refreshed by then goes, with its own
+        // start as the cutoff, and the router stays
+        let deadline = routers
+            .next_deadline()
+            .expect("a replacing session arms keep");
+        assert_eq!(deadline, Instant::now() + KEEP);
+        let expired = routers.take_expired(deadline);
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].cutoff, new.cutoff);
+        assert!(routers.is_live(new.router));
+        assert_eq!(routers.next_deadline(), None);
     }
 
     #[tokio::test(start_paused = true)]

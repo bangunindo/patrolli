@@ -653,6 +653,7 @@ listeners:
           - address: 192.0.2.1
             password: change-me  # TCP-MD5 (RFC 2385), 1 to 80 bytes, Linux only
             # asn: 65001         # patrolli's AS toward this router
+            # hold_time: 30      # seconds offered to this router; 0 or >= 3
       # VRFs kept, spelled as the table's vrf column: global, 65000:1,
       # 192.0.2.1:7. Empty keeps every VRF.
       vrfs: []

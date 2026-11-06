@@ -298,14 +298,21 @@ impl RouteTable {
             .sweep_partition(&partition(&router, vrf), Some(family), u64::MAX)
     }
 
-    /// The path id of the row stored under exactly `prefix`: `None` when there
-    /// is no such row, `Some(None)` when the row has no path id.
-    pub fn shown_path(&self, router: IpAddr, vrf: &str, prefix: IpNet) -> Option<Option<u32>> {
+    /// The path id of the row stored under exactly `prefix` and when the row
+    /// was written: `None` when there is no such row, a `None` id when the
+    /// row has no path id.
+    pub fn shown_path(
+        &self,
+        router: IpAddr,
+        vrf: &str,
+        prefix: IpNet,
+    ) -> Option<(Option<u32>, u64)> {
         let row = self.table.get_prefix(&partition(&router, vrf), prefix)?;
-        Some(match row.cells().nth(PATH_ID_CELL) {
+        let id = match row.cells().nth(PATH_ID_CELL) {
             Some(CellRef::Integer(id)) => u32::try_from(id).ok(),
             _ => None,
-        })
+        };
+        Some((id, row.last_seen()))
     }
 
     /// The cells of the row stored under exactly `prefix`, owned, with the

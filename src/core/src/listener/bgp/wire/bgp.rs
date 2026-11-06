@@ -34,11 +34,25 @@ pub mod subcode {
     pub const BAD_MESSAGE_LENGTH: u8 = 2;
     pub const BAD_MESSAGE_TYPE: u8 = 3;
     // open message
+    pub const UNSPECIFIC: u8 = 0;
     pub const UNSUPPORTED_VERSION: u8 = 1;
+    pub const BAD_PEER_AS: u8 = 2;
     pub const BAD_BGP_IDENTIFIER: u8 = 3;
+    pub const UNSUPPORTED_OPTIONAL_PARAMETER: u8 = 4;
     pub const UNACCEPTABLE_HOLD_TIME: u8 = 6;
     // update message
     pub const MALFORMED_ATTRIBUTE_LIST: u8 = 1;
+    pub const MISSING_WELL_KNOWN_ATTRIBUTE: u8 = 3;
+    pub const ATTRIBUTE_FLAGS_ERROR: u8 = 4;
+    pub const ATTRIBUTE_LENGTH_ERROR: u8 = 5;
+    pub const INVALID_ORIGIN_ATTRIBUTE: u8 = 6;
+    pub const OPTIONAL_ATTRIBUTE_ERROR: u8 = 9;
+    pub const INVALID_NETWORK_FIELD: u8 = 10;
+    pub const MALFORMED_AS_PATH: u8 = 11;
+    // finite state machine (RFC 6608)
+    pub const UNEXPECTED_IN_OPEN_SENT: u8 = 1;
+    pub const UNEXPECTED_IN_OPEN_CONFIRM: u8 = 2;
+    pub const UNEXPECTED_IN_ESTABLISHED: u8 = 3;
     // cease (RFC 4486)
     pub const ADMINISTRATIVE_SHUTDOWN: u8 = 2;
     pub const ADMINISTRATIVE_RESET: u8 = 4;
@@ -103,6 +117,21 @@ pub fn shutdown_communication(text: &str) -> Vec<u8> {
     out.push(end as u8);
     out.extend_from_slice(&text.as_bytes()[..end]);
     out
+}
+
+/// The End-of-RIB marker of a family (RFC 4724 §2): an UPDATE that announces
+/// and withdraws nothing, empty for IPv4 unicast, otherwise an empty
+/// MP_UNREACH_NLRI. The only UPDATE patrolli ever sends; it carries no
+/// route.
+pub fn end_of_rib(afi: u16, safi: u8) -> Vec<u8> {
+    if (afi, safi) == (super::AFI_IPV4, super::SAFI_UNICAST) {
+        return message(super::BGP_UPDATE, &[0, 0, 0, 0]);
+    }
+    let afi = afi.to_be_bytes();
+    // no withdrawn routes; 6 bytes of attributes: optional, MP_UNREACH_NLRI,
+    // length 3, AFI, SAFI
+    let body = [0, 0, 0, 6, 0x80, 15, 3, afi[0], afi[1], safi];
+    message(super::BGP_UPDATE, &body)
 }
 
 pub fn route_refresh(afi: u16, safi: u8) -> Vec<u8> {

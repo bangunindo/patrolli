@@ -5079,6 +5079,15 @@
             "description": "patrolli's AS toward this router, instead of the section's `asn`.",
             "minimum": 0
           },
+          "hold_time": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Seconds offered to this router, instead of the section's\n`hold_time`; 0 or at least 3.",
+            "minimum": 0
+          },
           "password": {
             "oneOf": [
               {

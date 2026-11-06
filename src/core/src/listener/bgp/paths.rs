@@ -82,8 +82,11 @@ impl Paths {
         };
         let prefix = route.prefix;
         match table.shown_path(self.router, vrf, prefix) {
-            // a lower path is shown: this one waits
-            Some(Some(shown)) if shown < id => {
+            // a lower path this session confirmed is shown: this one waits.
+            // A lower path left by an earlier session may be gone; this one
+            // takes the row below, or a sweep would remove the row and leave
+            // this path waiting behind nothing.
+            Some((Some(shown), last_seen)) if shown < id && last_seen >= self.cutoff => {
                 let cells = route
                     .cells(text)
                     .iter()
@@ -92,8 +95,9 @@ impl Paths {
                 self.put(vrf, prefix, id, now_millis(), cells);
                 Ok(Upsert::Updated)
             }
-            // a higher path is shown: it moves aside, keeping its age
-            Some(Some(shown)) if shown > id => {
+            // a higher path, or an unconfirmed lower one, is shown: it moves
+            // aside, keeping its age, so the sweep drops it unless re-sent
+            Some((Some(shown), _)) if shown != id => {
                 if let Some((cells, last_seen)) = table.row_cells(self.router, vrf, prefix) {
                     self.put(vrf, prefix, shown, last_seen, cells);
                 }
@@ -125,7 +129,7 @@ impl Paths {
             });
         };
         match table.shown_path(self.router, vrf, prefix) {
-            Some(shown) if shown.is_none_or(|shown| shown == id) => {
+            Some((shown, _)) if shown.is_none_or(|shown| shown == id) => {
                 while let Some(next) = self.take_lowest(vrf, prefix) {
                     if next.last_seen < self.cutoff {
                         // not re-announced since the session started: it may
@@ -351,6 +355,43 @@ mod tests {
         assert_eq!(f.withdraw(&mut p, "10.0.0.0/8", 1), Withdrawn::Removed);
         assert_eq!(f.shown("10.0.0.0/8"), None);
         assert!(p.is_empty());
+    }
+
+    #[test]
+    fn a_reconnect_dump_without_the_old_lowest_path_keeps_the_prefix() {
+        let mut f = Fixture::new();
+        let router: IpAddr = ROUTER.parse().unwrap();
+        // the previous session showed path 1, path 2 waiting
+        let mut old = paths(0);
+        f.announce(&mut old, "10.0.0.0/8", 1, 64501);
+        f.announce(&mut old, "10.0.0.0/8", 2, 64502);
+        f.announce(&mut old, "10.1.0.0/16", 1, 64501);
+
+        // path 1 went while disconnected: the new dump re-sends only path 2
+        std::thread::sleep(Duration::from_millis(2));
+        let cutoff = now_millis();
+        let mut p = paths(cutoff);
+        f.announce(&mut p, "10.0.0.0/8", 2, 64502);
+        assert_eq!(
+            f.shown("10.0.0.0/8"),
+            Some((Some(2), 64502)),
+            "a fresh path takes the row from an unconfirmed lower one"
+        );
+        // End-of-RIB: the unconfirmed path 1 goes, path 2 stays shown
+        assert_eq!(f.table.sweep(router, &f.vrf, None, cutoff), 1);
+        p.sweep(&f.vrf, None, cutoff);
+        assert_eq!(f.shown("10.0.0.0/8"), Some((Some(2), 64502)));
+        assert_eq!(f.shown("10.1.0.0/16"), None, "a prefix not re-sent goes");
+        assert!(p.is_empty());
+
+        // had path 1 been re-sent after all, it takes the row back
+        f.announce(&mut old, "10.2.0.0/16", 1, 64501);
+        std::thread::sleep(Duration::from_millis(2));
+        let mut p = paths(now_millis());
+        f.announce(&mut p, "10.2.0.0/16", 2, 64502);
+        f.announce(&mut p, "10.2.0.0/16", 1, 64501);
+        assert_eq!(f.shown("10.2.0.0/16"), Some((Some(1), 64501)));
+        assert_eq!(p.len(), 1, "path 2 waits again");
     }
 
     #[test]

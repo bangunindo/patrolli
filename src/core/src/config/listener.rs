@@ -1050,6 +1050,11 @@ impl BgpPeering {
                 peer.address
             );
             anyhow::ensure!(
+                !matches!(peer.hold_time, Some(1 | 2)),
+                "bgp peer {}: hold_time must be 0 or at least 3",
+                peer.address
+            );
+            anyhow::ensure!(
                 crate::common::ip_allowed(
                     &peer.address,
                     &self.listener.ip_whitelist,
@@ -1097,6 +1102,10 @@ pub struct BgpPeer {
     /// patrolli's AS toward this router, instead of the section's `asn`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asn: Option<u32>,
+    /// Seconds offered to this router, instead of the section's
+    /// `hold_time`; 0 or at least 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_time: Option<u16>,
 }
 
 /// What a full event channel does to the session that produced the event.
@@ -1449,6 +1458,10 @@ config:
 
         for (yaml, want) in [
             ("bgp: {hold_time: 2}", "0 or at least 3"),
+            (
+                "bgp: {peers: [{address: 192.0.2.1, hold_time: 1}]}",
+                "192.0.2.1: hold_time must be 0 or at least 3",
+            ),
             ("bgp: {asn: 23456}", "cannot be 0 or 23456"),
             ("bgp: {router_id: 0.0.0.0}", "cannot be 0.0.0.0"),
             (

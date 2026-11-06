@@ -263,7 +263,8 @@ impl<'c> RouteWriter<'c> {
             // checked by the parser; a failure here would leave the path empty
             let _ = s.path.decode(bytes, asn4);
         }
-        if !asn4 && let Some(bytes) = attrs.as4_path {
+        // the parser leaves an AS4_PATH only where RFC 6793 merges it
+        if let Some(bytes) = attrs.as4_path {
             let _ = s.as4_path.decode(bytes, true);
             s.path.merge_as4(&s.as4_path);
         }
@@ -271,6 +272,11 @@ impl<'c> RouteWriter<'c> {
         s.communities.extend(attrs.communities());
         s.large.clear();
         s.large.extend(attrs.large_communities());
+        // RFC 8092 §3: redundant values are removed; the attribute is a set
+        if s.large.len() > 1 {
+            s.large.sort_unstable();
+            s.large.dedup();
+        }
         let segments: SmallVec<[PathSegment<'_>; 4]> = s
             .path
             .segments()

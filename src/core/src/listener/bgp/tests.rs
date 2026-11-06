@@ -859,6 +859,58 @@ async fn a_reconnect_replaces_the_live_session() {
     assert_eq!(h.table().len(), 1);
 }
 
+#[tokio::test(start_paused = true)]
+async fn keep_expiry_sweeps_what_a_replacing_session_did_not_resend() {
+    let h = Harness::with_keep(Duration::from_secs(60));
+    let p = global_peer();
+    let router = h.router();
+    let open = |rx| {
+        let collector = h.collector.clone();
+        tokio::spawn(async move {
+            collector
+                .session(rx, router, CancellationToken::new())
+                .await
+        })
+    };
+
+    // the first session stays up (a half-open TCP connection, say)
+    let (mut old_tx, rx) = tokio::io::duplex(1 << 16);
+    let old = open(rx);
+    let mut s = start(&p, &[]);
+    s.extend(v4_route(
+        &p,
+        &["10.0.0.0/8", "10.1.0.0/16"],
+        &[64501],
+        "192.0.2.1",
+    ));
+    old_tx.write_all(&s).await.unwrap();
+    eventually(|| h.table().len() == 2).await;
+
+    // the router reconnects while it lasts, re-sends one route, and never
+    // sends End-of-RIB (GoBGP over BMP sends none)
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    let (mut tx, rx) = tokio::io::duplex(1 << 16);
+    let new = open(rx);
+    let mut s = start(&p, &[]);
+    s.extend(v4_route(&p, &["10.0.0.0/8"], &[64501], "192.0.2.1"));
+    tx.write_all(&s).await.unwrap();
+    assert_eq!(old.await.unwrap(), SessionEnd::Cancelled);
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // the replacing session got a whole keep, then the stale /16 goes
+    let now = tokio::time::Instant::now();
+    assert_eq!(h.collector.expire(now + Duration::from_secs(55)), 0);
+    assert_eq!(h.collector.expire(now + Duration::from_secs(61)), 1);
+    assert_eq!(h.table().len(), 1);
+    assert_eq!(
+        h.text("global", "10.0.0.0/8", "origin_as").unwrap(),
+        "64501"
+    );
+    assert_eq!(h.text("global", "10.1.0.0/16", "origin_as"), None);
+    drop(tx);
+    assert_eq!(new.await.unwrap(), SessionEnd::Eof);
+}
+
 // ── events, VRF filter, a collector's successor ───────────────────────────
 
 /// A sink of `buffer` events, and its receiving end.
@@ -1712,6 +1764,7 @@ mod transport {
             address: "127.0.0.1".parse().unwrap(),
             password: Some(Sensitive::Plain("s3cret".into())),
             asn: None,
+            hold_time: None,
         }])
         .await;
         // the listener starts with its first worker
