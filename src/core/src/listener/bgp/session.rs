@@ -544,8 +544,9 @@ impl<'c> Session<'c> {
                 self.route_monitoring(&peer, bgp)
             }
             Message::StatisticsReport { peer, stats } if peer.is_loc_rib() => {
-                // read for the self-check against the table's own counts
-                // (phase 3); for now only a malformed one is noted
+                // the router's Loc-RIB counts, for a future self-check
+                // against the table's own; for now only a malformed one is
+                // noted
                 if bmp::loc_rib_counts(stats).is_err() {
                     Stats::incr(&self.c.stats.messages_skipped);
                 }
