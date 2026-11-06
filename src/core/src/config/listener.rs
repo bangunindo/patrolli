@@ -1285,7 +1285,7 @@ type: internal_logs
 config:
   level: warn
   include:
-    - { name: patrolli::cluster, level: debug }
+    - { name: patrolli_cluster, level: debug }
   exclude: [patrolli::sink::kafka]
   buffer_size: 500
 "#,
@@ -1299,7 +1299,7 @@ config:
         assert_eq!(
             logs.include,
             [LogModule {
-                name: "patrolli::cluster".into(),
+                name: "patrolli_cluster".into(),
                 level: Level::Debug
             }]
         );

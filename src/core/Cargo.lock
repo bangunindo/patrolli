@@ -4748,7 +4748,6 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
- "tokio-postgres",
  "tokio-rustls",
  "tokio-stream",
  "tokio-util",
@@ -4778,6 +4777,7 @@ dependencies = [
  "http-serde",
  "jsonwebtoken",
  "patrolli",
+ "patrolli-cluster",
  "patrolli-proto",
  "petgraph",
  "rand 0.10.3",
@@ -4830,6 +4830,7 @@ dependencies = [
  "parking_lot 0.12.5",
  "patrolli",
  "patrolli-api",
+ "patrolli-cluster",
  "prost",
  "rand 0.10.3",
  "rdkafka",
@@ -4857,6 +4858,42 @@ dependencies = [
  "utoipa",
  "uuid",
  "zstd 0.14.3",
+]
+
+[[package]]
+name = "patrolli-cluster"
+version = "0.1.0-beta.2"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "chrono-tz",
+ "deadpool-postgres",
+ "flume",
+ "futures",
+ "otel-arrow-dfe-pdata",
+ "papaya",
+ "parking_lot 0.12.5",
+ "patrolli",
+ "patrolli-proto",
+ "prost",
+ "rustc-hash",
+ "sea-query",
+ "sea-query-postgres",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror",
+ "tokio",
+ "tokio-postgres",
+ "tokio-stream",
+ "tokio-util",
+ "tonic",
+ "tracing",
+ "uuid",
+ "xxhash-rust",
 ]
 
 [[package]]

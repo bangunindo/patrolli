@@ -551,7 +551,7 @@ mod tests {
                     level: Level::Info,
                 },
                 LogModule {
-                    name: "patrolli::cluster".into(),
+                    name: "patrolli_cluster".into(),
                     level: Level::Debug,
                 },
             ],
@@ -562,7 +562,7 @@ mod tests {
         let worker = h.spawn().await;
         tracing::info!(target: "patrolli::sink::file", "included");
         tracing::debug!(target: "patrolli::sink::file", "below level");
-        tracing::debug!(target: "patrolli::cluster::node_lock", "debug include");
+        tracing::debug!(target: "patrolli_cluster::node_lock", "debug include");
         tracing::info!(target: "patrolli::api::audit", "excluded");
         tracing::info!(target: "patrolli::listener::internal_logs", "self");
         stop(worker).await;

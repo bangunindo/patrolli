@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 patrolli.workspace = true
+patrolli-cluster.workspace = true
 patrolli-proto.workspace = true
 anyhow.workspace = true
 async-recursion.workspace = true

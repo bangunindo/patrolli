@@ -691,7 +691,7 @@ listeners:
       include:
         - name: patrolli
           level: info
-        - name: patrolli::cluster
+        - name: patrolli_cluster
           level: debug
       # Modules never exported. The longest matching prefix wins, so an
       # exclusion can carve a submodule out of an include.

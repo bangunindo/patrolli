@@ -11,14 +11,14 @@
 //! as a wrong-but-valid value on the other.
 
 use super::comm::ItemStats;
-use crate::cache;
-use crate::cache::item::{
-    ACTIVITY_PLANE_BYTES, Failure, FailureKind, ItemState, Stats, StatsSnapshot,
-};
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use chrono::{DateTime, FixedOffset};
 use futures::{Stream, StreamExt};
+use patrolli::cache;
+use patrolli::cache::item::{
+    ACTIVITY_PLANE_BYTES, Failure, FailureKind, ItemState, Stats, StatsSnapshot,
+};
 use patrolli_proto::v1;
 use prost::Message;
 use rustc_hash::FxHashMap;
@@ -27,59 +27,51 @@ use tonic::Status;
 use tracing::trace;
 use uuid::Uuid;
 
-impl From<ItemState> for v1::ItemState {
-    fn from(s: ItemState) -> Self {
-        match s {
-            ItemState::Unknown => Self::Unspecified,
-            ItemState::NeverRan => Self::NeverRan,
-            ItemState::Ok => Self::Ok,
-            ItemState::OkEmpty => Self::OkEmpty,
-            ItemState::Retrying => Self::Retrying,
-            ItemState::Failing => Self::Failing,
-            ItemState::Stale => Self::Stale,
-        }
+fn state_to_proto(s: ItemState) -> v1::ItemState {
+    match s {
+        ItemState::Unknown => v1::ItemState::Unspecified,
+        ItemState::NeverRan => v1::ItemState::NeverRan,
+        ItemState::Ok => v1::ItemState::Ok,
+        ItemState::OkEmpty => v1::ItemState::OkEmpty,
+        ItemState::Retrying => v1::ItemState::Retrying,
+        ItemState::Failing => v1::ItemState::Failing,
+        ItemState::Stale => v1::ItemState::Stale,
     }
 }
 
-impl From<v1::ItemState> for ItemState {
-    fn from(s: v1::ItemState) -> Self {
-        match s {
-            v1::ItemState::Unspecified => Self::Unknown,
-            v1::ItemState::NeverRan => Self::NeverRan,
-            v1::ItemState::Ok => Self::Ok,
-            v1::ItemState::OkEmpty => Self::OkEmpty,
-            v1::ItemState::Retrying => Self::Retrying,
-            v1::ItemState::Failing => Self::Failing,
-            v1::ItemState::Stale => Self::Stale,
-        }
+fn state_from_proto(s: v1::ItemState) -> ItemState {
+    match s {
+        v1::ItemState::Unspecified => ItemState::Unknown,
+        v1::ItemState::NeverRan => ItemState::NeverRan,
+        v1::ItemState::Ok => ItemState::Ok,
+        v1::ItemState::OkEmpty => ItemState::OkEmpty,
+        v1::ItemState::Retrying => ItemState::Retrying,
+        v1::ItemState::Failing => ItemState::Failing,
+        v1::ItemState::Stale => ItemState::Stale,
     }
 }
 
-impl From<FailureKind> for v1::FailureKind {
-    fn from(k: FailureKind) -> Self {
-        match k {
-            FailureKind::Timeout => Self::Timeout,
-            FailureKind::Unreachable => Self::Unreachable,
-            FailureKind::Auth => Self::Auth,
-            FailureKind::NotSupported => Self::NotSupported,
-            FailureKind::TargetError => Self::TargetError,
-            FailureKind::Malformed => Self::Malformed,
-            FailureKind::Config => Self::Config,
-            FailureKind::Dropped => Self::Dropped,
-            FailureKind::Cluster => Self::Cluster,
-            FailureKind::Internal => Self::Internal,
-        }
+fn kind_to_proto(k: FailureKind) -> v1::FailureKind {
+    match k {
+        FailureKind::Timeout => v1::FailureKind::Timeout,
+        FailureKind::Unreachable => v1::FailureKind::Unreachable,
+        FailureKind::Auth => v1::FailureKind::Auth,
+        FailureKind::NotSupported => v1::FailureKind::NotSupported,
+        FailureKind::TargetError => v1::FailureKind::TargetError,
+        FailureKind::Malformed => v1::FailureKind::Malformed,
+        FailureKind::Config => v1::FailureKind::Config,
+        FailureKind::Dropped => v1::FailureKind::Dropped,
+        FailureKind::Cluster => v1::FailureKind::Cluster,
+        FailureKind::Internal => v1::FailureKind::Internal,
     }
 }
 
-impl From<&Failure> for v1::ItemFailure {
-    fn from(f: &Failure) -> Self {
-        Self {
-            at_unix_ms: f.at.timestamp_millis(),
-            kind: v1::FailureKind::from(f.kind) as i32,
-            reason: f.reason.to_string(),
-            detail_json: encode_detail(f),
-        }
+fn failure_to_proto(f: &Failure) -> v1::ItemFailure {
+    v1::ItemFailure {
+        at_unix_ms: f.at.timestamp_millis(),
+        kind: kind_to_proto(f.kind) as i32,
+        reason: f.reason.to_string(),
+        detail_json: encode_detail(f),
     }
 }
 
@@ -127,7 +119,7 @@ pub fn to_proto(
         item_id: item_id.as_bytes().to_vec().into(),
         node_id: node_id.as_bytes().to_vec().into(),
 
-        state: v1::ItemState::from(snap.state) as i32,
+        state: state_to_proto(snap.state) as i32,
 
         total_checks: snap.total_checks,
         total_failures: snap.total_failures,
@@ -149,10 +141,10 @@ pub fn to_proto(
         activity_fail: snap.activity_fail.clone(),
         activity_window_end_unix_ms: snap.activity_window_end.timestamp_millis(),
 
-        last_failure: snap.last_failure.as_deref().map(v1::ItemFailure::from),
+        last_failure: snap.last_failure.as_deref().map(failure_to_proto),
         recent_failures: match (include_recent_failures, &snap.recent_failures) {
             // Ring is stored newest-first, which is also the wire order.
-            (true, Some(ring)) => ring.iter().map(v1::ItemFailure::from).collect(),
+            (true, Some(ring)) => ring.iter().map(failure_to_proto).collect(),
             _ => Vec::new(),
         },
     }
@@ -201,7 +193,7 @@ pub struct RemoteStats {
 /// a panic is fatal (`common::panic`), so an `unwrap` here would take the process
 /// down over one peer's bad field; it is an `Option` rather than an assumption.
 fn to_local(unix_ms: i64) -> Option<DateTime<FixedOffset>> {
-    to_local_in(unix_ms, &crate::common::DEFAULT_TZ)
+    to_local_in(unix_ms, &patrolli::common::DEFAULT_TZ)
 }
 
 /// [`to_local`] against an explicit zone.
@@ -256,55 +248,49 @@ fn plane_from_wire(plane: Bytes, which: &str) -> Bytes {
     Bytes::new()
 }
 
-impl From<v1::FailureKind> for FailureKind {
-    /// `Unspecified` — and, via [`RemoteStats`], any value this build doesn't know —
-    /// becomes [`FailureKind::Internal`].
-    ///
-    /// Neither an error nor a new `Unknown` variant. A peer naming a kind we've never
-    /// heard of is a version skew inside patrolli itself, and "a patrolli bug, not the
-    /// user's problem" is precisely what `Internal` already means. Erroring instead
-    /// would discard a real, timestamped, reasoned failure over its label, and adding
-    /// an `Unknown` variant would oblige forty-odd construction sites and every
-    /// retryability decision to consider a case only this function can produce.
-    fn from(k: v1::FailureKind) -> Self {
-        match k {
-            v1::FailureKind::Timeout => Self::Timeout,
-            v1::FailureKind::Unreachable => Self::Unreachable,
-            v1::FailureKind::Auth => Self::Auth,
-            v1::FailureKind::NotSupported => Self::NotSupported,
-            v1::FailureKind::TargetError => Self::TargetError,
-            v1::FailureKind::Malformed => Self::Malformed,
-            v1::FailureKind::Config => Self::Config,
-            v1::FailureKind::Dropped => Self::Dropped,
-            v1::FailureKind::Cluster => Self::Cluster,
-            v1::FailureKind::Internal | v1::FailureKind::Unspecified => Self::Internal,
-        }
+/// `Unspecified` — and, via [`RemoteStats`], any value this build doesn't know —
+/// becomes [`FailureKind::Internal`].
+///
+/// Neither an error nor a new `Unknown` variant. A peer naming a kind we've never
+/// heard of is a version skew inside patrolli itself, and "a patrolli bug, not the
+/// user's problem" is precisely what `Internal` already means. Erroring instead
+/// would discard a real, timestamped, reasoned failure over its label, and adding
+/// an `Unknown` variant would oblige forty-odd construction sites and every
+/// retryability decision to consider a case only this function can produce.
+fn kind_from_proto(k: v1::FailureKind) -> FailureKind {
+    match k {
+        v1::FailureKind::Timeout => FailureKind::Timeout,
+        v1::FailureKind::Unreachable => FailureKind::Unreachable,
+        v1::FailureKind::Auth => FailureKind::Auth,
+        v1::FailureKind::NotSupported => FailureKind::NotSupported,
+        v1::FailureKind::TargetError => FailureKind::TargetError,
+        v1::FailureKind::Malformed => FailureKind::Malformed,
+        v1::FailureKind::Config => FailureKind::Config,
+        v1::FailureKind::Dropped => FailureKind::Dropped,
+        v1::FailureKind::Cluster => FailureKind::Cluster,
+        v1::FailureKind::Internal | v1::FailureKind::Unspecified => FailureKind::Internal,
     }
 }
 
-impl TryFrom<v1::ItemFailure> for Failure {
-    type Error = anyhow::Error;
-
-    /// Fails only on a timestamp that names no real instant. A failure is a point on
-    /// a timeline; one that can't be placed on it has nothing left to say, whereas an
-    /// unknown kind or unreadable detail still leaves a time and a reason.
-    ///
-    /// Built through [`Failure::new`], so `reason` is re-truncated here. The producer
-    /// truncated it too, but a peer is input and the cap belongs at the boundary.
-    fn try_from(f: v1::ItemFailure) -> Result<Self> {
-        let at = to_local(f.at_unix_ms)
-            .with_context(|| format!("failure timestamp {} out of range", f.at_unix_ms))?;
-        let kind = v1::FailureKind::try_from(f.kind)
-            .map(FailureKind::from)
-            .unwrap_or(FailureKind::Internal);
-        let detail = decode_detail(&f.detail_json);
-        Ok(Failure::new(at, kind, &f.reason, detail))
-    }
+/// Fails only on a timestamp that names no real instant. A failure is a point on
+/// a timeline; one that can't be placed on it has nothing left to say, whereas an
+/// unknown kind or unreadable detail still leaves a time and a reason.
+///
+/// Built through [`Failure::new`], so `reason` is re-truncated here. The producer
+/// truncated it too, but a peer is input and the cap belongs at the boundary.
+fn failure_from_proto(f: v1::ItemFailure) -> Result<Failure> {
+    let at = to_local(f.at_unix_ms)
+        .with_context(|| format!("failure timestamp {} out of range", f.at_unix_ms))?;
+    let kind = v1::FailureKind::try_from(f.kind)
+        .map(kind_from_proto)
+        .unwrap_or(FailureKind::Internal);
+    let detail = decode_detail(&f.detail_json);
+    Ok(Failure::new(at, kind, &f.reason, detail))
 }
 
 /// Convert a wire failure, dropping it if it can't be placed in time.
 fn failure_from_wire(f: v1::ItemFailure) -> Option<Failure> {
-    match Failure::try_from(f) {
+    match failure_from_proto(f) {
         Ok(f) => Some(f),
         Err(e) => {
             trace!(error = %e, "dropping unconvertible failure");
@@ -330,7 +316,7 @@ impl TryFrom<v1::ItemStats> for RemoteStats {
         let node_id = Uuid::from_slice(&msg.node_id).context("node_id")?;
 
         let state = v1::ItemState::try_from(msg.state)
-            .map(ItemState::from)
+            .map(state_from_proto)
             .unwrap_or(ItemState::Unknown);
 
         // The planes are positions *relative to* the window end, so without a usable
@@ -427,7 +413,7 @@ impl StateFilter {
             states
                 .iter()
                 .filter_map(|s| v1::ItemState::try_from(*s).ok())
-                .map(ItemState::from)
+                .map(state_from_proto)
                 .collect(),
         ))
     }
@@ -603,8 +589,8 @@ pub(super) fn local_stats(
         node_id,
         // One clock for all of them, matching the serving path: `Stale` is derived
         // from it, so reading it per item would judge items by different deadlines.
-        crate::common::now().fixed_offset(),
-        crate::common::get_start_datetime().fixed_offset(),
+        patrolli::common::now().fixed_offset(),
+        patrolli::common::get_start_datetime().fixed_offset(),
         items,
         &StateFilter::new(&req.states),
     ))
@@ -692,12 +678,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::item::Stats;
+    use patrolli::cache::item::Stats;
     use serde_json::json;
 
     fn failure(kind: FailureKind) -> Failure {
         Failure {
-            at: crate::common::now().fixed_offset(),
+            at: patrolli::common::now().fixed_offset(),
             kind,
             reason: "request timeout".into(),
             detail: Some(Box::new(json!({"oid": "1.3.6.1.2.1.1.3.0"}))),
@@ -713,8 +699,8 @@ mod tests {
             .fixed_offset()
     }
 
-    fn cached_item() -> crate::config::item::Item {
-        use crate::config::item::{Config, Dummy, DummyPayload, Item, Schedule};
+    fn cached_item() -> patrolli::config::item::Item {
+        use patrolli::config::item::{Config, Dummy, DummyPayload, Item, Schedule};
         Item::new(
             Uuid::now_v7(),
             "test".into(),
@@ -772,7 +758,7 @@ mod tests {
     #[test]
     fn failure_detail_round_trips_as_json_bytes() {
         let f = failure(FailureKind::Timeout);
-        let out = v1::ItemFailure::from(&f);
+        let out = failure_to_proto(&f);
 
         assert_eq!(out.kind, v1::FailureKind::Timeout as i32);
         assert_eq!(out.reason, "request timeout");
@@ -786,7 +772,7 @@ mod tests {
         let mut f = failure(FailureKind::Config);
         f.detail = None;
         // `null` would be 4 bytes that every consumer then has to special-case.
-        assert!(v1::ItemFailure::from(&f).detail_json.is_empty());
+        assert!(failure_to_proto(&f).detail_json.is_empty());
     }
 
     #[test]
@@ -911,12 +897,12 @@ mod tests {
             (FailureKind::Internal, v1::FailureKind::Internal),
         ] {
             assert_eq!(rust as i32, proto as i32, "{rust} drifted from the proto");
-            assert_eq!(v1::FailureKind::from(rust), proto);
-            assert_eq!(FailureKind::from(proto), rust);
+            assert_eq!(kind_to_proto(rust), proto);
+            assert_eq!(kind_from_proto(proto), rust);
         }
-        // The one kind that isn't a bijection, and why: see `From<v1::FailureKind>`.
+        // The one kind that isn't a bijection, and why: see `kind_from_proto`.
         assert_eq!(
-            FailureKind::from(v1::FailureKind::Unspecified),
+            kind_from_proto(v1::FailureKind::Unspecified),
             FailureKind::Internal
         );
 
@@ -930,8 +916,8 @@ mod tests {
             (ItemState::Stale, v1::ItemState::Stale),
         ] {
             assert_eq!(rust as i32, proto as i32, "{rust} drifted from the proto");
-            assert_eq!(v1::ItemState::from(rust), proto);
-            assert_eq!(ItemState::from(proto), rust);
+            assert_eq!(state_to_proto(rust), proto);
+            assert_eq!(state_from_proto(proto), rust);
         }
     }
 
@@ -1144,7 +1130,7 @@ mod tests {
         assert_eq!(
             *got.offset(),
             clock(ms)
-                .with_timezone(&*crate::common::DEFAULT_TZ)
+                .with_timezone(&*patrolli::common::DEFAULT_TZ)
                 .offset()
                 .fix(),
             "rendered in the node's zone"

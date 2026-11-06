@@ -561,7 +561,7 @@ mod tests {
                 level: ConfigLevel::Info,
             },
             LogModule {
-                name: "patrolli::cluster".into(),
+                name: "patrolli_cluster".into(),
                 level: ConfigLevel::Debug,
             },
         ];
@@ -578,7 +578,7 @@ mod tests {
             info!(target: "patrolli::sink::file", "included");
             info!(target: "other_crate", "not included");
             debug!(target: "patrolli::sink::file", "below level");
-            debug!(target: "patrolli::cluster::node_lock", "debug include");
+            debug!(target: "patrolli_cluster::node_lock", "debug include");
         });
         let messages: Vec<_> = drain(&rx).iter().map(|e| e.message.clone()).collect();
         assert_eq!(messages, ["included", "debug include"]);

@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 [workspace]
-members = ["crates/api", "crates/app", "crates/proto"]
-default-members = [".", "crates/api", "crates/app", "crates/proto"]
+members = ["crates/api", "crates/app", "crates/cluster", "crates/proto"]
+default-members = [".", "crates/api", "crates/app", "crates/cluster", "crates/proto"]
 
 [workspace.package]
 version = "0.1.0-beta.2"
@@ -21,6 +21,7 @@ anyhow = "1.0.104"
 arc-swap = "1.9.3"
 arrow = "59.3.2"
 async-recursion = "1.2.0"
+async-stream = "0.3.6"
 async-trait = "0.1.92"
 axum = { version = "0.8.9", features = ["macros", "http2", "ws"] }
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
@@ -40,14 +41,17 @@ deadpool-postgres = "0.14.2"
 fjall = { version = "3.1.13", default-features = false, features = ["bytes_1"] }
 flate2 = "1.1.10"
 flume = "0.12.0"
+futures = "0.3.34"
 futures-util = "0.3.34"
 http = "1.5.0"
 http-serde = "2.1.1"
 ipnet = "2.12.2"
 lz4_flex = "0.14.0"
 otel-arrow-dfe-pdata = "0.64.0"
+papaya = "0.2.5"
 parking_lot = { version = "0.12.5" }
 patrolli = { path = "." }
+patrolli-cluster = { path = "crates/cluster" }
 patrolli-proto = { path = "crates/proto" }
 petgraph = "0.8.3"
 prost = "0.14.4"
@@ -86,12 +90,14 @@ tokio-postgres = { version = "0.7.18", features = [
     "with-serde_json-1",
     "with-time-0_3",
 ] }
+tokio-stream = "0.1.19"
 tokio-util = { version = "0.7.20", features = ["codec", "time"] }
 tonic = { version = "0.14.9", features = ["tls-aws-lc"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["json"] }
 utoipa = { version = "6.0.0", features = ["axum_extras", "chrono", "uuid"] }
 uuid = { version = "1.29.0", features = ["serde", "v5", "v7"] }
+xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 zstd = "0.14.3"
 
 [package]
@@ -109,7 +115,7 @@ arrow.workspace = true
 arrow-ipc = "59.3.2"
 async-recursion.workspace = true
 async-snmp = "0.18.1"
-async-stream = "0.3.6"
+async-stream.workspace = true
 async-trait.workspace = true
 aws-lc-rs = "1.19.0"
 base64.workspace = true
@@ -127,7 +133,7 @@ etherparse = "0.21.0"
 fjall.workspace = true
 flate2.workspace = true
 flume.workspace = true
-futures = "0.3.34"
+futures.workspace = true
 futures-util.workspace = true
 hashbrown = "0.17.1"
 http.workspace = true
@@ -157,7 +163,7 @@ opentelemetry-proto = { version = "0.33.1", default-features = false, features =
     "metrics",
     "trace",
 ] }
-papaya = "0.2.5"
+papaya.workspace = true
 parking_lot.workspace = true
 petgraph.workspace = true
 priority-queue = "2.7.0"
@@ -184,7 +190,7 @@ syslog_loose = "0.23.0"
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls = "0.26.6"
-tokio-stream = "0.1.19"
+tokio-stream.workspace = true
 tokio-util.workspace = true
 tonic.workspace = true
 patrolli-proto.workspace = true
@@ -192,7 +198,7 @@ tracing.workspace = true
 tracing-log = "0.2.0"
 tracing-subscriber.workspace = true
 uuid.workspace = true
-xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
+xxhash-rust.workspace = true
 zstd.workspace = true
 # API and Database dependencies
 axum.workspace = true
@@ -204,7 +210,6 @@ rustls.workspace = true
 rustls-pemfile = "2.2.0"
 sea-query.workspace = true
 sea-query-postgres.workspace = true
-tokio-postgres.workspace = true
 utoipa.workspace = true
 webpki-roots = "1.0.11"
 http-serde.workspace = true
