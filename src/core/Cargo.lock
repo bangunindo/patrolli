@@ -4714,18 +4714,14 @@ dependencies = [
  "otel-arrow-dfe-query-engine-languages",
  "papaya",
  "parking_lot 0.12.5",
- "pbjson",
- "pbjson-build",
- "pbjson-types",
+ "patrolli-proto",
  "petgraph",
  "pkcs8 0.11.0",
- "postgres-types",
  "prefix-trie",
  "priority-queue",
  "prometheus-client",
  "prometheus-scraper",
  "prost",
- "prost-build",
  "rand 0.10.3",
  "rdkafka",
  "refinery",
@@ -4752,13 +4748,10 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
- "tokio-postgres",
  "tokio-rustls",
  "tokio-stream",
  "tokio-util",
  "tonic",
- "tonic-prost",
- "tonic-prost-build",
  "tracing",
  "tracing-log",
  "tracing-subscriber",
@@ -4784,6 +4777,8 @@ dependencies = [
  "http-serde",
  "jsonwebtoken",
  "patrolli",
+ "patrolli-cluster",
+ "patrolli-proto",
  "petgraph",
  "rand 0.10.3",
  "reqwest",
@@ -4835,6 +4830,7 @@ dependencies = [
  "parking_lot 0.12.5",
  "patrolli",
  "patrolli-api",
+ "patrolli-cluster",
  "prost",
  "rand 0.10.3",
  "rdkafka",
@@ -4865,40 +4861,50 @@ dependencies = [
 ]
 
 [[package]]
-name = "pbjson"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8edd1efdd8ab23ba9cb9ace3d9987a72663d5d7c9f74fa00b51d6213645cf6c"
+name = "patrolli-cluster"
+version = "0.1.0-beta.2"
 dependencies = [
- "base64 0.22.1",
- "serde",
-]
-
-[[package]]
-name = "pbjson-build"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ed4d5c6ae95e08ac768883c8401cf0e8deb4e6e1d6a4e1fd3d2ec4f0ec63200"
-dependencies = [
- "heck 0.5.0",
- "itertools 0.14.0",
- "prost",
- "prost-types",
-]
-
-[[package]]
-name = "pbjson-types"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a14e2757d877c0f607a82ce1b8560e224370f159d66c5d52eb55ea187ef0350e"
-dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
  "bytes",
  "chrono",
- "pbjson",
- "pbjson-build",
+ "chrono-tz",
+ "deadpool-postgres",
+ "flume",
+ "futures",
+ "otel-arrow-dfe-pdata",
+ "papaya",
+ "parking_lot 0.12.5",
+ "patrolli",
+ "patrolli-proto",
  "prost",
- "prost-build",
+ "rustc-hash",
+ "sea-query",
+ "sea-query-postgres",
  "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror",
+ "tokio",
+ "tokio-postgres",
+ "tokio-stream",
+ "tokio-util",
+ "tonic",
+ "tracing",
+ "uuid",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "patrolli-proto"
+version = "0.1.0-beta.2"
+dependencies = [
+ "bytes",
+ "prost",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]

@@ -6,11 +6,11 @@
 //! own, and one memory topic per sink that the test reads back.
 use super::*;
 use crate::chan::AdminChannel;
-use crate::cluster::inter::v1::CaptureRequest;
 use crate::config::processor::{AttributeFilter, AttributeFilterExpr, AttributeTable, KeyValueOp};
 use crate::config::{self, sink};
 use crate::processor::test_payloads::{logs, signals};
 use arc_swap::ArcSwap;
+use patrolli_proto::v1::CaptureRequest;
 use payload::{Payload, ProcessorPayload};
 
 const SINK_BUFFER: usize = 64;

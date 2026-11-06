@@ -18,7 +18,6 @@ mod worker_tests;
 
 use crate::cache::processor::{Capture, Node, Step};
 use crate::chan::{self, SenderChannel};
-use crate::cluster::inter::v1::CaptureMessage;
 use crate::common::HasLength;
 use crate::common::internal_metrics::{
     INTERNAL_METRICS, Processor as ProcessorMetrics, ProcessorEdge as ProcessorEdgeMetrics,
@@ -33,6 +32,7 @@ use crate::payload::PayloadBatch;
 use crate::{cache, common, payload};
 use anyhow::Result;
 use flume::{Receiver, RecvTimeoutError};
+use patrolli_proto::v1::CaptureMessage;
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use std::cell::Cell;
 use std::num::NonZero;

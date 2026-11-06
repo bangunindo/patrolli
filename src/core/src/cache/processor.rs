@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use crate::cluster::inter::v1::{CaptureMessage, CaptureRequest};
 use crate::config::{processor, sink};
 use anyhow::Result;
 use arc_swap::{ArcSwap, Guard};
 use parking_lot::{Mutex, RawMutex, RwLock, lock_api::MutexGuard};
+use patrolli_proto::v1::{CaptureMessage, CaptureRequest};
 use petgraph::acyclic::Acyclic;
 use petgraph::prelude::DiGraphMap;
 use rustc_hash::FxHashMap;
@@ -435,8 +435,8 @@ impl Processor {
 #[cfg(test)]
 mod tests {
     use super::Processor;
-    use crate::cluster::inter::v1::CaptureRequest;
     use crate::config::processor::{Config, Processor as ProcessorConfig};
+    use patrolli_proto::v1::CaptureRequest;
     use std::sync::Arc;
     use uuid::Uuid;
 

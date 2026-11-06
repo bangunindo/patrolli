@@ -4,11 +4,11 @@
 
 use super::balancer::{self, Move, NodeLoad};
 use super::{NodeState, NodeStateType};
-use crate::config::cluster::{Cluster as ClusterConfig, ClusterPolicy};
-use crate::db::AdvisoryLock;
-use crate::db::schema::ConfigKeys;
 use anyhow::{Context, Result};
 use deadpool_postgres::{ClientWrapper, GenericClient, Object, Pool, Transaction};
+use patrolli::config::cluster::{Cluster as ClusterConfig, ClusterPolicy};
+use patrolli::db::AdvisoryLock;
+use patrolli::db::schema::ConfigKeys;
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;

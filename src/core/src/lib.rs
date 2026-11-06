@@ -12,5 +12,4 @@ pub mod monitor;
 pub mod processor;
 pub mod sink;
 
-pub mod cluster;
 pub mod payload;

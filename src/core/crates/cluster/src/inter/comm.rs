@@ -3,20 +3,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::item_stats;
-use super::v1::inter_cluster_service_client::InterClusterServiceClient;
-use super::v1::inter_cluster_service_server::{InterClusterService, InterClusterServiceServer};
-use super::v1::{
-    CaptureMessage, CaptureRequest, ForwardAck, ForwardStatus, ItemStatsRequest, ItemStatsResponse,
-    NodeIdentity, PayloadBatch, SignalType,
-};
-use crate::cache::item::StatsSnapshot;
-use crate::chan::SenderChannel;
-use crate::common::internal_metrics::{
-    Forwarder as ForwarderMetrics, ForwarderServer as ForwarderServerMetrics, INTERNAL_METRICS,
-    NodeMetrics,
-};
-use crate::listener::item_listener_annotate;
-use crate::{cache, common, config, payload};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
@@ -25,6 +11,22 @@ use futures::{Stream, StreamExt};
 use otel_arrow_dfe_pdata::otap::from_record_messages;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 use otel_arrow_dfe_pdata::{Consumer, OtapArrowRecords};
+use patrolli::cache::item::StatsSnapshot;
+use patrolli::chan::SenderChannel;
+use patrolli::common::internal_metrics::{
+    Forwarder as ForwarderMetrics, ForwarderServer as ForwarderServerMetrics, INTERNAL_METRICS,
+    NodeMetrics,
+};
+use patrolli::listener::item_listener_annotate;
+use patrolli::{cache, common, config, payload};
+use patrolli_proto::v1::inter_cluster_service_client::InterClusterServiceClient;
+use patrolli_proto::v1::inter_cluster_service_server::{
+    InterClusterService, InterClusterServiceServer,
+};
+use patrolli_proto::v1::{
+    CaptureMessage, CaptureRequest, ForwardAck, ForwardStatus, ItemStatsRequest, ItemStatsResponse,
+    NodeIdentity, PayloadBatch, SignalType,
+};
 use prost::Message;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use std::pin::Pin;
@@ -110,9 +112,9 @@ async fn build_channel(dst: &str, tls: Option<&config::Tls>) -> Result<Channel> 
         .keep_alive_timeout(Duration::from_secs(3))
         .connect_timeout(Duration::from_secs(3));
     if let Some(tls_conf) = tls {
-        endpoint = match crate::common::tls::build_tonic_client_tls(tls_conf)? {
-            crate::common::tls::TonicClientTls::Verified(config) => endpoint.tls_config(*config)?,
-            crate::common::tls::TonicClientTls::Insecure(config, verifier) => {
+        endpoint = match common::tls::build_tonic_client_tls(tls_conf)? {
+            common::tls::TonicClientTls::Verified(config) => endpoint.tls_config(*config)?,
+            common::tls::TonicClientTls::Insecure(config, verifier) => {
                 endpoint.tls_config_with_verifier(*config, verifier)?
             }
         };
@@ -950,7 +952,7 @@ impl InterClusterService for InterCommServer {
 #[cfg(test)]
 mod tests {
     use super::{Bearer, InternalMetrics, ServerMetrics};
-    use crate::common::internal_metrics::NodeMetrics;
+    use patrolli::common::internal_metrics::NodeMetrics;
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
     use std::time::Duration;

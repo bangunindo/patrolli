@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+[package]
+name = "patrolli-cluster"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+patrolli.workspace = true
+patrolli-proto.workspace = true
+anyhow.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+deadpool-postgres.workspace = true
+flume.workspace = true
+futures.workspace = true
+otel-arrow-dfe-pdata.workspace = true
+papaya.workspace = true
+parking_lot.workspace = true
+prost.workspace = true
+rustc-hash.workspace = true
+sea-query.workspace = true
+sea-query-postgres.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tonic.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+xxhash-rust.workspace = true

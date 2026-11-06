@@ -5,8 +5,8 @@
 use crate::jwt::Jwt;
 use deadpool_postgres::Pool;
 use patrolli::cache::Cache;
-use patrolli::cluster::inter::InterComm;
 use patrolli::config::sensitive::SecretKeys;
+use patrolli_cluster::inter::InterComm;
 use std::sync::Arc;
 
 /// AppState holds all shared state for the API server

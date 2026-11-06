@@ -42,11 +42,11 @@ use crate::error::ApiResultExt;
 use crate::response::ResponseError;
 use crate::state::AppState;
 use patrolli::cache::item::StatsSnapshot;
-use patrolli::cluster::inter::v1::ItemStatsRequest;
 use patrolli::config::endpoint::EndpointKind;
 use patrolli::config::item::{Config, ItemKind};
 use patrolli::db::schema::HostEndpoints;
 use patrolli::payload::{KvPair, ValueOwned};
+use patrolli_proto::v1::ItemStatsRequest;
 
 #[derive(OpenApi)]
 #[openapi(

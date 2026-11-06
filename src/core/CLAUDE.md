@@ -11,8 +11,9 @@ generates its API client from the `openapi.json` produced by `schema_gen`. All c
 
 Two binaries: `patrolli` (`crates/app/src/main.rs`, the daemon) and `schema_gen` (`crates/app/src/schema_gen.rs`, writes
 `openapi.json`). `src/lib.rs` declares every core module (`pub`, so integration tests can drive
-internals); the REST API is the `patrolli-api` crate (`crates/api`). Both binaries reach them
-through `use patrolli::...` and `use patrolli_api::...`. Never add a `mod` for a lib module
+internals); the REST API is the `patrolli-api` crate (`crates/api`) and the cluster machinery is
+`patrolli-cluster` (`crates/cluster`). Both binaries reach them through `use patrolli::...`,
+`use patrolli_api::...` and `use patrolli_cluster::...`. Never add a `mod` for a lib module
 to `main.rs`: the binary would compile its own copy of the whole crate, doubling every rebuild and
 running each unit test twice. Unit tests live in the lib (`cargo test --lib`).
 
@@ -33,7 +34,7 @@ cargo run --bin schema_gen                    # regenerates ./openapi.json (writ
 cargo bench --bench bench_channels            # criterion
 ```
 
-Native build deps (see `Dockerfile`): `protobuf-compiler` (`build.rs` compiles the cluster proto),
+Native build deps (see `Dockerfile`): `protobuf-compiler` (`crates/proto/build.rs` compiles the cluster proto),
 `cmake` + `libsasl2-dev` (rdkafka), `libcurl4-openssl-dev` (headers only: librdkafka 2.12's
 `rdkafka_conf.c` includes `<curl/curl.h>` under an `#ifdef` that is always true, though curl is
 off), `libclang-dev`, `libunwind-dev` (jemalloc profiling).
@@ -151,8 +152,8 @@ monitor::WorkerGroup   (snmp, snmp_walk, prometheus_scrape,         │
   It also re-reads `configs.monitor` every poll (one row, compared by value, no cluster log) and
   applies it with `monitor::WorkerGroup::apply_config`: workers via `adjust`, and the batch through
   a `watch` the batcher follows, flushing what it holds. A bad edit keeps the last good value.
-- `cluster::inter` is a private patrolli-to-patrolli gRPC service (`inter_cluster.proto`, compiled by
-  `build.rs`, exposed as `crate::cluster::inter::v1`). It carries the forwarder (records for hosts
+- `cluster::inter` is a private patrolli-to-patrolli gRPC service (`crates/proto/src/inter_cluster.proto`, compiled by
+  `crates/proto/build.rs`, exposed as `patrolli_proto::v1`). It carries the forwarder (records for hosts
   owned by a peer), item stats, and processor capture streams. Not an OpenTelemetry endpoint.
 
 ## API layer

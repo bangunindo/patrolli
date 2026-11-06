@@ -3,21 +3,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::{NodeState, NodeStateType};
-use crate::config::cluster::NodeMetadata;
-use crate::config::endpoint::{Config as EndpointConfig, Endpoint};
-use crate::config::host::Host;
-use crate::config::item::{Config as ItemConfig, Item, Schedule};
-use crate::config::listener::{Config as ListenerConfig, Listener};
-use crate::config::lookup_table::LookupTable as LookupTableConfig;
-use crate::config::processor::{Config, Processor};
-use crate::config::sensitive::{SecretError, SecretKeys, SensitiveFields};
-use crate::config::sink::{Config as SinkConfig, Sink};
-use crate::db::{query, schema};
-use crate::{cache, listener, monitor, sink};
+use patrolli::config::cluster::NodeMetadata;
+use patrolli::config::endpoint::{Config as EndpointConfig, Endpoint};
+use patrolli::config::host::Host;
+use patrolli::config::item::{Config as ItemConfig, Item, Schedule};
+use patrolli::config::listener::{Config as ListenerConfig, Listener};
+use patrolli::config::lookup_table::LookupTable as LookupTableConfig;
+use patrolli::config::processor::{Config, Processor};
+use patrolli::config::sensitive::{SecretError, SecretKeys, SensitiveFields};
+use patrolli::config::sink::{Config as SinkConfig, Sink};
+use patrolli::db::{query, schema};
+use patrolli::{cache, listener, monitor, sink};
 
-use crate::config::{Batch, Channel, MonitorConfig, Retry};
 use anyhow::{Context, Result};
 use deadpool_postgres::{GenericClient, Pool, Transaction};
+use patrolli::config::{Batch, Channel, MonitorConfig, Retry};
 use sea_query::{
     BinOper, Expr, ExprTrait, IntoColumnRef, Order, PostgresQueryBuilder, Query as DbQuery,
     QueryStatementBuilder,
@@ -617,7 +617,7 @@ impl ConfigWatcher {
     ///
     /// Mark-and-sweep rather than clear-then-fill: this runs on every node-lock
     /// flap, not only at startup, and clearing would throw away the per-item
-    /// [`crate::cache::item::Stats`] of every item on the node each time the
+    /// [`cache::item::Stats`] of every item on the node each time the
     /// database blinked. `begin_reload`/`end_reload` bracket the paginated insert
     /// so unchanged items keep their history and only items that have genuinely
     /// gone away are dropped.

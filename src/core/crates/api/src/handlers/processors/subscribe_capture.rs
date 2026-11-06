@@ -18,7 +18,7 @@ use tracing::{Instrument, debug, info_span, warn};
 use uuid::Uuid;
 
 use crate::{response::ResponseError, state::AppState};
-use patrolli::cluster::inter::v1::CaptureRequest;
+use patrolli_proto::v1::CaptureRequest;
 
 #[derive(Debug, Serialize)]
 pub struct CaptureResponse<'a> {

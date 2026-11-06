@@ -12,7 +12,7 @@ use patrolli::common::internal_metrics::INTERNAL_METRICS;
 use patrolli::common::log_export::{self, LOG_EXPORT};
 use patrolli::common::shutdown::{Shutdown, join_step};
 use patrolli::config::global::{Format, Logger};
-use patrolli::{cache, chan, cluster, common, config, db, listener, monitor, processor, sink};
+use patrolli::{cache, chan, common, config, db, listener, monitor, processor, sink};
 use patrolli_api as api;
 use std::fs::OpenOptions;
 use std::io;
@@ -785,7 +785,7 @@ async fn backend_run(global_conf: config::global::Global) -> Result<()> {
         .transpose()?;
 
     info!("initializing cluster");
-    let cluster = cluster::Cluster::new(
+    let cluster = patrolli_cluster::Cluster::new(
         backend_conf.cluster.clone(),
         db_pool.clone(),
         &global_conf,
