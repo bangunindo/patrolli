@@ -4481,11 +4481,11 @@
           "when": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeFilter",
                 "description": "Record-selection predicate over incoming attributes, evaluated once for\nall rules and ANDed with each rule's own `when`. Omitted means every\nrecord is eligible. A predicate error skips all collection without\ndropping telemetry.\n\nFor a resource or scope rule every predicate leaf must reference that\nrule's source table, so selection is uniform for its shared parent; a\nrecord rule may reference any table. Selection is per record."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -4504,11 +4504,11 @@
       "AttributeCollectBinding": {
         "oneOf": [
           {
-            "type": "null"
-          },
-          {
             "$ref": "#/components/schemas/AttributeCollectInput",
             "description": "One entry of `columns`: `null` for a pivoted binding with every option\ndefaulted, otherwise an [`AttributeCollectInput`]."
+          },
+          {
+            "type": "null"
           }
         ]
       },
@@ -4530,11 +4530,11 @@
           "cast": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeCollectCast",
                 "description": "Explicit conversion before writing. Without a cast the input must\nalready match the column's declared type. A conversion failure skips the\nwhole candidate row; there is no implicit stringification.\n\n`double` is allowed for a value column, never a hash or partition key.\nA prefix column is CIDR text: no cast, or `string`.\n\nAn `ip` column always needs `cast: ip`, bound or not, because the input\narrives as a string and would otherwise fail the column's type check and\nskip the row. A missing or contradicting cast is rejected when the table\nresolves."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -4555,11 +4555,11 @@
           "table": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeTable",
                 "description": "Only with `key`. Defaults to the rule's source table. A record rule may\nalso read a resource attribute through the record's resource ID. No\nother cross-table read is supported."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -4593,11 +4593,11 @@
           "name_format": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/NameFormat",
                 "description": "How a raw name becomes the name matched against the columns. Omitted\nuses the raw name verbatim."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -4639,11 +4639,11 @@
           "pivot": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeCollectPivot",
                 "description": "Bind columns to the elements of one flattened array by a naming field\nrather than by element position. Required by, and only useful with,\nbindings in `columns` that have no `key`. Elements are read from the\nrule's source table."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -4654,11 +4654,11 @@
           "when": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeFilter",
                 "description": "Further record-selection predicate, ANDed with the top-level `when`.\nOmitted adds no restriction. A predicate error skips only this rule.\n\nA record rule may reference record, resource or scope attributes; a\nresource or scope rule only its own table, inherited guard included.\nSelection is over whole records."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -4772,11 +4772,11 @@
           "when": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeFilter",
                 "description": "Record-selection predicate over incoming attributes, evaluated once for\nall rules and ANDed with each rule's own `when`. Omitted means every\nrecord is eligible; unselected records pass through unchanged. A\npredicate error skips all enrichment without dropping telemetry.\n\nFor a resource or scope destination every predicate leaf must reference\nthat same table, so eligibility is uniform for its shared parent; a\nrecord destination may reference any table. Selection is per record and\ndoes not change output-collision rules."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -4803,11 +4803,11 @@
           "cast": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeLookupCast",
                 "description": "Explicit conversion before probing. Without a cast the input must\nalready match the table's key type. A conversion failure skips the\nprobe; composite keys are never implicitly stringified.\n\nAn `ip` key column always needs `cast: ip`, because the input arrives as\na string and would otherwise miss every record. A missing or\ncontradicting cast is rejected when the table resolves. A prefix\ntable's `point` is always an IP and needs no cast."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -4818,11 +4818,11 @@
           "table": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeTable",
                 "description": "Defaults to the rule's destination table. A record rule may also read a\nresource attribute, resolved through the record's resource ID. No other\ncross-table read is supported."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -4871,11 +4871,11 @@
           "point": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeLookupInput",
                 "description": "Address to look up in a prefix table; absent for a hash lookup. Always\nread as an IP (text, or the bare-integer form), so `cast` may be left\nout; if set it must be `ip`."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -4918,11 +4918,11 @@
           "when": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeFilter",
                 "description": "Further record-selection predicate, ANDed with the top-level `when`.\nOmitted adds no restriction. A predicate error skips only this rule.\n\nA record destination may reference record, resource or scope attributes;\na resource or scope destination only its own table — the same\nrestriction the inherited top-level predicate carries."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -4993,11 +4993,7 @@
             "minimum": 0
           },
           "on_full": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/OnFull"
-              }
-            ],
+            "$ref": "#/components/schemas/OnFull",
             "default": "drop"
           },
           "routes": {
@@ -5015,11 +5011,11 @@
           "bgp": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/BgpPeering",
                 "description": "Passive BGP (RFC 4271): routers connect and send what they would\nannounce to a peer. Their routes go into the `global` VRF."
+              },
+              {
+                "type": "null"
               }
             ],
             "default": null
@@ -5027,21 +5023,17 @@
           "bmp": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/BmpListener",
                 "description": "BMP (RFC 7854): only the routers' Loc-RIB (RFC 9069) is read."
+              },
+              {
+                "type": "null"
               }
             ],
             "default": null
           },
           "events": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/BgpEvents"
-              }
-            ],
+            "$ref": "#/components/schemas/BgpEvents",
             "default": {
               "buffer_size": 10000,
               "on_full": "drop",
@@ -5091,11 +5083,11 @@
           "password": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/Sensitive",
                 "description": "TCP-MD5 (RFC 2385) password; Linux only."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -5131,12 +5123,8 @@
             "minimum": 0
           },
           "listener": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/TcpListener",
-                "description": "Port 179 needs `CAP_NET_BIND_SERVICE`. The allow/deny lists decide\nwhich routers may peer."
-              }
-            ],
+            "$ref": "#/components/schemas/TcpListener",
+            "description": "Port 179 needs `CAP_NET_BIND_SERVICE`. The allow/deny lists decide\nwhich routers may peer.",
             "default": {
               "address": "0.0.0.0:179",
               "ip_blacklist": [],
@@ -5173,11 +5161,7 @@
             "minimum": 0
           },
           "listener": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/TcpListener"
-              }
-            ],
+            "$ref": "#/components/schemas/TcpListener",
             "default": {
               "address": "0.0.0.0:10179",
               "ip_blacklist": [],
@@ -5388,11 +5372,11 @@
           "create_schema": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/ClickhouseCreateSchema",
                 "description": "Run `CREATE DATABASE` / `CREATE TABLE IF NOT EXISTS` on startup. Handy\nfor a first run; turn it off in production so workers don't race to\ncreate tables and so schema changes stay under your control.\n\nOmit the block to leave schema management entirely to you. The DDL knobs\ninside it (`cluster_name`, `table_engine`, `ttl`) only apply at creation\ntime — changing them later does not alter existing tables."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -5421,10 +5405,10 @@
           "password": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Sensitive"
               },
               {
-                "$ref": "#/components/schemas/Sensitive"
+                "type": "null"
               }
             ]
           },
@@ -5444,10 +5428,10 @@
           "tls": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Tls"
               },
               {
-                "$ref": "#/components/schemas/Tls"
+                "type": "null"
               }
             ]
           },
@@ -5492,11 +5476,7 @@
             "default": null
           },
           "table_engine": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/ClickhouseTableEngine"
-              }
-            ],
+            "$ref": "#/components/schemas/ClickhouseTableEngine",
             "default": {
               "name": "MergeTree",
               "params": []
@@ -7085,11 +7065,11 @@
               "data": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/GraphSinkContent",
                     "description": "Null until a sink is chosen for the node."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
@@ -7152,11 +7132,11 @@
               "data": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/GraphSinkContentInput",
                     "description": "Null empties the node."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
@@ -7220,11 +7200,11 @@
               "data": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/GraphSinkNode",
                     "description": "Null until a sink is chosen for the node."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
@@ -7610,10 +7590,10 @@
           "auth": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/HttpAuth"
               },
               {
-                "$ref": "#/components/schemas/HttpAuth"
+                "type": "null"
               }
             ]
           },
@@ -7626,10 +7606,10 @@
           "tls": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Tls"
               },
               {
-                "$ref": "#/components/schemas/Tls"
+                "type": "null"
               }
             ]
           },
@@ -7720,12 +7700,8 @@
             "default": []
           },
           "level": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/LogLevel",
-                "description": "Level for `patrolli` when `include` is empty."
-              }
-            ],
+            "$ref": "#/components/schemas/LogLevel",
+            "description": "Level for `patrolli` when `include` is empty.",
             "default": "info"
           }
         },
@@ -7748,11 +7724,7 @@
             "default": false
           },
           "signal": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/InternalMetricsSignal"
-              }
-            ],
+            "$ref": "#/components/schemas/InternalMetricsSignal",
             "default": "log"
           }
         },
@@ -8054,10 +8026,10 @@
           "stats": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ItemsStatsResponse"
               },
               {
-                "$ref": "#/components/schemas/ItemsStatsResponse"
+                "type": "null"
               }
             ]
           },
@@ -8237,10 +8209,10 @@
           "sasl": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/KafkaSasl"
               },
               {
-                "$ref": "#/components/schemas/KafkaSasl"
+                "type": "null"
               }
             ]
           },
@@ -8250,10 +8222,10 @@
           "ssl": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Tls"
               },
               {
-                "$ref": "#/components/schemas/Tls"
+                "type": "null"
               }
             ]
           },
@@ -8774,10 +8746,10 @@
           "stats": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ItemsStatsResponse"
               },
               {
-                "$ref": "#/components/schemas/ItemsStatsResponse"
+                "type": "null"
               }
             ]
           },
@@ -9639,10 +9611,10 @@
           "body": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ZStringOwned"
               },
               {
-                "$ref": "#/components/schemas/ZStringOwned"
+                "type": "null"
               }
             ]
           },
@@ -9656,10 +9628,10 @@
           "severity": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/SeverityNumberSchema"
               },
               {
-                "$ref": "#/components/schemas/SeverityNumberSchema"
+                "type": "null"
               }
             ]
           },
@@ -10049,10 +10021,10 @@
           "tls": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Tls"
               },
               {
-                "$ref": "#/components/schemas/Tls"
+                "type": "null"
               }
             ]
           },
@@ -10068,11 +10040,7 @@
         "type": "object",
         "properties": {
           "listener": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/TcpListener"
-              }
-            ],
+            "$ref": "#/components/schemas/TcpListener",
             "default": {
               "address": "0.0.0.0:4317",
               "ip_blacklist": [],
@@ -10080,20 +10048,16 @@
             }
           },
           "mode": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/ListenerOtelMode"
-              }
-            ],
+            "$ref": "#/components/schemas/ListenerOtelMode",
             "default": "otap"
           },
           "tls": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Tls"
               },
               {
-                "$ref": "#/components/schemas/Tls"
+                "type": "null"
               }
             ],
             "default": null
@@ -11884,10 +11848,10 @@
               "stats": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/ItemsStatsResponse"
                   },
                   {
-                    "$ref": "#/components/schemas/ItemsStatsResponse"
+                    "type": "null"
                   }
                 ]
               },
@@ -12483,10 +12447,10 @@
               "config": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/ItemConfig"
                   },
                   {
-                    "$ref": "#/components/schemas/ItemConfig"
+                    "type": "null"
                   }
                 ]
               },
@@ -13031,10 +12995,10 @@
               "config": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/ItemConfig"
                   },
                   {
-                    "$ref": "#/components/schemas/ItemConfig"
+                    "type": "null"
                   }
                 ]
               },
@@ -13581,30 +13545,30 @@
           "v1": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/V1V2C"
               },
               {
-                "$ref": "#/components/schemas/V1V2C"
+                "type": "null"
               }
             ]
           },
           "v2c": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/V1V2C"
               },
               {
-                "$ref": "#/components/schemas/V1V2C"
+                "type": "null"
               }
             ]
           },
           "v3": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/V3"
               },
               {
-                "$ref": "#/components/schemas/V3"
+                "type": "null"
               }
             ]
           }
@@ -13802,10 +13766,10 @@
           "last_failure": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Failure"
               },
               {
-                "$ref": "#/components/schemas/Failure"
+                "type": "null"
               }
             ]
           },
@@ -13914,30 +13878,30 @@
           "tcp": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/TcpListener"
               },
               {
-                "$ref": "#/components/schemas/TcpListener"
+                "type": "null"
               }
             ]
           },
           "tls": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/TlsListener"
               },
               {
-                "$ref": "#/components/schemas/TlsListener"
+                "type": "null"
               }
             ]
           },
           "udp": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/UdpListener"
               },
               {
-                "$ref": "#/components/schemas/UdpListener"
+                "type": "null"
               }
             ]
           }
@@ -14026,10 +13990,10 @@
           "key_password": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Sensitive"
               },
               {
-                "$ref": "#/components/schemas/Sensitive"
+                "type": "null"
               }
             ]
           },
@@ -14228,10 +14192,10 @@
           "config": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ItemConfig"
               },
               {
-                "$ref": "#/components/schemas/ItemConfig"
+                "type": "null"
               }
             ]
           },
@@ -14872,10 +14836,10 @@
           "config": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ItemConfig"
               },
               {
-                "$ref": "#/components/schemas/ItemConfig"
+                "type": "null"
               }
             ]
           },
@@ -15069,10 +15033,10 @@
           "authentication": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Authentication"
               },
               {
-                "$ref": "#/components/schemas/Authentication"
+                "type": "null"
               }
             ]
           },
@@ -15085,10 +15049,10 @@
           "privacy": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Privacy"
               },
               {
-                "$ref": "#/components/schemas/Privacy"
+                "type": "null"
               }
             ]
           },

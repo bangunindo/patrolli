@@ -2528,8 +2528,8 @@ impl<'a> HistogramDp<'a> {
                     ArrowPayloadType::HistogramDpExemplarAttrs,
                 )),
             ),
-            count: prim::<UInt64Type>(b.column_by_name(consts::HISTOGRAM_COUNT)),
-            sum: prim::<Float64Type>(b.column_by_name(consts::HISTOGRAM_SUM)),
+            count: prim::<UInt64Type>(b.column_by_name(consts::COUNT)),
+            sum: prim::<Float64Type>(b.column_by_name(consts::SUM)),
             min: prim::<Float64Type>(b.column_by_name(consts::HISTOGRAM_MIN)),
             max: prim::<Float64Type>(b.column_by_name(consts::HISTOGRAM_MAX)),
             bucket_counts: b.column_by_name(consts::HISTOGRAM_BUCKET_COUNTS),
@@ -2626,8 +2626,8 @@ impl<'a> ExpHistogramDp<'a> {
                     ArrowPayloadType::ExpHistogramDpExemplarAttrs,
                 )),
             ),
-            count: prim::<UInt64Type>(b.column_by_name(consts::HISTOGRAM_COUNT)),
-            sum: prim::<Float64Type>(b.column_by_name(consts::HISTOGRAM_SUM)),
+            count: prim::<UInt64Type>(b.column_by_name(consts::COUNT)),
+            sum: prim::<Float64Type>(b.column_by_name(consts::SUM)),
             min: prim::<Float64Type>(b.column_by_name(consts::HISTOGRAM_MIN)),
             max: prim::<Float64Type>(b.column_by_name(consts::HISTOGRAM_MAX)),
             scale: prim::<Int32Type>(b.column_by_name(consts::EXP_HISTOGRAM_SCALE)),
@@ -2736,8 +2736,8 @@ impl<'a> SummaryDp<'a> {
         let b = records.get(ArrowPayloadType::SummaryDataPoints)?;
         Some(Self {
             common: DpCommon::new(records, b, ArrowPayloadType::SummaryDpAttrs, None),
-            count: prim::<UInt64Type>(b.column_by_name(consts::SUMMARY_COUNT)),
-            sum: prim::<Float64Type>(b.column_by_name(consts::SUMMARY_SUM)),
+            count: prim::<UInt64Type>(b.column_by_name(consts::COUNT)),
+            sum: prim::<Float64Type>(b.column_by_name(consts::SUM)),
             quantile_values: b.column_by_name(consts::SUMMARY_QUANTILE_VALUES),
         })
     }

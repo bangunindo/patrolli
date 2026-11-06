@@ -102,7 +102,7 @@ impl Transforms {
         // dictionary values, so what they removed would still ride along in
         // Arrow IPC (OTAP sink, disk channel, forwarder). This keeps only the
         // values some key still references.
-        sanitize_otap_batch(&mut data);
+        sanitize_otap_batch(&mut data).context("sanitize transform output")?;
         Ok(Payload::new(data))
     }
 }
