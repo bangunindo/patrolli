@@ -224,8 +224,9 @@ impl BgpListener {
     }
 
     /// Stops the transport for good: the sessions end without arming `keep`
-    /// (their routes stay until the table goes or a later transport expires
-    /// them), and the channel disconnects once they have sent their events.
+    /// (their routes stay until the table goes, a later transport expires
+    /// them, or the listener's removal clears them: [`clear_routes`]), and
+    /// the channel disconnects once they have sent their events.
     async fn stop(&self) {
         let state = std::mem::replace(&mut *self.state.lock().await, State::Closed);
         if let State::Running(running) = state {
@@ -304,6 +305,25 @@ fn bind_bgp(bgp: &BgpPeering) -> Result<TcpListener> {
         .listen(1024)
         .with_context(|| format!("listen bgp {addr}"))?;
     TcpListener::from_std(socket.into()).with_context(|| format!("listen bgp {addr}"))
+}
+
+/// Empties the route table of `listener`, a bgp listener removed or disabled
+/// for good. Its sessions are gone and no later transport of it will expire
+/// their routes, so they would otherwise answer lookups forever. A listener
+/// restarted by an edit keeps them instead: its new transport re-arms `keep`.
+pub fn clear_routes(cache: &cache::Cache, listener: Uuid) {
+    let Some(table) = cache.lookup_table.route_table_for_listener(&listener) else {
+        return;
+    };
+    let rows = table.clear();
+    if rows > 0 {
+        info!(
+            listener_id = %listener,
+            lookup_table_id = %table.id(),
+            rows,
+            "routes of a removed listener cleared"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -19,7 +19,7 @@ pub mod session;
 pub mod stats;
 pub mod wire;
 
-pub use listener::BgpListener;
+pub use listener::{BgpListener, clear_routes};
 pub use peer::BgpConfig;
 pub use routers::Protocol;
 pub use session::{BmpConfig, Collector, CollectorConfig, SessionEnd};

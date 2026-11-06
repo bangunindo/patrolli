@@ -266,6 +266,14 @@ impl RouteTable {
         self.table.remove_partition(&partition(&router, vrf))
     }
 
+    /// Removes every route; returns how many went. For a listener gone for
+    /// good: nothing would ever withdraw or expire what it wrote.
+    pub fn clear(&self) -> usize {
+        let removed = self.table.len();
+        self.table.clear();
+        removed
+    }
+
     /// Every (router, VRF) the table holds routes for.
     pub fn partitions(&self) -> Vec<(IpAddr, SmolStr)> {
         self.table
@@ -289,13 +297,6 @@ impl RouteTable {
             .sweep_partition(&partition(&router, vrf), family, cutoff);
         self.metrics.note_sweep(removed, 0);
         removed
-    }
-
-    /// Removes one address family of a router's VRF: the Loc-RIB peer that
-    /// carried it went down while another family's peer stays up.
-    pub fn remove_family(&self, router: IpAddr, vrf: &str, family: Family) -> usize {
-        self.table
-            .sweep_partition(&partition(&router, vrf), Some(family), u64::MAX)
     }
 
     /// The path id of the row stored under exactly `prefix` and when the row

@@ -463,6 +463,9 @@ impl WorkerGroup {
     pub async fn close_listener(&self, id: Uuid) -> Result<()> {
         if let Some(listener) = self.listeners.write().await.remove(&id) {
             listener.close(Deadline::NONE).await;
+            if matches!(listener.conf.config, config::listener::Config::Bgp(_)) {
+                bgp::clear_routes(&self.conf_cache, id);
+            }
             debug!(listener_id = %id, listener = %listener.conf.name, "listener removed");
             Ok(())
         } else {
@@ -510,6 +513,13 @@ impl WorkerGroup {
             if existing.conf.config != conf.config || existing.conf.batch != conf.batch {
                 debug!(listener_id = %id, listener = %conf.name, "listener config changed, restarting");
                 existing.close(Deadline::NONE).await;
+                // a bgp listener edited into another type leaves its routes
+                // to no one
+                if matches!(existing.conf.config, config::listener::Config::Bgp(_))
+                    && !matches!(conf.config, config::listener::Config::Bgp(_))
+                {
+                    bgp::clear_routes(&self.conf_cache, id);
+                }
                 let listener = Worker::new(
                     conf,
                     self.channel.clone(),

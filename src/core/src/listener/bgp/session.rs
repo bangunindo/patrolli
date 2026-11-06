@@ -133,8 +133,9 @@ pub enum SessionEnd {
     /// a message the table depends on could not be read (RFC 7606 "session
     /// reset"): reconnecting makes the router send everything again
     Reset(&'static str),
-    /// the route table was created, rebuilt or removed: only a new dump can
-    /// fill it
+    /// the route table was created, rebuilt or removed, or a Loc-RIB peer
+    /// went down that cannot be told apart from the instance's others: only
+    /// a new dump can fill it
     Resync,
     /// the router sent a NOTIFICATION (BGP)
     Notification,
@@ -446,12 +447,18 @@ struct Peer {
     /// false for a VRF the listener does not keep: its messages are only
     /// counted
     kept: bool,
+    /// emulated peers up: Peer Ups less Peer Downs
+    up: u32,
+    /// one of its emulated peers went down while others stay up
+    went_down: bool,
 }
 
 struct Session<'c> {
     c: &'c Collector,
     w: RouteWriter<'c>,
     peers: FxHashMap<PeerKey, Peer>,
+    /// kept instances with [`Peer::went_down`]
+    went_down: usize,
 }
 
 impl<'c> Session<'c> {
@@ -460,6 +467,7 @@ impl<'c> Session<'c> {
             c,
             w,
             peers: FxHashMap::default(),
+            went_down: 0,
         }
     }
 
@@ -528,6 +536,14 @@ impl<'c> Session<'c> {
             *initiated = true;
             return Ok(());
         }
+        // an emulated peer went down and which family went is unknown (see
+        // `peer_down`); a burst of Peer Downs taking its whole instance down
+        // settles it, anything else after it ends the session
+        if self.went_down > 0
+            && !matches!(&message, Message::PeerDown { peer, .. } if peer.is_loc_rib())
+        {
+            return Err(SessionEnd::Resync);
+        }
         match message {
             Message::Initiation { .. } => Ok(()),
             Message::Termination { .. } => Err(SessionEnd::Terminated),
@@ -574,8 +590,11 @@ impl<'c> Session<'c> {
                 kept: config.keeps_vrf(&vrf),
                 vrf,
                 add_path: [false; 2],
+                up: 0,
+                went_down: false,
             }
         });
+        peer.up += 1;
         if !peer.kept {
             Stats::incr(&self.c.stats.vrf_filtered);
             return Ok(());
@@ -595,15 +614,48 @@ impl<'c> Session<'c> {
     }
 
     fn peer_down(&mut self, header: &PeerHeader) {
-        // the emulated peers of an instance share a key, so the instance goes
-        // whole
-        let Some(peer) = self.peers.remove(&key(header)) else {
+        let key = key(header);
+        let Some(peer) = self.peers.get_mut(&key) else {
             return;
         };
         if !peer.kept {
             Stats::incr(&self.c.stats.vrf_filtered);
+        }
+        peer.up = peer.up.saturating_sub(1);
+        if peer.up > 0 {
+            if !peer.kept {
+                return;
+            }
+            // RFC 9069 §6.1.1: the emulated peers of an instance (one per
+            // family on some routers) share the per-peer header, and a Peer
+            // Down carries nothing else, so which family went is unknown.
+            // Removing every family would leave the others empty for good
+            // (Loc-RIB is not re-sent), keeping them all would keep the gone
+            // family's routes. The instance stays and the next message ends
+            // the session (`apply`): the router dumps again, and `keep` holds
+            // the routes meanwhile, then sweeps what the new dump left out.
+            if !peer.went_down {
+                peer.went_down = true;
+                self.went_down += 1;
+            }
+            self.w.emit(EventKind::PeerDown {
+                vrf: peer.vrf.clone(),
+                asn: header.asn,
+                bgp_id: header.bgp_id,
+                rows: 0,
+            });
             return;
         }
+        let Some(peer) = self.peers.remove(&key) else {
+            return;
+        };
+        if peer.went_down {
+            self.went_down -= 1;
+        }
+        if !peer.kept {
+            return;
+        }
+        // the last of the instance's emulated peers: the instance goes whole
         let removed = self.w.peer_down(&peer.vrf);
         self.w.emit(EventKind::PeerDown {
             vrf: peer.vrf,

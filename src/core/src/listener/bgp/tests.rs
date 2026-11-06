@@ -805,6 +805,72 @@ async fn keep_expiry_sweeps_a_router_that_stays_away() {
     expiry.await.unwrap();
 }
 
+/// A Loc-RIB Peer Up for an emulated peer carrying `afi` unicast only, as a
+/// router with one emulated peer per family sends (RFC 9069 §6.1.1).
+fn family_peer_up(peer: &[u8], afi: u16) -> Vec<u8> {
+    let list = [
+        caps::multiprotocol(afi, SAFI_UNICAST),
+        caps::four_octet(64500),
+    ];
+    b::peer_up(
+        peer,
+        &build_open(64500, Ipv4Addr::new(192, 0, 2, 254), &list),
+    )
+}
+
+/// One emulated peer of two goes down: the Peer Down does not say which
+/// family, so the routes stay, the next message ends the session for a new
+/// dump, and `keep` then sweeps the family the router no longer sends.
+#[tokio::test(start_paused = true)]
+async fn a_family_peer_down_resyncs_and_keep_sweeps_the_gone_family() {
+    let h = Harness::with_keep(Duration::from_secs(60));
+    let p = global_peer();
+    let mut s = b::initiation("r1");
+    s.extend(family_peer_up(&p, AFI_IPV4));
+    s.extend(family_peer_up(&p, AFI_IPV6));
+    s.extend(v4_route(&p, &["10.0.0.0/8"], &[64501], "192.0.2.1"));
+    s.extend(v6_route(&p, &["2001:db8::/32"], &[64501], None));
+    s.extend(b::peer_down(&p, 6));
+    s.extend(v4_route(&p, &["10.1.0.0/16"], &[64501], "192.0.2.1"));
+    assert_eq!(h.run(&s).await, SessionEnd::Resync);
+    assert_eq!(h.table().len(), 2, "both families kept until the new dump");
+    assert_eq!(h.stat(|s| &s.routes_withdrawn), 0);
+    assert_eq!(h.stat(|s| &s.without_peer_up), 0);
+
+    // the router comes back with its IPv4 peer only
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    let mut s = b::initiation("r1");
+    s.extend(family_peer_up(&p, AFI_IPV4));
+    s.extend(v4_route(&p, &["10.0.0.0/8"], &[64501], "192.0.2.1"));
+    s.extend(v4_route(&p, &["10.1.0.0/16"], &[64501], "192.0.2.1"));
+    assert_eq!(h.run(&s).await, SessionEnd::Eof);
+    assert_eq!(h.table().len(), 3);
+    let now = tokio::time::Instant::now();
+    assert_eq!(h.collector.expire(now + Duration::from_secs(61)), 1);
+    assert_eq!(h.cell("global", "2001:db8::/32", "origin_as"), None);
+    assert_eq!(h.table().len(), 2);
+}
+
+/// Every emulated peer of an instance going down in one burst removes it at
+/// the last Peer Down, without a resync.
+#[tokio::test]
+async fn the_last_family_peer_down_takes_the_instance_whole() {
+    let h = Harness::new();
+    let p = global_peer();
+    let mut s = b::initiation("r1");
+    s.extend(family_peer_up(&p, AFI_IPV4));
+    s.extend(family_peer_up(&p, AFI_IPV6));
+    s.extend(v4_route(&p, &["10.0.0.0/8"], &[64501], "192.0.2.1"));
+    s.extend(v6_route(&p, &["2001:db8::/32"], &[64501], None));
+    s.extend(b::peer_down(&p, 6));
+    s.extend(b::peer_down(&p, 6));
+    s.extend(v4_route(&p, &["10.1.0.0/16"], &[64501], "192.0.2.1"));
+    assert_eq!(h.run(&s).await, SessionEnd::Eof);
+    assert!(h.table().is_empty());
+    assert_eq!(h.stat(|s| &s.routes_withdrawn), 2);
+    assert_eq!(h.stat(|s| &s.without_peer_up), 1);
+}
+
 #[tokio::test(start_paused = true)]
 async fn keep_expiry_sweeps_what_a_reconnect_did_not_resend() {
     let h = Harness::with_keep(Duration::from_secs(60));
@@ -1544,8 +1610,9 @@ mod transport {
 
     /// A listener with a route table, its records belonging to one item so
     /// they reach the pipeline.
-    async fn server(whitelist: &[&str]) -> (Server, cache::Cache, Uuid) {
-        let id = Uuid::now_v7();
+    /// A cache whose item takes the records of listener `id`, with a route
+    /// table filled by it.
+    fn routes_cache(id: Uuid) -> cache::Cache {
         let cache = item_for(id);
         let table = cfg::LookupTable {
             id: Uuid::now_v7(),
@@ -1557,37 +1624,53 @@ mod transport {
             key: cfg::Bgp::key(),
         };
         cache.lookup_table.insert(&table).unwrap();
+        cache
+    }
+
+    /// A BMP listener `id` on `addr`, with per-route events when `routes`.
+    fn bmp_conf(
+        id: Uuid,
+        addr: SocketAddr,
+        whitelist: Vec<IpAddr>,
+        routes: bool,
+    ) -> config::listener::Listener {
+        let mut bgp = Bgp {
+            bgp: None,
+            bmp: Some(Bmp {
+                listener: TcpListener {
+                    address: addr,
+                    ip_whitelist: whitelist,
+                    ip_blacklist: Vec::new(),
+                },
+                ..Bmp::default()
+            }),
+            vrfs: Vec::new(),
+            events: BgpEvents {
+                routes,
+                ..BgpEvents::default()
+            },
+        };
+        bgp.validate().unwrap();
+        config::listener::Listener::new(
+            id,
+            "routes".into(),
+            test_util::WORKERS,
+            config::Batch {
+                batch_size: 100,
+                batch_timeout: Duration::from_millis(50),
+            },
+            config::listener::Config::Bgp(Box::new(bgp)),
+            false,
+        )
+    }
+
+    async fn server(whitelist: &[&str]) -> (Server, cache::Cache, Uuid) {
+        let id = Uuid::now_v7();
+        let cache = routes_cache(id);
         let whitelist: Vec<IpAddr> = whitelist.iter().map(|ip| ip.parse().unwrap()).collect();
         let build_cache = cache.clone();
         let server = Server::start(Port::Tcp, DRAIN_TIMEOUT, move |addr: SocketAddr, sender| {
-            let mut bgp = Bgp {
-                bgp: None,
-                bmp: Some(Bmp {
-                    listener: TcpListener {
-                        address: addr,
-                        ip_whitelist: whitelist.clone(),
-                        ip_blacklist: Vec::new(),
-                    },
-                    ..Bmp::default()
-                }),
-                vrfs: Vec::new(),
-                events: BgpEvents {
-                    routes: true,
-                    ..BgpEvents::default()
-                },
-            };
-            bgp.validate().unwrap();
-            let conf = config::listener::Listener::new(
-                id,
-                "routes".into(),
-                test_util::WORKERS,
-                config::Batch {
-                    batch_size: 100,
-                    batch_timeout: Duration::from_millis(50),
-                },
-                config::listener::Config::Bgp(Box::new(bgp)),
-                false,
-            );
+            let conf = bmp_conf(id, addr, whitelist.clone(), true);
             let listener = BgpListener::new(conf.clone(), sender, None, build_cache.clone(), None);
             (conf, listener)
         })
@@ -1645,6 +1728,47 @@ mod transport {
         let read = tokio::time::timeout(CLOSE_LIMIT, router.read(&mut buf)).await;
         assert!(matches!(read, Ok(Ok(0)) | Ok(Err(_))), "{read:?}");
         consumer.abort();
+    }
+
+    /// Removed or disabled (the watcher closes it either way), a bgp listener
+    /// leaves no one to withdraw or expire its routes, so its table empties.
+    /// An edit restarts it, and the new transport keeps them under `keep`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removing_the_listener_empties_its_table_and_an_edit_does_not() {
+        let id = Uuid::now_v7();
+        let cache = routes_cache(id);
+        let (_admin, sender, _rx) = test_util::processor_topic(1024).await;
+        let group = crate::listener::WorkerGroup::new(sender, None, cache.clone(), None);
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        group
+            .add(bmp_conf(id, addr, Vec::new(), false))
+            .await
+            .unwrap();
+
+        let table = || cache.lookup_table.route_table_for_listener(&id).unwrap();
+        // the transport binds once a worker starts it
+        let deadline = std::time::Instant::now() + CLOSE_LIMIT;
+        let mut router = loop {
+            match TcpStream::connect(addr).await {
+                Ok(router) => break router,
+                Err(e) => assert!(std::time::Instant::now() < deadline, "{e}"),
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        router.write_all(&capture("locrib")).await.unwrap();
+        wait_for("routes written", async || table().len() == 4).await;
+
+        group
+            .add(bmp_conf(id, addr, Vec::new(), true))
+            .await
+            .unwrap();
+        assert_eq!(table().len(), 4, "an edit keeps the routes");
+
+        group.close_listener(id).await.unwrap();
+        assert!(table().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
