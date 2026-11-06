@@ -13,7 +13,7 @@
 
 use super::cell::{CellOwned, CellRef, Delete, KeyOwned, KeyRef, canonical};
 use super::metrics::TableMetrics;
-use super::mutable::{Mutable, Upsert};
+use super::mutable::{Mutable, SharedRow, Upsert};
 pub use super::prefix::Family;
 use super::{LookupTable, Table};
 use crate::config::lookup_table as cfg;
@@ -250,6 +250,18 @@ impl RouteTable {
     /// Adds or replaces `route`. `Rejected` means the table is at `max_rows`.
     pub fn upsert(&self, route: &RouteRow<'_>, text: &mut RouteText) -> Result<Upsert> {
         self.table.upsert_prefix(&route.cells(text), route.prefix)
+    }
+
+    /// `route`'s row, built once for [`Self::upsert_row`] to store under every
+    /// prefix that shares its cells (an UPDATE's, without path ids);
+    /// `route.prefix` is not read.
+    pub fn row(&self, route: &RouteRow<'_>, text: &mut RouteText) -> Result<SharedRow> {
+        self.table.prefix_row(&route.cells(text))
+    }
+
+    /// Adds or replaces `prefix` with a row from [`Self::row`].
+    pub fn upsert_row(&self, row: &SharedRow, prefix: IpNet) -> Upsert {
+        self.table.upsert_prefix_row(row, prefix)
     }
 
     /// Removes exactly `prefix` from one router's VRF; a covering or a nested

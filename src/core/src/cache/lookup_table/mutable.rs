@@ -67,6 +67,22 @@ impl MutableRow {
     }
 }
 
+/// A row of a prefix table ready to be stored under several prefixes; see
+/// [`Mutable::prefix_row`].
+#[derive(Debug, Clone)]
+pub struct SharedRow {
+    /// the partition's key and its hash
+    hash: u64,
+    key: Box<[KeyOwned]>,
+    row: Arc<MutableRow>,
+}
+
+impl SharedRow {
+    pub fn cells(&self) -> impl ExactSizeIterator<Item = CellRef<'_>> {
+        self.row.cells()
+    }
+}
+
 /// Keyed by the owned key tuple. A `HashTable` rather than a `HashMap` so a
 /// read can probe with borrowed `KeyRef`s and never allocate.
 type HashEntry = (Box<[KeyOwned]>, Arc<MutableRow>);
@@ -341,44 +357,99 @@ impl Mutable {
         // the lock is held across the capacity check and the write, so a
         // concurrent writer cannot slip a prefix in between the two
         let mut shard = self.shard_of(hash).write();
-        let existing = shard
-            .prefixes
-            .find(hash, |(k, _)| keys_eq(k, &parts))
-            .is_some_and(|(_, set)| set.contains(&net));
-        if !existing && !self.reserve(1) {
-            self.rejected.fetch_add(1, Ordering::Relaxed);
-            return Ok(Upsert::Rejected);
-        }
-
         let owned: Vec<CellOwned> = cells.iter().map(|c| shard.own_cell(*c)).collect();
         let row = Arc::new(MutableRow {
             cells: owned.into_boxed_slice(),
             last_seen: AtomicU64::new(now),
         });
-        if shard
-            .prefixes
-            .find(hash, |(k, _)| keys_eq(k, &parts))
-            .is_none()
-        {
-            let key: Box<[KeyOwned]> = parts.iter().map(|k| shard.own_key(*k)).collect();
+        Ok(self.put_prefix(
+            &mut shard,
+            hash,
+            |k| keys_eq(k, &parts),
+            |shard| parts.iter().map(|k| shard.own_key(*k)).collect(),
+            net,
+            row,
+        ))
+    }
+
+    /// Stores `row` under `net` in the partition `eq` finds, which `key`
+    /// makes when it is missing. A new prefix counts against `max_rows`.
+    fn put_prefix(
+        &self,
+        shard: &mut Shard,
+        hash: u64,
+        eq: impl Fn(&[KeyOwned]) -> bool,
+        key: impl FnOnce(&mut Shard) -> Box<[KeyOwned]>,
+        net: IpNet,
+        row: Arc<MutableRow>,
+    ) -> Upsert {
+        if shard.prefixes.find(hash, |(k, _)| eq(k)).is_none() {
+            let key = key(shard);
             shard
                 .prefixes
                 .insert_unique(hash, (key, PrefixSet::new()), |(k, _)| hash_key_owned(k));
         }
-        let set = &mut shard
-            .prefixes
-            .find_mut(hash, |(k, _)| keys_eq(k, &parts))
-            .expect("just inserted")
-            .1;
+        let Ok(mut entry) = shard.prefixes.find_entry(hash, |(k, _)| eq(k)) else {
+            unreachable!("the partition was just inserted");
+        };
+        let set = &mut entry.get_mut().1;
         // rows are shared behind an `Arc`, so an update swaps in a new one
-        // rather than mutating what readers may already hold
-        let replaced = set.insert(net, row);
-        debug_assert_eq!(replaced.is_some(), existing);
-        Ok(if existing {
-            Upsert::Updated
-        } else {
-            Upsert::Inserted
+        // rather than mutating what readers may already hold. One walk of the
+        // trie, not a lookup first: a new prefix over the cap is taken out
+        // again, under the same lock, so no reader ever sees it.
+        if set.insert(net, row).is_some() {
+            return Upsert::Updated;
+        }
+        if self.reserve(1) {
+            return Upsert::Inserted;
+        }
+        set.remove(&net);
+        if set.is_empty() {
+            let _ = entry.remove();
+        }
+        self.rejected.fetch_add(1, Ordering::Relaxed);
+        Upsert::Rejected
+    }
+
+    /// A prefix-table row built once for [`Self::upsert_prefix_row`] to store
+    /// under many prefixes of its partition: the cells are checked, owned and
+    /// stamped once, and every prefix holds the same `Arc`. The prefixes of a
+    /// BGP UPDATE share all their cells, so this is what a route write costs
+    /// per message instead of per prefix.
+    pub fn prefix_row(&self, cells: &[CellRef<'_>]) -> Result<SharedRow> {
+        let KeyPlan::Prefix { partition } = &self.key else {
+            bail!("this table is hash-keyed; use upsert_hash");
+        };
+        self.check_cells(cells)?;
+        let parts = self.key_parts(cells, partition)?;
+        let hash = hash_key(parts.iter().copied());
+        let now = now_millis();
+        let mut shard = self.shard_of(hash).write();
+        let key = parts.iter().map(|k| shard.own_key(*k)).collect();
+        let cells = cells.iter().map(|c| shard.own_cell(*c)).collect();
+        Ok(SharedRow {
+            hash,
+            key,
+            row: Arc::new(MutableRow {
+                cells,
+                last_seen: AtomicU64::new(now),
+            }),
         })
+    }
+
+    /// [`Self::upsert_prefix`] with a row from [`Self::prefix_row`] of this
+    /// table.
+    pub fn upsert_prefix_row(&self, row: &SharedRow, net: IpNet) -> Upsert {
+        let net = super::prefix::canonical(net);
+        let mut shard = self.shard_of(row.hash).write();
+        self.put_prefix(
+            &mut shard,
+            row.hash,
+            |k| *k == *row.key,
+            |_| row.key.clone(),
+            net,
+            Arc::clone(&row.row),
+        )
     }
 
     /// The row `key` names, and for a prefix table the prefix that matched.
