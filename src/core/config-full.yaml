@@ -369,6 +369,34 @@ monitor:
 #       type: prefix
 #       prefix_column: prefix
 #       partition_columns: [peer]
+#
+#   # ── Route table, written by a `bgp` listener (BMP or passive BGP). The
+#   # columns and the key are fixed, so neither is given (a key spelled out must
+#   # be exactly the fixed one): prefix-keyed on `prefix`, partitioned by
+#   # `router` and `vrf`. Columns:
+#   #   router             ip       the BMP router or BGP peer the route came from
+#   #   vrf                string   `global` for the default table, otherwise the
+#   #                               route distinguisher as ASN:n or IP:n
+#   #   prefix             the key  output as CIDR text
+#   #   next_hop           ip
+#   #   origin_as          integer  last AS of the path; null for an aggregate
+#   #                               ending in a set of several ASes
+#   #   peer_as            integer  first AS of the path
+#   #   as_path            string   space separated, a set as {a,b}
+#   #   communities        string   space separated a:b
+#   #   large_communities  string   space separated a:b:c
+#   #   local_pref, med    integer  null when absent
+#   #   path_id            integer  ADD-PATH id of the path shown (the lowest
+#   #                               live one); null without ADD-PATH
+#   # Only the listener writes it; attribute_collect refuses it. Routes leave on
+#   # withdrawal, peer down or the resync after a reconnect, never by age. Which
+#   # routes are kept (VRFs, RIB views) is the listener's config.
+#   - id: 019b77b3-df79-70a2-ab01-f43b2cf72405
+#     name: routes
+#     source:
+#       type: bgp
+#       listener: 019b77b3-df79-70a2-ab01-b43b2cf723b0  # the listener that writes it
+#       max_rows: 4000000      # cap across every router and VRF. Default 4000000.
 
 # ──────────────────────────────────────────────────────────────────────────────
 # listeners — passive receivers. Each runs its own worker pool and feeds the
@@ -569,6 +597,74 @@ listeners:
       #   cert_path: /etc/patrolli/otel.crt
       #   key_path: /etc/patrolli/otel.key
 
+  # ── BGP route collector: routers send their routes over BMP (RFC 7854) or
+  #    a passive BGP session (RFC 4271), and the listener writes them into the
+  #    `bgp` lookup table whose source.listener names it (see lookup_tables
+  #    above), which attribute_lookup then reads to enrich flows. Over BMP only
+  #    the routers' Loc-RIB (RFC 9069) is read; Adj-RIB-In/Out messages are
+  #    counted and skipped. Over BGP the routes go into the `global` VRF.
+  #    The router is the connection's source address; while a router is live
+  #    over one protocol, a connection over the other is refused. Its records
+  #    are events: each carries the router as source.address, bgp.protocol
+  #    and bgp.event, one of session_up, session_down (bgp.reason, and for BGP
+  #    bgp.notification / bgp.message), peer_up, peer_down, end_of_rib,
+  #    keep_expired, and with events.routes announce / withdraw (bgp.prefix
+  #    and the table's columns). One worker is plenty.
+  - type: bgp
+    id: 019b77b3-df79-70a2-ab01-b43b2cf723b0
+    name: routes
+    worker_count: 1
+    batch_size: 1000
+    batch_timeout: 1000
+    config:
+      bmp:                       # bmp, bgp or both
+        listener:
+          address: 0.0.0.0:10179 # default
+          ip_whitelist: []       # mutually exclusive with ip_blacklist
+          ip_blacklist: []
+        # Seconds a lost session's routes stay, for the router to reconnect and
+        # send them again; its End-of-RIB then sweeps what it did not re-send.
+        # 0 → 300.
+        keep: 300
+        max_message_size: 1048576  # bytes; longer ends the session. Min 131072, 0 → default
+      # Passive BGP: patrolli never connects; routers peer with it. It offers
+      # IPv4/IPv6 unicast, 4-octet AS, route refresh, extended messages,
+      # extended next hop (RFC 8950) and Graceful Restart as a receiver only
+      # (for End-of-RIB); never ADD-PATH. For iBGP, make patrolli a
+      # route-reflector client, or the router does not send it the routes it
+      # learned over iBGP. Over eBGP the router rewrites the next hop to itself,
+      # and RFC 8212 routers send nothing without an export policy toward
+      # patrolli.
+      bgp:
+        listener:
+          address: 0.0.0.0:179   # default; port 179 needs CAP_NET_BIND_SERVICE
+          ip_whitelist: []       # mutually exclusive with ip_blacklist
+          ip_blacklist: []
+        # patrolli's AS. Unset, it answers each router with the router's own
+        # AS, so every session is iBGP.
+        # asn: 64512
+        # patrolli's BGP identifier. Unset, the session's local IPv4 address;
+        # required on an IPv6 listener.
+        # router_id: 192.0.2.10
+        hold_time: 90            # seconds offered: 0 (no keepalives) or >= 3; a lower one from the router wins
+        keep: 300                # as for bmp; 0 → 300
+        # Settings for single routers; a router needs no entry to peer.
+        peers:
+          - address: 192.0.2.1
+            password: change-me  # TCP-MD5 (RFC 2385), 1 to 80 bytes, Linux only
+            # asn: 65001         # patrolli's AS toward this router
+            # hold_time: 30      # seconds offered to this router; 0 or >= 3
+      # VRFs kept, spelled as the table's vrf column: global, 65000:1,
+      # 192.0.2.1:7. Empty keeps every VRF.
+      vrfs: []
+      events:
+        routes: false            # also one record per announced or withdrawn route
+        # When the workers fall behind: drop (default) loses events and counts
+        # them; wait holds the session's reads, which stalls the route updates
+        # too, and a router may end a session it cannot write to.
+        on_full: drop
+        buffer_size: 10000       # events queued for the workers; 0 → default
+
   # ── Internal logs: patrolli's own log events as log records, one per event.
   #    Each record carries the event's fields and its enclosing spans' fields
   #    (sink_id, listener, item_id, ...) as attributes, plus code.namespace
@@ -756,6 +852,21 @@ processors:
   #           "geoip.source.country": country
   #           "geoip.source.city": city
   #           "geoip.source.latitude": latitude
+  #       - lookup_table: 019b77b3-df79-70a2-ab01-f43b2cf72405 # routes
+  #         table: record
+  #         match:
+  #           keys:            # a list is tried in order, the first present
+  #                            # key wins: a router mapped from the exporter by
+  #                            # an earlier processor, else the exporter itself
+  #             router: {key: [bgp.router, source.address], cast: ip}
+  #           literals:        # key column -> a constant, parsed as the
+  #             vrf: global    # column's type; never also in keys
+  #           point:           # v4 or v6 flows in one rule
+  #             key: [nf.data.destinationIPv4Address, nf.data.destinationIPv6Address]
+  #         output:
+  #           dst.as: origin_as
+  #           dst.as_path: as_path
+  #           dst.network: prefix
   # END attribute_lookup example
   # Missing inputs, failed casts, misses and null result cells leave outputs alone.
   # Guards use the existing AttributeFilter syntax, but spelled as maps

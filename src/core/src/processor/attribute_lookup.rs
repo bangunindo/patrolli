@@ -24,7 +24,7 @@ use super::attr_input;
 use super::attr_input::Parent;
 use crate::cache;
 use crate::cache::lookup_table::TableRead;
-use crate::cache::lookup_table::cell::{CellRef, KeyRef, Lookup};
+use crate::cache::lookup_table::cell::{CellRef, KeyOwned, KeyRef, Lookup};
 use crate::cache::lookup_table::schema::{ColumnIdx, KeyPlan};
 use crate::config::lookup_table as lt;
 use crate::config::processor::AttributeTable;
@@ -198,12 +198,21 @@ impl Writes {
 struct Plan<'a> {
     /// In the table's own key order, which is what `Lookup` expects — the config
     /// binds them by name, so YAML map order is irrelevant.
-    keys: Vec<&'a AttributeLookupInput>,
+    keys: Vec<Binding<'a>>,
     /// `Some` exactly when the table is prefix-keyed.
     point: Option<&'a AttributeLookupInput>,
     /// Destination keys are owned once here rather than per hit: `Writes` keys
     /// on `SmolStr`, and a long destination would otherwise allocate per record.
     outputs: Vec<(SmolStr, Output, lt::ValueType)>,
+}
+
+/// What supplies one key part.
+#[derive(Debug)]
+enum Binding<'a> {
+    /// read per record from an attribute
+    Attribute(&'a AttributeLookupInput),
+    /// the same for every record, parsed once as the column's type
+    Literal(KeyOwned),
 }
 
 /// Where an output's value comes from.
@@ -222,13 +231,24 @@ impl<'a> Plan<'a> {
         let schema = read.schema();
         // The prefix column is consumed by the index and never materialized,
         // so it is not in `schema` and cannot be bound here.
-        let bound = |idx: ColumnIdx| -> Result<&'a AttributeLookupInput> {
+        let bound = |idx: ColumnIdx| -> Result<Binding<'a>> {
             let name = schema
                 .name(idx)
                 .ok_or_else(|| anyhow!("key column {idx} is missing from the table schema"))?;
             let ty = schema
                 .value_type(idx)
                 .ok_or_else(|| anyhow!("key column {name:?} has no type"))?;
+            if let Some(literal) = rule.match_by.literals.get(name) {
+                // Parsed by the parser the table's rows went through, so the
+                // constant and the stored key agree — v4-mapped IPv6 included.
+                let text = literal.to_text();
+                let key = CellRef::parse(&text, ty)
+                    .and_then(KeyRef::try_from_cell)
+                    .map_err(|e| {
+                        anyhow!("match.literals[{name:?}] is not a valid {ty:?}: {e:#}")
+                    })?;
+                return Ok(Binding::Literal(key.to_owned_key()));
+            }
             let input = rule
                 .match_by
                 .keys
@@ -253,9 +273,9 @@ impl<'a> Plan<'a> {
                 }
                 _ => {}
             }
-            Ok(input)
+            Ok(Binding::Attribute(input))
         };
-        let configured = rule.match_by.keys.len();
+        let configured = rule.match_by.keys.len() + rule.match_by.literals.len();
         let (keys, point) = match read.key_plan() {
             KeyPlan::Hash { columns } => {
                 if rule.match_by.point.is_some() {
@@ -263,14 +283,18 @@ impl<'a> Plan<'a> {
                 }
                 if configured != columns.len() {
                     bail!(
-                        "match.keys binds {configured} column(s) but the table's hash key has {}",
+                        "match binds {configured} column(s) but the table's hash key has {}",
                         columns.len()
                     );
                 }
-                (
-                    columns.iter().map(|c| bound(*c)).collect::<Result<_>>()?,
-                    None,
-                )
+                let keys: Vec<Binding> =
+                    columns.iter().map(|c| bound(*c)).collect::<Result<_>>()?;
+                // Every record would probe the same row, and with no attribute
+                // to read no record would be a candidate anyway.
+                if keys.iter().all(|k| matches!(k, Binding::Literal(_))) {
+                    bail!("a hash key needs at least one column bound in match.keys");
+                }
+                (keys, None)
             }
             KeyPlan::Prefix { partition } => {
                 let point = rule.match_by.point.as_ref().ok_or_else(|| {
@@ -278,7 +302,7 @@ impl<'a> Plan<'a> {
                 })?;
                 if configured != partition.len() {
                     bail!(
-                        "match.keys binds {configured} column(s) but the table has {} partition column(s)",
+                        "match binds {configured} column(s) but the table has {} partition column(s)",
                         partition.len()
                     );
                 }
@@ -359,31 +383,54 @@ fn run_rule(
     // An explicit null is not a probe key, so it reads as absent here —
     // unlike `attribute_collect`, which stores it as a null cell.
     let source = |input: &AttributeLookupInput| {
-        attr_input::read_source(
-            pl,
-            &rule.table,
-            input.table.as_ref(),
-            &input.key,
-            &parent_ids,
-            false,
-        )
+        let read = |key: &String| {
+            attr_input::read_source(
+                pl,
+                &rule.table,
+                input.table.as_ref(),
+                key,
+                &parent_ids,
+                false,
+            )
+        };
+        match input.key.as_slice() {
+            [key] => read(key),
+            keys => Ok(attr_input::Source::FirstOf(
+                keys.iter().map(read).collect::<Result<_>>()?,
+            )),
+        }
     };
+    // `None` for a literal, aligned with `plan.keys`
     let key_sources = plan
         .keys
         .iter()
-        .map(|input| source(input))
+        .map(|binding| match binding {
+            Binding::Attribute(input) => source(input).map(Some),
+            Binding::Literal(_) => Ok(None),
+        })
         .collect::<Result<Vec<_>>>()?;
     let point_source = plan.point.map(source).transpose()?;
 
-    let candidates =
-        attr_input::candidates(key_sources.iter().chain(point_source.as_ref()), is_eligible);
+    let candidates = attr_input::candidates(
+        key_sources.iter().flatten().chain(point_source.as_ref()),
+        is_eligible,
+    );
     let mut converted = Vec::with_capacity(plan.keys.len());
 
     for parent in candidates {
         converted.clear();
         let mut usable = true;
-        for (input, source) in plan.keys.iter().zip(&key_sources) {
-            match source.get(parent).and_then(|v| key_part(v, input.cast)) {
+        for (binding, source) in plan.keys.iter().zip(&key_sources) {
+            let part = match (binding, source) {
+                (Binding::Literal(key), _) => {
+                    Some(attr_input::Converted::Borrowed(key_cell(key.as_ref())))
+                }
+                (Binding::Attribute(input), Some(source)) => {
+                    source.get(parent).and_then(|v| key_part(v, input.cast))
+                }
+                (Binding::Attribute(_), None) => None,
+            };
+            match part {
                 Some(part) => converted.push(part),
                 None => {
                     usable = false;
@@ -450,6 +497,16 @@ fn run_rule(
         }
     }
     Ok(())
+}
+
+/// A key part as a cell, so a literal joins the converted attribute values.
+fn key_cell(key: KeyRef<'_>) -> CellRef<'_> {
+    match key {
+        KeyRef::Bool(v) => CellRef::Bool(v),
+        KeyRef::Integer(v) => CellRef::Integer(v),
+        KeyRef::String(v) => CellRef::String(v),
+        KeyRef::Ip(v) => CellRef::Ip(v),
+    }
 }
 
 /// Convert an attribute value into one probe key part.
@@ -1511,6 +1568,98 @@ mod tests {
     }
 
     #[test]
+    fn a_key_list_takes_the_first_present_attribute() {
+        let cache = cache::Cache::new();
+        let id = prefix_table(
+            &cache,
+            &["router"],
+            &[
+                ("network", lt::ValueType::String),
+                ("router", lt::ValueType::Ip),
+                ("asn", lt::ValueType::Integer),
+            ],
+            &[
+                (
+                    &[
+                        CellRef::Ip("192.0.2.1".parse().unwrap()),
+                        CellRef::Integer(1),
+                    ],
+                    "10.0.0.0/8",
+                ),
+                (
+                    &[
+                        CellRef::Ip("192.0.2.2".parse().unwrap()),
+                        CellRef::Integer(2),
+                    ],
+                    "10.0.0.0/8",
+                ),
+                (
+                    &[
+                        CellRef::Ip("192.0.2.2".parse().unwrap()),
+                        CellRef::Integer(6),
+                    ],
+                    "2001:db8::/32",
+                ),
+            ],
+        );
+        let pl = logs(
+            vec![],
+            vec![
+                // mapped: the first key wins over the exporter
+                vec![
+                    kv("bgp.router", s("192.0.2.2")),
+                    kv("source.address", s("192.0.2.1")),
+                    kv("dst4", s("10.1.1.1")),
+                ],
+                // unmapped: falls back to the exporter
+                vec![
+                    kv("source.address", s("192.0.2.1")),
+                    kv("dst4", s("10.1.1.1")),
+                ],
+                // a v6 flow, through the point's second key
+                vec![
+                    kv("source.address", s("192.0.2.2")),
+                    kv("dst6", s("2001:db8::1")),
+                ],
+                // the first key is present but not an address: an error, and
+                // the exporter is not tried
+                vec![
+                    kv("bgp.router", s("not-an-ip")),
+                    kv("source.address", s("192.0.2.1")),
+                    kv("dst4", s("10.1.1.1")),
+                ],
+            ],
+        );
+        let cfg = config(json!({"lookups": [{
+            "lookup_table": id,
+            "table": "record",
+            "match": {
+                "keys": {"router": {"key": ["bgp.router", "source.address"], "cast": "ip"}},
+                "point": {"key": ["dst4", "dst6"]},
+            },
+            "output": {"dst.as": "asn"},
+        }]}));
+
+        let (out, errored) = run(pl.clone(), &cfg, &cache);
+        assert!(!errored);
+        let attrs = record_attrs(&out);
+        let as_of = |parent| {
+            attrs
+                .iter()
+                .find(|(p, k, _)| *p == parent && k == "dst.as")
+                .map(|(_, _, v)| v.clone())
+        };
+        assert_eq!(as_of(0).as_deref(), Some("i2"), "{attrs:?}");
+        assert_eq!(as_of(1).as_deref(), Some("i1"), "{attrs:?}");
+        assert_eq!(as_of(2).as_deref(), Some("i6"), "{attrs:?}");
+        assert_eq!(as_of(3), None, "{attrs:?}");
+
+        let m = run_counted(pl, &cfg, &cache, id);
+        assert_eq!(m.lookups_hit, 3);
+        assert_eq!(m.lookups_errored, 1);
+    }
+
+    #[test]
     fn the_longest_prefix_wins_and_can_be_output() {
         let cache = cache::Cache::new();
         let id = prefix_table(
@@ -1814,6 +1963,171 @@ mod tests {
         );
         let (_, errored) = run(pl, &cfg, &cache);
         assert!(errored, "an uncast ip partition column must fail the rule");
+    }
+
+    #[test]
+    fn a_literal_vrf_probes_only_the_global_routes_of_the_exporter() {
+        use crate::cache::lookup_table::bgp::{PathSegment, RouteRow, RouteText};
+        let cache = cache::Cache::new();
+        let table: lt::LookupTable = serde_json::from_value(json!({
+            "id": Uuid::now_v7(),
+            "name": "routes",
+            "source": {"type": "bgp", "listener": Uuid::now_v7()},
+        }))
+        .unwrap();
+        cache.lookup_table.insert(&table).unwrap();
+        let routes = cache.lookup_table.route_table(&table.id).unwrap();
+        let mut text = RouteText::default();
+        let global = [PathSegment::Sequence(&[64500, 64501])];
+        let vrf = [PathSegment::Sequence(&[64999])];
+        for (vrf, path) in [("global", &global[..]), ("64500:7", &vrf[..])] {
+            let row = RouteRow {
+                router: "192.0.2.1".parse().unwrap(),
+                vrf,
+                prefix: "198.51.100.0/24".parse().unwrap(),
+                next_hop: None,
+                as_path: path,
+                communities: &[],
+                large_communities: &[],
+                local_pref: None,
+                med: None,
+                path_id: None,
+            };
+            assert_eq!(routes.upsert(&row, &mut text).unwrap(), Upsert::Inserted);
+        }
+
+        let pl = logs(
+            vec![],
+            vec![
+                vec![kv("exporter", s("192.0.2.1")), kv("dst", s("198.51.100.9"))],
+                // another router: its partition is empty
+                vec![kv("exporter", s("192.0.2.2")), kv("dst", s("198.51.100.9"))],
+            ],
+        );
+        let cfg = config(json!({"lookups": [{
+            "lookup_table": table.id, "table": "record",
+            "match": {
+                "keys": {"router": {"key": "exporter", "cast": "ip"}},
+                "literals": {"vrf": "global"},
+                "point": {"key": "dst"},
+            },
+            "output": {"dst_as": "origin_as", "dst_path": "as_path", "dst_net": "prefix"},
+        }]}));
+        let (pl, errored) = run(pl, &cfg, &cache);
+        assert!(!errored);
+        let attrs = record_attrs(&pl);
+        assert!(
+            attrs.contains(&(0, "dst_as".into(), "i64501".into())),
+            "{attrs:?}"
+        );
+        assert!(attrs.contains(&(0, "dst_path".into(), "64500 64501".into())));
+        assert!(attrs.contains(&(0, "dst_net".into(), "198.51.100.0/24".into())));
+        assert!(
+            !attrs
+                .iter()
+                .any(|(parent, key, _)| *parent == 1 && key == "dst_as"),
+            "another router's flow is not enriched: {attrs:?}"
+        );
+    }
+
+    #[test]
+    fn an_ip_literal_needs_no_cast() {
+        let cache = cache::Cache::new();
+        let id = prefix_table(
+            &cache,
+            &["ip"],
+            &[
+                ("ip", lt::ValueType::Ip),
+                ("network", lt::ValueType::String),
+                ("country", lt::ValueType::String),
+            ],
+            &[(
+                &[
+                    CellRef::Ip("10.0.0.1".parse().unwrap()),
+                    CellRef::String("ID"),
+                ],
+                "192.0.2.0/24",
+            )],
+        );
+        let cfg = config(json!({"lookups": [{
+            "lookup_table": id, "table": "record",
+            "match": {"literals": {"ip": "::ffff:10.0.0.1"}, "point": {"key": "n"}},
+            "output": {"country": "country"},
+        }]}));
+        let pl = logs(vec![], vec![vec![kv("n", s("192.0.2.9"))]]);
+        let (pl, errored) = run(pl, &cfg, &cache);
+        assert!(!errored);
+        assert!(
+            record_attrs(&pl).contains(&(0, "country".into(), "ID".into())),
+            "parsed like a stored row, so v4-mapped matches v4"
+        );
+    }
+
+    #[test]
+    fn a_bad_literal_or_a_wrong_binding_count_fails_the_plan() {
+        let cache = cache::Cache::new();
+        let id = prefix_table(
+            &cache,
+            &["asn"],
+            &[
+                ("asn", lt::ValueType::Integer),
+                ("network", lt::ValueType::String),
+                ("name", lt::ValueType::String),
+            ],
+            &[(
+                &[CellRef::Integer(64500), CellRef::String("x")],
+                "192.0.2.0/24",
+            )],
+        );
+        let rule = |by: Json| {
+            let cfg = config(json!({"lookups": [{
+                "lookup_table": id, "table": "record",
+                "match": by,
+                "output": {"name": "name"},
+            }]}));
+            let pl = logs(vec![], vec![vec![kv("n", s("192.0.2.9"))]]);
+            let (pl, errored) = run(pl, &cfg, &cache);
+            (errored, record_attrs(&pl))
+        };
+        let (errored, attrs) = rule(json!({"literals": {"asn": 64500}, "point": {"key": "n"}}));
+        assert!(!errored);
+        assert!(attrs.contains(&(0, "name".into(), "x".into())));
+        let (errored, _) = rule(json!({"literals": {"asn": "64500"}, "point": {"key": "n"}}));
+        assert!(
+            !errored,
+            "quoted or not, the text parses as the column's type"
+        );
+
+        let (errored, _) = rule(json!({"literals": {"asn": "AS64500"}, "point": {"key": "n"}}));
+        assert!(errored, "a literal that does not parse");
+        let (errored, _) = rule(json!({
+            "keys": {"asn": {"key": "a"}},
+            "literals": {"other": 1},
+            "point": {"key": "n"},
+        }));
+        assert!(errored, "literals count toward the bindings");
+    }
+
+    #[test]
+    fn a_hash_key_bound_only_by_literals_is_a_plan_error() {
+        let cache = cache::Cache::new();
+        let id = hash_table(
+            &cache,
+            &["sid"],
+            &[
+                ("sid", lt::ValueType::String),
+                ("name", lt::ValueType::String),
+            ],
+            &[&[CellRef::String("a"), CellRef::String("x")]],
+        );
+        let cfg = config(json!({"lookups": [{
+            "lookup_table": id, "table": "record",
+            "match": {"literals": {"sid": "a"}},
+            "output": {"name": "name"},
+        }]}));
+        let pl = logs(vec![], vec![vec![kv("sid", s("a"))]]);
+        let (_, errored) = run(pl, &cfg, &cache);
+        assert!(errored);
     }
 
     #[test]

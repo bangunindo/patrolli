@@ -25,6 +25,17 @@ changes are also released under the MIT license.
   ([`LICENSES/LicenseRef-ISOC-RFC.txt`](LICENSES/LicenseRef-ISOC-RFC.txt))
 - **Copyright:** © The Internet Society
 
+## akvorado BMP captures
+
+- **Files:** `src/core/src/listener/bgp/testdata/akvorado/` (test fixtures only)
+- **Source:** https://github.com/akvorado/akvorado,
+  `outlet/routing/provider/bmp/testdata/`
+- **License:** AGPL-3.0-only, the same as Patrolli
+- **Copyright:** © 2022 Free Mobile
+
+Packet captures of BMP sessions (a Juniper vMX, and GoBGP for the Loc-RIB
+capture), replayed by the BMP decoder's tests.
+
 ## Dependencies
 
 Rust crates and npm packages are fetched at build time and are not

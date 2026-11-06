@@ -552,6 +552,73 @@ mod tests {
     }
 
     #[test]
+    fn bgp_listener_families_carry_their_own_labels() {
+        use crate::common::internal_metrics::{BgpListener, Listener};
+        let metrics = Arc::new(InternalMetrics::default());
+        let id = Uuid::now_v7();
+        metrics.listener.store(Arc::new((
+            Instant::now(),
+            vec![
+                Listener {
+                    id,
+                    name: "routes".to_string(),
+                    bgp: Some(Box::new(BgpListener {
+                        routers_live: 2,
+                        route_table: true,
+                        routes_announced: 7,
+                        sessions_opened: vec![("bmp", 4), ("bgp", 5)],
+                        sessions_closed: vec![("bmp", "eof", 1), ("bgp", "reset", 3)],
+                        messages: vec![("bmp", "route_monitoring", 9), ("bgp", "update", 6)],
+                        notifications_sent: vec![("cease", 2)],
+                        ignored_families: vec![(Some((1, 128)), 4), (None, 3)],
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+                Listener {
+                    id: Uuid::now_v7(),
+                    name: "syslog".to_string(),
+                    ..Default::default()
+                },
+            ],
+        )));
+        let output = encode_test_metrics(metrics, false);
+        let labels = format!("listener_id=\"{id}\",listener_name=\"routes\"");
+        for line in [
+            "# TYPE patrolli_listener_bgp_routers_live gauge".to_string(),
+            format!("patrolli_listener_bgp_routers_live{{{labels}}} 2"),
+            format!("patrolli_listener_bgp_route_table{{{labels}}} 1"),
+            format!("patrolli_listener_bgp_routes_announced_total{{{labels}}} 7"),
+            format!("patrolli_listener_bgp_sessions_opened_total{{{labels},protocol=\"bgp\"}} 5"),
+            format!(
+                "patrolli_listener_bgp_sessions_closed_total{{{labels},protocol=\"bgp\",reason=\"reset\"}} 3"
+            ),
+            format!(
+                "patrolli_listener_bgp_messages_total{{{labels},protocol=\"bmp\",type=\"route_monitoring\"}} 9"
+            ),
+            format!(
+                "patrolli_listener_bgp_messages_total{{{labels},protocol=\"bgp\",type=\"update\"}} 6"
+            ),
+            format!("patrolli_listener_bgp_notifications_sent_total{{{labels},code=\"cease\"}} 2"),
+            format!(
+                "patrolli_listener_bgp_ignored_families_total{{{labels},afi=\"1\",safi=\"128\"}} 4"
+            ),
+            format!(
+                "patrolli_listener_bgp_ignored_families_total{{{labels},afi=\"other\",safi=\"other\"}} 3"
+            ),
+        ] {
+            assert!(output.contains(&line), "{line} missing from\n{output}");
+        }
+        // a listener of another type has no bgp series
+        assert_eq!(
+            output
+                .matches("patrolli_listener_bgp_routers_live{")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn bearer_authorization_is_exact() {
         let state = AppState {
             registry: Arc::new(Registry::default()),

@@ -4481,11 +4481,11 @@
           "when": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeFilter",
                 "description": "Record-selection predicate over incoming attributes, evaluated once for\nall rules and ANDed with each rule's own `when`. Omitted means every\nrecord is eligible. A predicate error skips all collection without\ndropping telemetry.\n\nFor a resource or scope rule every predicate leaf must reference that\nrule's source table, so selection is uniform for its shared parent; a\nrecord rule may reference any table. Selection is per record."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -4504,11 +4504,11 @@
       "AttributeCollectBinding": {
         "oneOf": [
           {
-            "type": "null"
-          },
-          {
             "$ref": "#/components/schemas/AttributeCollectInput",
             "description": "One entry of `columns`: `null` for a pivoted binding with every option\ndefaulted, otherwise an [`AttributeCollectInput`]."
+          },
+          {
+            "type": "null"
           }
         ]
       },
@@ -4530,11 +4530,11 @@
           "cast": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeCollectCast",
                 "description": "Explicit conversion before writing. Without a cast the input must\nalready match the column's declared type. A conversion failure skips the\nwhole candidate row; there is no implicit stringification.\n\n`double` is allowed for a value column, never a hash or partition key.\nA prefix column is CIDR text: no cast, or `string`.\n\nAn `ip` column always needs `cast: ip`, bound or not, because the input\narrives as a string and would otherwise fail the column's type check and\nskip the row. A missing or contradicting cast is rejected when the table\nresolves."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -4555,11 +4555,11 @@
           "table": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeTable",
                 "description": "Only with `key`. Defaults to the rule's source table. A record rule may\nalso read a resource attribute through the record's resource ID. No\nother cross-table read is supported."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -4593,11 +4593,11 @@
           "name_format": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/NameFormat",
                 "description": "How a raw name becomes the name matched against the columns. Omitted\nuses the raw name verbatim."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -4639,11 +4639,11 @@
           "pivot": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeCollectPivot",
                 "description": "Bind columns to the elements of one flattened array by a naming field\nrather than by element position. Required by, and only useful with,\nbindings in `columns` that have no `key`. Elements are read from the\nrule's source table."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -4654,11 +4654,11 @@
           "when": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeFilter",
                 "description": "Further record-selection predicate, ANDed with the top-level `when`.\nOmitted adds no restriction. A predicate error skips only this rule.\n\nA record rule may reference record, resource or scope attributes; a\nresource or scope rule only its own table, inherited guard included.\nSelection is over whole records."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -4736,9 +4736,23 @@
         },
         "additionalProperties": false
       },
+      "AttributeKeys": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "One attribute key, or keys tried in order. A single key keeps its plain\nstring form when written back."
+      },
       "AttributeLookup": {
         "type": "object",
-        "description": "Enrich attributes with independent lookups, applying their writes together.\n\nEvery rule reads the incoming attributes: another rule's outputs are not\nvisible as inputs. Each parent matches at most one lookup row, whose\nselected columns supply scalar output attributes.\n\nMissing inputs, failed casts, lookup misses and null result cells leave the\ndestination unchanged; invalid inputs are counted separately from misses.\nDefaults and fallback expressions are not supported.",
+        "description": "Enrich attributes with independent lookups, applying their writes together.\n\nEvery rule reads the incoming attributes: another rule's outputs are not\nvisible as inputs. Each parent matches at most one lookup row, whose\nselected columns supply scalar output attributes.\n\nMissing inputs, failed casts, lookup misses and null result cells leave the\ndestination unchanged; invalid inputs are counted separately from misses.\nDefault values are not supported; an input key may list fallback\nattributes ([`AttributeKeys`]).",
         "required": [
           "lookups"
         ],
@@ -4758,11 +4772,11 @@
           "when": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeFilter",
                 "description": "Record-selection predicate over incoming attributes, evaluated once for\nall rules and ANDed with each rule's own `when`. Omitted means every\nrecord is eligible; unselected records pass through unchanged. A\npredicate error skips all enrichment without dropping telemetry.\n\nFor a resource or scope destination every predicate leaf must reference\nthat same table, so eligibility is uniform for its shared parent; a\nrecord destination may reference any table. Selection is per record and\ndoes not change output-collision rules."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -4789,31 +4803,46 @@
           "cast": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeLookupCast",
                 "description": "Explicit conversion before probing. Without a cast the input must\nalready match the table's key type. A conversion failure skips the\nprobe; composite keys are never implicitly stringified.\n\nAn `ip` key column always needs `cast: ip`, because the input arrives as\na string and would otherwise miss every record. A missing or\ncontradicting cast is rejected when the table resolves. A prefix\ntable's `point` is always an IP and needs no cast."
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "key": {
-            "type": "string",
-            "description": "Dotted attribute key, matched byte for byte. A flattened array element\nis addressed by its literal index, such as `interfaces.0.ifIndex`; no\nsegment carries a special meaning. Composite inputs align by parent ID,\nnever by Arrow row position."
+            "$ref": "#/components/schemas/AttributeKeys",
+            "description": "Dotted attribute key, matched byte for byte. A flattened array element\nis addressed by its literal index, such as `interfaces.0.ifIndex`; no\nsegment carries a special meaning. Composite inputs align by parent ID,\nnever by Arrow row position.\n\nA list names fallbacks: the first key present on the parent supplies\nthe input, such as `[bgp.router, source.address]` for a router mapped\nfrom its exporter where a mapping exists. `table` and `cast` apply to\neach. A present value that fails its cast is an invalid input; the next\nkey is not tried."
           },
           "table": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeTable",
                 "description": "Defaults to the rule's destination table. A record rule may also read a\nresource attribute, resolved through the record's resource ID. No other\ncross-table read is supported."
+              },
+              {
+                "type": "null"
               }
             ]
           }
         },
         "additionalProperties": false
+      },
+      "AttributeLookupLiteral": {
+        "oneOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "description": "A constant probe value. Any YAML scalar but a float: it is rendered as text\nand parsed as the key column's type, the way the table parses its rows."
       },
       "AttributeLookupMatch": {
         "type": "object",
@@ -4829,14 +4858,24 @@
               "type": "string"
             }
           },
+          "literals": {
+            "type": "object",
+            "description": "Lookup-table key/partition column -> a constant every record probes\nwith, such as `vrf: global` on a route table. Parsed as the column's type\nwhen the table resolves, so `router: 192.0.2.1` binds an ip column with\nno cast. A column is bound here or in `keys`, never both, and a hash\nkey needs at least one column from `keys`.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AttributeLookupLiteral"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "point": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeLookupInput",
                 "description": "Address to look up in a prefix table; absent for a hash lookup. Always\nread as an IP (text, or the bare-integer form), so `cast` may be left\nout; if set it must be `ip`."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -4879,11 +4918,11 @@
           "when": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeFilter",
                 "description": "Further record-selection predicate, ANDed with the top-level `when`.\nOmitted adds no restriction. A predicate error skips only this rule.\n\nA record destination may reference record, resource or scope attributes;\na resource or scope destination only its own table — the same\nrestriction the inherited top-level predicate carries."
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -4939,6 +4978,200 @@
             "format": "int64",
             "description": "Milliseconds. Omitted or 0 takes the default of 1000.",
             "default": 0,
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "BgpEvents": {
+        "type": "object",
+        "properties": {
+          "buffer_size": {
+            "type": "integer",
+            "description": "Events held between the sessions and the workers.",
+            "default": 10000,
+            "minimum": 0
+          },
+          "on_full": {
+            "$ref": "#/components/schemas/OnFull",
+            "default": "drop"
+          },
+          "routes": {
+            "type": "boolean",
+            "description": "One record per announced or withdrawn route, besides the lifecycle\nevents. A full table dump is a record per route.",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "BgpListener": {
+        "type": "object",
+        "description": "A BGP route collector: routers feed it over BMP or passive BGP, and their\nroutes go into the `bgp` lookup table whose source names this listener.\nIts records are lifecycle events and, optionally, one per route change.",
+        "properties": {
+          "bgp": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BgpPeering",
+                "description": "Passive BGP (RFC 4271): routers connect and send what they would\nannounce to a peer. Their routes go into the `global` VRF."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "bmp": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BmpListener",
+                "description": "BMP (RFC 7854): only the routers' Loc-RIB (RFC 9069) is read."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "events": {
+            "$ref": "#/components/schemas/BgpEvents",
+            "default": {
+              "buffer_size": 10000,
+              "on_full": "drop",
+              "routes": false
+            }
+          },
+          "vrfs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "VRFs kept, spelled as the table's `vrf` column (`global`, `65000:1`,\n`192.0.2.1:7`). Empty keeps every VRF.",
+            "default": []
+          }
+        },
+        "additionalProperties": false
+      },
+      "BgpPeer": {
+        "type": "object",
+        "description": "Settings for one router of a passive BGP section.",
+        "required": [
+          "address"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "The router's address, as its TCP connection comes from."
+          },
+          "asn": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "patrolli's AS toward this router, instead of the section's `asn`.",
+            "minimum": 0
+          },
+          "hold_time": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Seconds offered to this router, instead of the section's\n`hold_time`; 0 or at least 3.",
+            "minimum": 0
+          },
+          "password": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Sensitive",
+                "description": "TCP-MD5 (RFC 2385) password; Linux only."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "BgpPeering": {
+        "type": "object",
+        "description": "Passive BGP sessions: patrolli never connects, it waits for routers.",
+        "properties": {
+          "asn": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "patrolli's AS. Unset, patrolli answers each router with the router's\nown AS, so every session is iBGP (patrolli as a route-reflector\nclient sees the whole table).",
+            "default": null,
+            "minimum": 0
+          },
+          "hold_time": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds offered; 0 (no keepalives) or at least 3. A router offering\nless wins.",
+            "default": 90,
+            "minimum": 0
+          },
+          "keep": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds a router's routes stay after its session is lost, for it to\nreconnect and send them again.",
+            "default": 300,
+            "minimum": 0
+          },
+          "listener": {
+            "$ref": "#/components/schemas/TcpListener",
+            "description": "Port 179 needs `CAP_NET_BIND_SERVICE`. The allow/deny lists decide\nwhich routers may peer.",
+            "default": {
+              "address": "0.0.0.0:179",
+              "ip_blacklist": [],
+              "ip_whitelist": []
+            }
+          },
+          "peers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BgpPeer"
+            },
+            "description": "Settings for single routers. A router needs no entry to peer.",
+            "default": []
+          },
+          "router_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "patrolli's BGP identifier. Unset, the session's local IPv4 address;\nrequired on an IPv6 listener.",
+            "default": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "BmpListener": {
+        "type": "object",
+        "properties": {
+          "keep": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds a router's routes stay after its session is lost, for it to\nreconnect and send them again.",
+            "default": 300,
+            "minimum": 0
+          },
+          "listener": {
+            "$ref": "#/components/schemas/TcpListener",
+            "default": {
+              "address": "0.0.0.0:10179",
+              "ip_blacklist": [],
+              "ip_whitelist": []
+            }
+          },
+          "max_message_size": {
+            "type": "integer",
+            "description": "Bytes; a longer message ends the session.",
+            "default": 1048576,
             "minimum": 0
           }
         },
@@ -5139,11 +5372,11 @@
           "create_schema": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/ClickhouseCreateSchema",
                 "description": "Run `CREATE DATABASE` / `CREATE TABLE IF NOT EXISTS` on startup. Handy\nfor a first run; turn it off in production so workers don't race to\ncreate tables and so schema changes stay under your control.\n\nOmit the block to leave schema management entirely to you. The DDL knobs\ninside it (`cluster_name`, `table_engine`, `ttl`) only apply at creation\ntime — changing them later does not alter existing tables."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -5172,10 +5405,10 @@
           "password": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Sensitive"
               },
               {
-                "$ref": "#/components/schemas/Sensitive"
+                "type": "null"
               }
             ]
           },
@@ -5195,10 +5428,10 @@
           "tls": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Tls"
               },
               {
-                "$ref": "#/components/schemas/Tls"
+                "type": "null"
               }
             ]
           },
@@ -5243,11 +5476,7 @@
             "default": null
           },
           "table_engine": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/ClickhouseTableEngine"
-              }
-            ],
+            "$ref": "#/components/schemas/ClickhouseTableEngine",
             "default": {
               "name": "MergeTree",
               "params": []
@@ -6836,11 +7065,11 @@
               "data": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/GraphSinkContent",
                     "description": "Null until a sink is chosen for the node."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
@@ -6903,11 +7132,11 @@
               "data": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/GraphSinkContentInput",
                     "description": "Null empties the node."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
@@ -6971,11 +7200,11 @@
               "data": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/GraphSinkNode",
                     "description": "Null until a sink is chosen for the node."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
@@ -7361,10 +7590,10 @@
           "auth": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/HttpAuth"
               },
               {
-                "$ref": "#/components/schemas/HttpAuth"
+                "type": "null"
               }
             ]
           },
@@ -7377,10 +7606,10 @@
           "tls": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Tls"
               },
               {
-                "$ref": "#/components/schemas/Tls"
+                "type": "null"
               }
             ]
           },
@@ -7471,12 +7700,8 @@
             "default": []
           },
           "level": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/LogLevel",
-                "description": "Level for `patrolli` when `include` is empty."
-              }
-            ],
+            "$ref": "#/components/schemas/LogLevel",
+            "description": "Level for `patrolli` when `include` is empty.",
             "default": "info"
           }
         },
@@ -7499,11 +7724,7 @@
             "default": false
           },
           "signal": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/InternalMetricsSignal"
-              }
-            ],
+            "$ref": "#/components/schemas/InternalMetricsSignal",
             "default": "log"
           }
         },
@@ -7805,10 +8026,10 @@
           "stats": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ItemsStatsResponse"
               },
               {
-                "$ref": "#/components/schemas/ItemsStatsResponse"
+                "type": "null"
               }
             ]
           },
@@ -7988,10 +8209,10 @@
           "sasl": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/KafkaSasl"
               },
               {
-                "$ref": "#/components/schemas/KafkaSasl"
+                "type": "null"
               }
             ]
           },
@@ -8001,10 +8222,10 @@
           "ssl": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Tls"
               },
               {
-                "$ref": "#/components/schemas/Tls"
+                "type": "null"
               }
             ]
           },
@@ -8525,10 +8746,10 @@
           "stats": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ItemsStatsResponse"
               },
               {
-                "$ref": "#/components/schemas/ItemsStatsResponse"
+                "type": "null"
               }
             ]
           },
@@ -9077,6 +9298,24 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "required": [
+              "config",
+              "type"
+            ],
+            "properties": {
+              "config": {
+                "$ref": "#/components/schemas/BgpListener"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "bgp"
+                ]
+              }
+            }
           }
         ]
       },
@@ -9162,7 +9401,8 @@
           "syslog",
           "open_telemetry",
           "internal_logs",
-          "internal_metrics"
+          "internal_metrics",
+          "bgp"
         ]
       },
       "ListenerNode": {
@@ -9371,10 +9611,10 @@
           "body": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ZStringOwned"
               },
               {
-                "$ref": "#/components/schemas/ZStringOwned"
+                "type": "null"
               }
             ]
           },
@@ -9388,10 +9628,10 @@
           "severity": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/SeverityNumberSchema"
               },
               {
-                "$ref": "#/components/schemas/SeverityNumberSchema"
+                "type": "null"
               }
             ]
           },
@@ -9745,6 +9985,14 @@
         },
         "additionalProperties": false
       },
+      "OnFull": {
+        "type": "string",
+        "description": "What a full event channel does to the session that produced the event.",
+        "enum": [
+          "drop",
+          "wait"
+        ]
+      },
       "OpenTelemetry": {
         "type": "object",
         "required": [
@@ -9773,10 +10021,10 @@
           "tls": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Tls"
               },
               {
-                "$ref": "#/components/schemas/Tls"
+                "type": "null"
               }
             ]
           },
@@ -9792,11 +10040,7 @@
         "type": "object",
         "properties": {
           "listener": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/TcpListener"
-              }
-            ],
+            "$ref": "#/components/schemas/TcpListener",
             "default": {
               "address": "0.0.0.0:4317",
               "ip_blacklist": [],
@@ -9804,20 +10048,16 @@
             }
           },
           "mode": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/ListenerOtelMode"
-              }
-            ],
+            "$ref": "#/components/schemas/ListenerOtelMode",
             "default": "otap"
           },
           "tls": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Tls"
               },
               {
-                "$ref": "#/components/schemas/Tls"
+                "type": "null"
               }
             ],
             "default": null
@@ -11608,10 +11848,10 @@
               "stats": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/ItemsStatsResponse"
                   },
                   {
-                    "$ref": "#/components/schemas/ItemsStatsResponse"
+                    "type": "null"
                   }
                 ]
               },
@@ -12207,10 +12447,10 @@
               "config": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/ItemConfig"
                   },
                   {
-                    "$ref": "#/components/schemas/ItemConfig"
+                    "type": "null"
                   }
                 ]
               },
@@ -12755,10 +12995,10 @@
               "config": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/ItemConfig"
                   },
                   {
-                    "$ref": "#/components/schemas/ItemConfig"
+                    "type": "null"
                   }
                 ]
               },
@@ -13305,30 +13545,30 @@
           "v1": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/V1V2C"
               },
               {
-                "$ref": "#/components/schemas/V1V2C"
+                "type": "null"
               }
             ]
           },
           "v2c": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/V1V2C"
               },
               {
-                "$ref": "#/components/schemas/V1V2C"
+                "type": "null"
               }
             ]
           },
           "v3": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/V3"
               },
               {
-                "$ref": "#/components/schemas/V3"
+                "type": "null"
               }
             ]
           }
@@ -13526,10 +13766,10 @@
           "last_failure": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Failure"
               },
               {
-                "$ref": "#/components/schemas/Failure"
+                "type": "null"
               }
             ]
           },
@@ -13638,30 +13878,30 @@
           "tcp": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/TcpListener"
               },
               {
-                "$ref": "#/components/schemas/TcpListener"
+                "type": "null"
               }
             ]
           },
           "tls": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/TlsListener"
               },
               {
-                "$ref": "#/components/schemas/TlsListener"
+                "type": "null"
               }
             ]
           },
           "udp": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/UdpListener"
               },
               {
-                "$ref": "#/components/schemas/UdpListener"
+                "type": "null"
               }
             ]
           }
@@ -13750,10 +13990,10 @@
           "key_password": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Sensitive"
               },
               {
-                "$ref": "#/components/schemas/Sensitive"
+                "type": "null"
               }
             ]
           },
@@ -13952,10 +14192,10 @@
           "config": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ItemConfig"
               },
               {
-                "$ref": "#/components/schemas/ItemConfig"
+                "type": "null"
               }
             ]
           },
@@ -14596,10 +14836,10 @@
           "config": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ItemConfig"
               },
               {
-                "$ref": "#/components/schemas/ItemConfig"
+                "type": "null"
               }
             ]
           },
@@ -14793,10 +15033,10 @@
           "authentication": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Authentication"
               },
               {
-                "$ref": "#/components/schemas/Authentication"
+                "type": "null"
               }
             ]
           },
@@ -14809,10 +15049,10 @@
           "privacy": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Privacy"
               },
               {
-                "$ref": "#/components/schemas/Privacy"
+                "type": "null"
               }
             ]
           },

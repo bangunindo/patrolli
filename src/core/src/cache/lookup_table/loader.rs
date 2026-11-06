@@ -153,7 +153,7 @@ fn load_stamped(
 ) -> Result<(ImmutableData, SourceStamp), LoadFailure> {
     let paths = match &meta.config.source {
         cfg::Source::File(file) => file.paths.as_slice(),
-        cfg::Source::Processor(_) => &[],
+        cfg::Source::Processor(_) | cfg::Source::Bgp(_) => &[],
     };
     let before = SourceStamp::of(paths);
     let data = read(meta);

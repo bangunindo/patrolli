@@ -4,8 +4,8 @@
 
 use crate::common::internal_metrics::visit::SKIP_REASONS;
 use crate::common::internal_metrics::{
-    Channel, Forwarder, ForwarderNode, ForwarderServer, InternalMetrics, Listener, LookupTable,
-    LookupTableProcessor, Monitor, Processor, Sink, SkipCounts,
+    BgpListener, Channel, Forwarder, ForwarderNode, ForwarderServer, InternalMetrics, Listener,
+    LookupTable, LookupTableProcessor, Monitor, Processor, Sink, SkipCounts,
 };
 use crate::payload::{ValueOwned, ZStringOwned};
 use arc_swap::Guard;
@@ -399,7 +399,7 @@ fn _get_listener_metric(snapshots: &InternalMetrics) -> ValueOwned {
     let listener_metrics = snapshots.listener.load();
     let mut listener_list = Vec::<ValueOwned>::with_capacity(listener_metrics.1.len());
     for listener_metric in listener_metrics.1.iter() {
-        let metric_map: Vec<(ZStringOwned, ValueOwned)> = vec![
+        let mut metric_map: Vec<(ZStringOwned, ValueOwned)> = vec![
             kv("id", listener_metric.id.to_string().into()),
             kv("name", SmolStr::new(&listener_metric.name).into()),
             kv(
@@ -483,9 +483,76 @@ fn _get_listener_metric(snapshots: &InternalMetrics) -> ValueOwned {
                 ValueOwned::Int64(listener_metric.total_records_errored as i64),
             ),
         ];
+        if let Some(bgp) = &listener_metric.bgp {
+            metric_map.push(kv("bgp", bgp_metric(bgp)));
+        }
         listener_list.push(ValueOwned::KvList(metric_map));
     }
     ValueOwned::Array(listener_list)
+}
+
+/// A `bgp` listener's own counters. Cumulative in either mode: they are
+/// read to compare routers and reasons, not as rates.
+fn bgp_metric(bgp: &BgpListener) -> ValueOwned {
+    let int = |v: u64| ValueOwned::Int64(v.try_into().unwrap_or(i64::MAX));
+    let by = |values: &[(&'static str, u64)]| {
+        ValueOwned::KvList(values.iter().map(|(name, n)| kv(name, int(*n))).collect())
+    };
+    // {protocol: {name: count}}
+    let by_protocol = |values: &[(&'static str, &'static str, u64)]| {
+        let mut protocols: Vec<(&'static str, Vec<(ZStringOwned, ValueOwned)>)> = Vec::new();
+        for (protocol, name, n) in values {
+            match protocols.iter_mut().find(|(p, _)| p == protocol) {
+                Some((_, list)) => list.push(kv(name, int(*n))),
+                None => protocols.push((protocol, vec![kv(name, int(*n))])),
+            }
+        }
+        ValueOwned::KvList(
+            protocols
+                .into_iter()
+                .map(|(p, list)| kv(p, ValueOwned::KvList(list)))
+                .collect(),
+        )
+    };
+    let ignored = bgp
+        .ignored_families
+        .iter()
+        // the `other` bucket is the entry without afi and safi
+        .map(|(family, n)| {
+            let mut list = Vec::with_capacity(3);
+            if let Some((afi, safi)) = family {
+                list.push(kv("afi", int((*afi).into())));
+                list.push(kv("safi", int((*safi).into())));
+            }
+            list.push(kv("count", int(*n)));
+            ValueOwned::KvList(list)
+        })
+        .collect();
+    ValueOwned::KvList(vec![
+        kv("routers_live", int(bgp.routers_live)),
+        kv("route_table", ValueOwned::Bool(bgp.route_table)),
+        kv("sessions_opened", by(&bgp.sessions_opened)),
+        kv("sessions_superseded", by(&bgp.sessions_superseded)),
+        kv("sessions_refused", by(&bgp.sessions_refused)),
+        kv("sessions_closed", by_protocol(&bgp.sessions_closed)),
+        kv("messages", by_protocol(&bgp.messages)),
+        kv("notifications_sent", by(&bgp.notifications_sent)),
+        kv("notifications_received", by(&bgp.notifications_received)),
+        kv("messages_skipped", int(bgp.messages_skipped)),
+        kv("adj_rib_messages", int(bgp.adj_rib_messages)),
+        kv("without_peer_up", int(bgp.without_peer_up)),
+        kv("vrf_filtered", int(bgp.vrf_filtered)),
+        kv("routes_announced", int(bgp.routes_announced)),
+        kv("routes_withdrawn", int(bgp.routes_withdrawn)),
+        kv("routes_rejected", int(bgp.routes_rejected)),
+        kv("unknown_withdraws", int(bgp.unknown_withdraws)),
+        kv("treat_as_withdraw", int(bgp.treat_as_withdraw)),
+        kv("end_of_rib", int(bgp.end_of_rib)),
+        kv("rows_swept", int(bgp.rows_swept)),
+        kv("keep_expiries", int(bgp.keep_expiries)),
+        kv("events_dropped", int(bgp.events_dropped)),
+        kv("ignored_families", ValueOwned::Array(ignored)),
+    ])
 }
 
 fn _get_listener_metric_throughput(
@@ -704,6 +771,9 @@ fn _get_listener_metric_throughput(
             metric_map.push(kv("total_records_errored", ValueOwned::Double(0.0)));
         }
 
+        if let Some(bgp) = &listener_metric.bgp {
+            metric_map.push(kv("bgp", bgp_metric(bgp)));
+        }
         listener_list.push(ValueOwned::KvList(metric_map));
     }
 

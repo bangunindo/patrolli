@@ -19,9 +19,9 @@
 //! name, which is why the catalogue stores only that.
 
 use super::{
-    Channel, ChannelKind, Forwarder, ForwarderNode, ForwarderServer, InternalMetrics, Listener,
-    LookupTable, LookupTableProcessor, Monitor, Processor, ProcessorEdge, ProcessorNode, Sink,
-    SkipCounts,
+    BgpListener, Channel, ChannelKind, Forwarder, ForwarderNode, ForwarderServer, InternalMetrics,
+    Listener, LookupTable, LookupTableProcessor, Monitor, Processor, ProcessorEdge, ProcessorNode,
+    Sink, SkipCounts,
 };
 use smallvec::SmallVec;
 use std::borrow::Cow;
@@ -897,6 +897,218 @@ fn walk_listeners<V: Visitor>(v: &mut V, listeners: &[Listener]) -> Result<(), V
             )
         ]
     );
+    let bgp: Vec<_> = samples
+        .iter()
+        .filter_map(|sample| {
+            sample.item.bgp.as_deref().map(|item| Labeled {
+                labels: sample.labels.clone(),
+                item,
+            })
+        })
+        .collect();
+    walk_bgp_listeners(v, &bgp)
+}
+
+/// The `bgp` listeners' own families; absent without one.
+fn walk_bgp_listeners<V: Visitor>(
+    v: &mut V,
+    samples: &[Labeled<'_, BgpListener>],
+) -> Result<(), V::Error> {
+    gauge_field(
+        v,
+        "listener.bgp.routers_live",
+        "Routers with a live BMP or BGP session to a bgp listener.",
+        Unit::None,
+        samples,
+        |bgp| bgp.routers_live,
+    )?;
+    gauge_field(
+        v,
+        "listener.bgp.route_table",
+        "Whether a bgp lookup table names the listener (1); without one, routes are only counted.",
+        Unit::None,
+        samples,
+        |bgp| u64::from(bgp.route_table),
+    )?;
+    counter_fields!(
+        v,
+        samples,
+        [
+            (
+                "listener.bgp.messages_skipped",
+                "BMP messages that failed to parse but carried nothing the route table needs.",
+                messages_skipped
+            ),
+            (
+                "listener.bgp.adj_rib_messages",
+                "Adj-RIB-In and Adj-RIB-Out messages, which are not read.",
+                adj_rib_messages
+            ),
+            (
+                "listener.bgp.without_peer_up",
+                "Loc-RIB route monitoring messages dropped for arriving before their Peer Up.",
+                without_peer_up
+            ),
+            (
+                "listener.bgp.vrf_filtered",
+                "Loc-RIB and BGP UPDATE messages of VRFs the listener does not keep.",
+                vrf_filtered
+            ),
+            (
+                "listener.bgp.routes_announced",
+                "Routes written to the route table.",
+                routes_announced
+            ),
+            (
+                "listener.bgp.routes_withdrawn",
+                "Routes removed from the route table by withdrawal or Peer Down.",
+                routes_withdrawn
+            ),
+            (
+                "listener.bgp.routes_rejected",
+                "Routes the route table refused, at its max_rows.",
+                routes_rejected
+            ),
+            (
+                "listener.bgp.unknown_withdraws",
+                "Withdrawals of a route the table does not hold.",
+                unknown_withdraws
+            ),
+            (
+                "listener.bgp.treat_as_withdraw",
+                "UPDATE messages whose malformed attributes withdrew their routes (RFC 7606).",
+                treat_as_withdraw
+            ),
+            (
+                "listener.bgp.end_of_rib",
+                "End-of-RIB markers received.",
+                end_of_rib
+            ),
+            (
+                "listener.bgp.rows_swept",
+                "Routes removed because a new dump or the keep deadline did not refresh them.",
+                rows_swept
+            ),
+            (
+                "listener.bgp.keep_expiries",
+                "Routers whose keep deadline passed.",
+                keep_expiries
+            ),
+            (
+                "listener.bgp.events_dropped",
+                "Events lost to a full event channel.",
+                events_dropped
+            )
+        ]
+    );
+    let by = |label: &'static str, values: fn(&BgpListener) -> &[(&'static str, u64)]| {
+        samples
+            .iter()
+            .flat_map(|sample| {
+                values(sample.item).iter().map(|(name, n)| {
+                    let mut labels = sample.labels.clone();
+                    labels.push((label, Cow::Borrowed(*name)));
+                    (labels, *n)
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let by_protocol =
+        |label: &'static str, values: fn(&BgpListener) -> &[(&'static str, &'static str, u64)]| {
+            samples
+                .iter()
+                .flat_map(|sample| {
+                    values(sample.item).iter().map(|(protocol, name, n)| {
+                        let mut labels = sample.labels.clone();
+                        labels.push(("protocol", Cow::Borrowed(*protocol)));
+                        labels.push((label, Cow::Borrowed(*name)));
+                        (labels, *n)
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+    for (name, help, values) in [
+        (
+            "listener.bgp.sessions_opened",
+            "Sessions a bgp listener accepted, by protocol.",
+            (|bgp| &bgp.sessions_opened) as fn(&BgpListener) -> &[(&'static str, u64)],
+        ),
+        (
+            "listener.bgp.sessions_superseded",
+            "Sessions ended because their router connected again, by protocol.",
+            |bgp| &bgp.sessions_superseded,
+        ),
+        (
+            "listener.bgp.sessions_refused",
+            "Sessions refused because their router was live over the other protocol.",
+            |bgp| &bgp.sessions_refused,
+        ),
+    ] {
+        family_u64(
+            v,
+            name,
+            help,
+            Unit::None,
+            Kind::Counter,
+            by("protocol", values),
+        )?;
+    }
+    family_u64(
+        v,
+        "listener.bgp.sessions_closed",
+        "Sessions ended, by protocol and reason.",
+        Unit::None,
+        Kind::Counter,
+        by_protocol("reason", |bgp| &bgp.sessions_closed),
+    )?;
+    family_u64(
+        v,
+        "listener.bgp.messages",
+        "BMP and BGP messages received, by protocol and type.",
+        Unit::None,
+        Kind::Counter,
+        by_protocol("type", |bgp| &bgp.messages),
+    )?;
+    family_u64(
+        v,
+        "listener.bgp.notifications_sent",
+        "BGP NOTIFICATION messages sent to routers, by error code.",
+        Unit::None,
+        Kind::Counter,
+        by("code", |bgp| &bgp.notifications_sent),
+    )?;
+    family_u64(
+        v,
+        "listener.bgp.notifications_received",
+        "BGP NOTIFICATION messages received from routers, by error code.",
+        Unit::None,
+        Kind::Counter,
+        by("code", |bgp| &bgp.notifications_received),
+    )?;
+    family_u64(
+        v,
+        "listener.bgp.ignored_families",
+        "MP_REACH/MP_UNREACH attributes of address families that are not kept.",
+        Unit::None,
+        Kind::Counter,
+        samples
+            .iter()
+            .flat_map(|sample| {
+                sample.item.ignored_families.iter().map(|(family, n)| {
+                    let mut labels = sample.labels.clone();
+                    let (afi, safi) = match family {
+                        Some((afi, safi)) => {
+                            (Cow::Owned(afi.to_string()), Cow::Owned(safi.to_string()))
+                        }
+                        None => (Cow::Borrowed("other"), Cow::Borrowed("other")),
+                    };
+                    labels.push(("afi", afi));
+                    labels.push(("safi", safi));
+                    (labels, *n)
+                })
+            })
+            .collect(),
+    )?;
     Ok(())
 }
 

@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::global::{Level, LogModule};
-use super::sensitive::{SensitiveFields, SensitiveRefs};
+use super::sensitive::{Sensitive, SensitiveFields, SensitiveRefs};
 use super::{Batch, snmp::SecurityModel};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 use strum_macros::{Display, EnumDiscriminants, EnumString, IntoStaticStr};
 use utoipa::ToSchema;
@@ -32,6 +32,7 @@ pub enum Config {
     OpenTelemetry(OpenTelemetry),
     InternalLogs(InternalLogs),
     InternalMetrics(InternalMetrics),
+    Bgp(Box<Bgp>),
 }
 
 impl Config {
@@ -44,6 +45,7 @@ impl Config {
             Self::OpenTelemetry(open_telemetry) => open_telemetry.validate()?,
             Self::InternalLogs(internal_logs) => internal_logs.validate()?,
             Self::InternalMetrics(internal_metrics) => internal_metrics.validate()?,
+            Self::Bgp(bgp) => bgp.validate()?,
         };
         Ok(())
     }
@@ -57,6 +59,7 @@ impl Config {
             Self::OpenTelemetry(open_telemetry) => Ok(serde_json::to_value(open_telemetry)?),
             Self::InternalLogs(internal_logs) => Ok(serde_json::to_value(internal_logs)?),
             Self::InternalMetrics(internal_metrics) => Ok(serde_json::to_value(internal_metrics)?),
+            Self::Bgp(bgp) => Ok(serde_json::to_value(bgp)?),
         }
     }
 }
@@ -77,6 +80,13 @@ impl SensitiveFields for Config {
                 .tls
                 .as_mut()
                 .map_or_else(Vec::new, |tls| tls.sensitive_mut("tls.key_password")),
+            Self::Bgp(bgp) => bgp.bgp.as_mut().map_or_else(Vec::new, |bgp| {
+                bgp.peers
+                    .iter_mut()
+                    .filter_map(|peer| peer.password.as_mut())
+                    .map(|password| ("bgp.peers.password", password))
+                    .collect()
+            }),
             Self::Dummy(_)
             | Self::Netflow(_)
             | Self::InternalLogs(_)
@@ -837,6 +847,314 @@ impl InternalMetrics {
     }
 }
 
+/// A BGP route collector: routers feed it over BMP or passive BGP, and their
+/// routes go into the `bgp` lookup table whose source names this listener.
+/// Its records are lifecycle events and, optionally, one per route change.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(default, deny_unknown_fields)]
+#[schema(as = BgpListener)]
+pub struct Bgp {
+    /// BMP (RFC 7854): only the routers' Loc-RIB (RFC 9069) is read.
+    pub bmp: Option<Bmp>,
+    /// Passive BGP (RFC 4271): routers connect and send what they would
+    /// announce to a peer. Their routes go into the `global` VRF.
+    pub bgp: Option<BgpPeering>,
+    /// VRFs kept, spelled as the table's `vrf` column (`global`, `65000:1`,
+    /// `192.0.2.1:7`). Empty keeps every VRF.
+    #[schema(value_type = Vec<String>)]
+    pub vrfs: Vec<SmolStr>,
+    pub events: BgpEvents,
+}
+
+impl Bgp {
+    pub fn validate(&mut self) -> Result<()> {
+        anyhow::ensure!(
+            self.bmp.is_some() || self.bgp.is_some(),
+            "a bgp listener needs a `bmp` or a `bgp` section"
+        );
+        if let Some(bmp) = &mut self.bmp {
+            bmp.validate()?;
+        }
+        if let Some(bgp) = &mut self.bgp {
+            bgp.validate()?;
+        }
+        if let (Some(bmp), Some(bgp)) = (&self.bmp, &self.bgp) {
+            anyhow::ensure!(
+                bmp.listener.address != bgp.listener.address,
+                "the bmp and bgp sections cannot listen on the same address"
+            );
+        }
+        anyhow::ensure!(
+            self.vrfs.iter().all(|v| !v.trim().is_empty()),
+            "vrfs cannot hold an empty name"
+        );
+        self.vrfs.sort_unstable();
+        self.vrfs.dedup();
+        self.events.validate();
+        Ok(())
+    }
+}
+
+/// The smallest `max_message_size`: an RFC 8654 BGP message (65535 bytes)
+/// with its BMP headers, rounded up.
+pub const BMP_MIN_MESSAGE_SIZE: usize = 1 << 17;
+
+fn default_bmp_listener() -> TcpListener {
+    TcpListener {
+        address: "0.0.0.0:10179".parse().unwrap(),
+        ip_whitelist: vec![],
+        ip_blacklist: vec![],
+    }
+}
+
+fn default_bmp_keep() -> Duration {
+    Duration::from_secs(300)
+}
+
+fn default_bmp_max_message_size() -> usize {
+    1 << 20
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(default, deny_unknown_fields)]
+#[schema(as = BmpListener)]
+pub struct Bmp {
+    pub listener: TcpListener,
+    /// Seconds a router's routes stay after its session is lost, for it to
+    /// reconnect and send them again.
+    #[serde(with = "crate::common::serde::duration_seconds")]
+    #[schema(value_type = u64, default = 300)]
+    pub keep: Duration,
+    /// Bytes; a longer message ends the session.
+    #[schema(default = 1048576)]
+    pub max_message_size: usize,
+}
+
+impl Default for Bmp {
+    fn default() -> Self {
+        Self {
+            listener: default_bmp_listener(),
+            keep: default_bmp_keep(),
+            max_message_size: default_bmp_max_message_size(),
+        }
+    }
+}
+
+impl Bmp {
+    pub fn validate(&mut self) -> Result<()> {
+        self.listener.validate()?;
+        if self.keep.is_zero() {
+            self.keep = default_bmp_keep();
+        }
+        if self.max_message_size == 0 {
+            self.max_message_size = default_bmp_max_message_size();
+        }
+        anyhow::ensure!(
+            self.max_message_size >= BMP_MIN_MESSAGE_SIZE,
+            "bmp max_message_size must be at least {BMP_MIN_MESSAGE_SIZE}"
+        );
+        Ok(())
+    }
+}
+
+fn default_bgp_listener() -> TcpListener {
+    TcpListener {
+        address: "0.0.0.0:179".parse().unwrap(),
+        ip_whitelist: vec![],
+        ip_blacklist: vec![],
+    }
+}
+
+fn default_bgp_hold_time() -> u16 {
+    90
+}
+
+/// The longest TCP-MD5 key Linux takes (`TCP_MD5SIG_MAXKEYLEN`).
+pub const BGP_MD5_MAX_KEY: usize = 80;
+
+/// Passive BGP sessions: patrolli never connects, it waits for routers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(default, deny_unknown_fields)]
+#[schema(as = BgpPeering)]
+pub struct BgpPeering {
+    /// Port 179 needs `CAP_NET_BIND_SERVICE`. The allow/deny lists decide
+    /// which routers may peer.
+    pub listener: TcpListener,
+    /// patrolli's AS. Unset, patrolli answers each router with the router's
+    /// own AS, so every session is iBGP (patrolli as a route-reflector
+    /// client sees the whole table).
+    pub asn: Option<u32>,
+    /// patrolli's BGP identifier. Unset, the session's local IPv4 address;
+    /// required on an IPv6 listener.
+    #[schema(value_type = Option<String>)]
+    pub router_id: Option<Ipv4Addr>,
+    /// Seconds offered; 0 (no keepalives) or at least 3. A router offering
+    /// less wins.
+    #[schema(default = 90)]
+    pub hold_time: u16,
+    /// Seconds a router's routes stay after its session is lost, for it to
+    /// reconnect and send them again.
+    #[serde(with = "crate::common::serde::duration_seconds")]
+    #[schema(value_type = u64, default = 300)]
+    pub keep: Duration,
+    /// Settings for single routers. A router needs no entry to peer.
+    pub peers: Vec<BgpPeer>,
+}
+
+impl Default for BgpPeering {
+    fn default() -> Self {
+        Self {
+            listener: default_bgp_listener(),
+            asn: None,
+            router_id: None,
+            hold_time: default_bgp_hold_time(),
+            keep: default_bmp_keep(),
+            peers: Vec::new(),
+        }
+    }
+}
+
+impl BgpPeering {
+    pub fn validate(&mut self) -> Result<()> {
+        self.listener.validate()?;
+        if self.keep.is_zero() {
+            self.keep = default_bmp_keep();
+        }
+        anyhow::ensure!(
+            !matches!(self.hold_time, 1 | 2),
+            "bgp hold_time must be 0 or at least 3"
+        );
+        anyhow::ensure!(
+            self.router_id.is_none_or(|id| !id.is_unspecified()),
+            "bgp router_id cannot be 0.0.0.0"
+        );
+        anyhow::ensure!(
+            self.router_id.is_some() || self.listener.address.is_ipv4(),
+            "bgp router_id is needed on an IPv6 listener"
+        );
+        let valid_asn = |asn: u32| asn != 0 && asn != 23456;
+        anyhow::ensure!(
+            self.asn.is_none_or(valid_asn),
+            "bgp asn cannot be 0 or 23456"
+        );
+        let mut seen = rustc_hash::FxHashSet::default();
+        for peer in &self.peers {
+            anyhow::ensure!(
+                seen.insert(peer.address),
+                "bgp peer {} is listed twice",
+                peer.address
+            );
+            anyhow::ensure!(
+                peer.asn.is_none_or(valid_asn),
+                "bgp peer {}: asn cannot be 0 or 23456",
+                peer.address
+            );
+            anyhow::ensure!(
+                !matches!(peer.hold_time, Some(1 | 2)),
+                "bgp peer {}: hold_time must be 0 or at least 3",
+                peer.address
+            );
+            anyhow::ensure!(
+                crate::common::ip_allowed(
+                    &peer.address,
+                    &self.listener.ip_whitelist,
+                    &self.listener.ip_blacklist
+                ),
+                "bgp peer {} is turned away by the listener's ip lists",
+                peer.address
+            );
+            if let Some(password) = &peer.password {
+                anyhow::ensure!(
+                    cfg!(target_os = "linux"),
+                    "bgp peer {}: tcp md5 passwords need linux",
+                    peer.address
+                );
+                anyhow::ensure!(
+                    !(peer.address.is_ipv6() && self.listener.address.is_ipv4()),
+                    "bgp peer {}: an ipv6 peer's password needs an ipv6 listener",
+                    peer.address
+                );
+                // an encrypted value is checked once it is decrypted
+                if let Ok(password) = password.expose() {
+                    anyhow::ensure!(
+                        (1..=BGP_MD5_MAX_KEY).contains(&password.len()),
+                        "bgp peer {}: password must be 1 to {BGP_MD5_MAX_KEY} bytes",
+                        peer.address
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Settings for one router of a passive BGP section.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(deny_unknown_fields)]
+#[schema(as = BgpPeer)]
+pub struct BgpPeer {
+    /// The router's address, as its TCP connection comes from.
+    #[schema(value_type = String)]
+    pub address: IpAddr,
+    /// TCP-MD5 (RFC 2385) password; Linux only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<Sensitive>,
+    /// patrolli's AS toward this router, instead of the section's `asn`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asn: Option<u32>,
+    /// Seconds offered to this router, instead of the section's
+    /// `hold_time`; 0 or at least 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_time: Option<u16>,
+}
+
+/// What a full event channel does to the session that produced the event.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OnFull {
+    /// Drop the event and count it: the routes are never held up.
+    #[default]
+    Drop,
+    /// Wait for room: a stalled pipeline stalls the session's reads, and a
+    /// router may end a session it cannot write to.
+    Wait,
+}
+
+fn default_bgp_events_buffer() -> usize {
+    10_000
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(default, deny_unknown_fields)]
+#[schema(as = BgpEvents)]
+pub struct BgpEvents {
+    /// One record per announced or withdrawn route, besides the lifecycle
+    /// events. A full table dump is a record per route.
+    pub routes: bool,
+    pub on_full: OnFull,
+    /// Events held between the sessions and the workers.
+    #[schema(default = 10000)]
+    pub buffer_size: usize,
+}
+
+impl Default for BgpEvents {
+    fn default() -> Self {
+        Self {
+            routes: false,
+            on_full: OnFull::default(),
+            buffer_size: default_bgp_events_buffer(),
+        }
+    }
+}
+
+impl BgpEvents {
+    pub fn validate(&mut self) {
+        if self.buffer_size == 0 {
+            self.buffer_size = default_bgp_events_buffer();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1062,6 +1380,154 @@ config:
                 .to_string();
             assert!(err.contains("unknown field `workers`"), "{err}");
         }
+    }
+
+    fn bgp(yaml: &str) -> Result<Bgp> {
+        let mut conf: Bgp = serde_yaml_ng::from_str(yaml)?;
+        conf.validate()?;
+        Ok(conf)
+    }
+
+    #[test]
+    fn bgp_defaults_fill_an_empty_bmp_section() {
+        let conf = bgp("bmp: {}").unwrap();
+        let bmp = conf.bmp.unwrap();
+        assert_eq!(bmp.listener.address, "0.0.0.0:10179".parse().unwrap());
+        assert_eq!(bmp.keep, Duration::from_secs(300));
+        assert_eq!(bmp.max_message_size, 1 << 20);
+        assert!(conf.vrfs.is_empty());
+        assert_eq!(conf.events, BgpEvents::default());
+        assert!(!conf.events.routes);
+        assert_eq!(conf.events.on_full, OnFull::Drop);
+
+        // zero means the default
+        let conf = bgp("bmp: {keep: 0, max_message_size: 0}\nevents: {buffer_size: 0}").unwrap();
+        assert_eq!(conf.bmp.unwrap().keep, Duration::from_secs(300));
+        assert_eq!(conf.events.buffer_size, 10_000);
+    }
+
+    #[test]
+    fn bgp_needs_a_protocol_and_sane_values() {
+        for (yaml, want) in [
+            ("{}", "needs a `bmp` or a `bgp` section"),
+            ("bmp: {max_message_size: 4096}", "max_message_size"),
+            ("bmp: {}\nvrfs: [global, ' ']", "empty name"),
+            ("bmp: {listener: {address: 0.0.0.0:0}}", "port"),
+            ("bmp: {}\nevents: {on_full: block}", "unknown variant"),
+            ("bmp: {}\nevents: {route: true}", "unknown field"),
+        ] {
+            let err = format!("{:#}", bgp(yaml).unwrap_err());
+            assert!(err.contains(want), "{yaml}: {err}");
+        }
+    }
+
+    #[test]
+    fn bgp_vrfs_are_sorted_and_deduplicated() {
+        let conf = bgp("bmp: {}\nvrfs: ['65000:1', global, '65000:1']").unwrap();
+        assert_eq!(conf.vrfs, ["65000:1", "global"]);
+    }
+
+    #[test]
+    fn bgp_round_trips_through_the_db_shape() {
+        let config = Config::Bgp(Box::new(
+            bgp("bmp: {keep: 60}\nvrfs: [global]\nevents: {routes: true, on_full: wait}").unwrap(),
+        ));
+        let rebuilt: Config = serde_json::from_value(serde_json::json!({
+            "type": ListenerKind::from(&config).to_string(),
+            "config": config.to_json_value().unwrap(),
+        }))
+        .unwrap();
+        assert_eq!(rebuilt, config);
+        assert_eq!(ListenerKind::from(&config).to_string(), "bgp");
+    }
+
+    #[test]
+    fn bgp_peering_defaults_and_limits() {
+        let conf = bgp("bgp: {}").unwrap();
+        let peering = conf.bgp.unwrap();
+        assert_eq!(peering.listener.address, "0.0.0.0:179".parse().unwrap());
+        assert_eq!(peering.hold_time, 90);
+        assert_eq!(peering.keep, Duration::from_secs(300));
+        assert_eq!((peering.asn, peering.router_id), (None, None));
+        assert!(conf.bmp.is_none());
+
+        let conf = bgp("bgp: {hold_time: 0, keep: 0, asn: 4200000000}").unwrap();
+        let peering = conf.bgp.unwrap();
+        assert_eq!(peering.hold_time, 0, "no keepalives is allowed");
+        assert_eq!(peering.keep, Duration::from_secs(300));
+
+        for (yaml, want) in [
+            ("bgp: {hold_time: 2}", "0 or at least 3"),
+            (
+                "bgp: {peers: [{address: 192.0.2.1, hold_time: 1}]}",
+                "192.0.2.1: hold_time must be 0 or at least 3",
+            ),
+            ("bgp: {asn: 23456}", "cannot be 0 or 23456"),
+            ("bgp: {router_id: 0.0.0.0}", "cannot be 0.0.0.0"),
+            (
+                "bgp: {listener: {address: '[::]:179'}}",
+                "router_id is needed",
+            ),
+            (
+                "bgp: {peers: [{address: 192.0.2.1}, {address: 192.0.2.1}]}",
+                "listed twice",
+            ),
+            (
+                "bgp: {listener: {address: '0.0.0.0:179', ip_whitelist: [192.0.2.2]}, peers: [{address: 192.0.2.1}]}",
+                "turned away",
+            ),
+            (
+                "bgp: {peers: [{address: 192.0.2.1, password: ''}]}",
+                "1 to 80 bytes",
+            ),
+            (
+                "bgp: {peers: [{address: '2001:db8::1', password: s3cret}]}",
+                "needs an ipv6 listener",
+            ),
+            (
+                "bmp: {listener: {address: '0.0.0.0:179'}}\nbgp: {}",
+                "same address",
+            ),
+            (
+                "bgp: {peers: [{address: 192.0.2.1, md5: x}]}",
+                "unknown field",
+            ),
+        ] {
+            let err = format!("{:#}", bgp(yaml).unwrap_err());
+            assert!(err.contains(want), "{yaml}: {err}");
+        }
+        let long = "x".repeat(81);
+        let err = bgp(&format!(
+            "bgp: {{peers: [{{address: 192.0.2.1, password: {long}}}]}}"
+        ))
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("1 to 80 bytes"));
+
+        let conf = bgp(
+            "bgp: {listener: {address: '[::]:179'}, router_id: 192.0.2.10, \
+             peers: [{address: '2001:db8::1', password: s3cret, asn: 65001}]}",
+        )
+        .unwrap();
+        assert_eq!(conf.bgp.unwrap().peers[0].asn, Some(65001));
+    }
+
+    #[test]
+    fn bgp_peer_passwords_are_sensitive_fields() {
+        let mut config = Config::Bgp(Box::new(
+            bgp(
+                "bgp: {peers: [{address: 192.0.2.1, password: one}, {address: 192.0.2.2}, \
+                 {address: 192.0.2.3, password: three}]}",
+            )
+            .unwrap(),
+        ));
+        let refs = config.sensitive_mut();
+        let paths: Vec<_> = refs.iter().map(|(path, _)| *path).collect();
+        assert_eq!(paths, ["bgp.peers.password", "bgp.peers.password"]);
+        assert_eq!(refs[1].1.expose().unwrap(), "three");
+
+        // a clear password never reaches the database shape
+        let err = config.to_json_value().unwrap_err();
+        assert!(format!("{err:#}").contains("plaintext secret"), "{err:#}");
     }
 
     #[test]

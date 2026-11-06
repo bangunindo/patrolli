@@ -503,7 +503,7 @@ fn load_status(now: DateTime<FixedOffset>, meta: &Meta, status: &TableStatus) ->
         } else {
             file.reload_interval
         }),
-        cfg::Source::Processor(_) => None,
+        cfg::Source::Processor(_) | cfg::Source::Bgp(_) => None,
     };
     let checked_at = status.checked_elapsed.and_then(|ago| ago_of(now, ago));
     LoadStatus {
@@ -526,7 +526,8 @@ fn load_status(now: DateTime<FixedOffset>, meta: &Meta, status: &TableStatus) ->
 fn capacity_status(meta: &Meta, status: &TableStatus) -> CapacityStatus {
     let ttl = match &meta.config.source {
         cfg::Source::Processor(processor) => processor.ttl,
-        cfg::Source::File(_) => Duration::ZERO,
+        // routes are withdrawn, never aged out
+        cfg::Source::File(_) | cfg::Source::Bgp(_) => Duration::ZERO,
     };
     CapacityStatus {
         max_rows: status.max_rows as u64,

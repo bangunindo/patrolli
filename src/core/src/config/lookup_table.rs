@@ -19,18 +19,61 @@ enum SourceFiles {
     MayBeMissing,
 }
 
+/// Deserialized through [`LookupTableSpec`], which lets a `bgp` table leave
+/// out its fixed key. Serialization always writes the key.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "LookupTableSpec")]
 pub struct LookupTable {
     pub id: Uuid,
     pub name: String,
     pub source: Source,
+    /// Required except for a `bgp` source, whose key is fixed (see
+    /// [`Bgp::key`]); a `bgp` table may still spell it out, but only exactly.
+    #[schema(required = false)]
     pub key: Key,
 }
 
+/// The wire shape of [`LookupTable`], with the key optional.
+///
+/// Carries `deny_unknown_fields` on its behalf: `try_from` hands the whole
+/// deserialization to this type, so the attribute is only enforced here.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LookupTableSpec {
+    id: Uuid,
+    name: String,
+    source: Source,
+    #[serde(default)]
+    key: Option<Key>,
+}
+
+impl TryFrom<LookupTableSpec> for LookupTable {
+    type Error = String;
+
+    fn try_from(spec: LookupTableSpec) -> Result<Self, Self::Error> {
+        let key = match (spec.key, &spec.source) {
+            (Some(key), _) => key,
+            (None, Source::Bgp(_)) => Bgp::key(),
+            (None, _) => return Err("key is required".into()),
+        };
+        Ok(LookupTable {
+            id: spec.id,
+            name: spec.name,
+            source: spec.source,
+            key,
+        })
+    }
+}
+
 impl LookupTable {
-    /// Processor-fed rather than file-backed.
+    /// Held in memory and written at runtime, rather than loaded from files.
     pub fn is_mutable(&self) -> bool {
+        matches!(self.source, Source::Processor(_) | Source::Bgp(_))
+    }
+
+    /// Writable by `attribute_collect`. A `bgp` table is mutable but written
+    /// only by its listener, which relies on seeing every write in order.
+    pub fn is_processor_writable(&self) -> bool {
         matches!(self.source, Source::Processor(_))
     }
 
@@ -59,6 +102,11 @@ impl LookupTable {
         // `key` is validated
         let LookupTable { source, key, .. } = self;
         source.validate(files)?;
+        // Checked here as well as on parse: a database row stores the key
+        // beside the source and never goes through `LookupTableSpec`.
+        if matches!(source, Source::Bgp(_)) && *key != Bgp::key() {
+            bail!("a bgp table's key is fixed; leave key out");
+        }
         key.validate(source)?;
         Ok(())
     }
@@ -218,6 +266,8 @@ pub enum Source {
     // Database,
     /// actively updated from the pipeline by a processor
     Processor(Processor),
+    /// routes written by a BGP/BMP listener, with a fixed schema and key
+    Bgp(Bgp),
 }
 
 impl Source {
@@ -228,6 +278,7 @@ impl Source {
         match self {
             Self::File(file) => Ok(serde_json::to_value(file)?),
             Self::Processor(processor) => Ok(serde_json::to_value(processor)?),
+            Self::Bgp(bgp) => Ok(serde_json::to_value(bgp)?),
         }
     }
 
@@ -235,6 +286,7 @@ impl Source {
         match self {
             Source::File(file) => file.validate(files),
             Source::Processor(processor) => processor.validate(),
+            Source::Bgp(bgp) => bgp.validate(),
         }
     }
 
@@ -249,6 +301,12 @@ impl Source {
             Source::Processor(processor) => {
                 Some(processor.columns.iter().map(|c| c.name.clone()).collect())
             }
+            Source::Bgp(_) => Some(
+                bgp::COLUMNS
+                    .iter()
+                    .map(|(name, _)| name.to_string())
+                    .collect(),
+            ),
         }
     }
 
@@ -263,6 +321,10 @@ impl Source {
                 .iter()
                 .find(|c| c.name == column)
                 .map(|c| c.value_type),
+            Source::Bgp(_) => bgp::COLUMNS
+                .iter()
+                .find(|(name, _)| *name == column)
+                .map(|(_, ty)| *ty),
         }
     }
 
@@ -494,6 +556,95 @@ impl Processor {
         let names: Vec<String> = self.columns.iter().map(|c| c.name.clone()).collect();
         validate_column_names("source.columns", &names)
     }
+}
+
+/// A route table written by one BGP/BMP listener.
+///
+/// The columns and the key are fixed ([`bgp::COLUMNS`], [`Bgp::key`]): the
+/// listener is the only writer, and it knows one row shape. Which routes it
+/// keeps (VRFs, RIB views) is the listener's config, not the table's.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Bgp {
+    /// the listener that writes this table
+    pub listener: Uuid,
+    /// hard cap on stored routes, across every router and VRF. once reached,
+    /// new prefixes are rejected; known ones are still updated.
+    #[serde(default = "default_bgp_max_rows")]
+    pub max_rows: usize,
+}
+
+/// A full IPv4 + IPv6 table is about 1.2M routes, so this holds three routers'
+/// worth, or many more partial tables.
+fn default_bgp_max_rows() -> usize {
+    4_000_000
+}
+
+impl Bgp {
+    /// Prefix-keyed on [`bgp::PREFIX`], partitioned by router and VRF.
+    pub fn key() -> Key {
+        Key::Prefix(Prefix {
+            prefix_column: bgp::PREFIX.to_string(),
+            partition_columns: vec![bgp::ROUTER.to_string(), bgp::VRF.to_string()],
+        })
+    }
+
+    fn validate(&mut self) -> Result<()> {
+        if self.max_rows == 0 {
+            bail!("source.max_rows must be greater than zero");
+        }
+        // that `listener` names a bgp listener is checked against the whole
+        // config: `LocalFileConfig::validate`
+        Ok(())
+    }
+}
+
+/// The fixed schema of a [`Bgp`] table.
+pub mod bgp {
+    use super::ValueType;
+
+    /// the router the route came from: the BMP router or the BGP peer
+    pub const ROUTER: &str = "router";
+    /// `global` for the default table (route distinguisher 0), otherwise the
+    /// RD as `ASN:n` or `IP:n`
+    pub const VRF: &str = "vrf";
+    /// the route's prefix; consumed by the index, returned as CIDR text
+    pub const PREFIX: &str = "prefix";
+    pub const NEXT_HOP: &str = "next_hop";
+    /// the last AS of the path
+    pub const ORIGIN_AS: &str = "origin_as";
+    /// the first AS of the path: the neighbour the route came through
+    pub const PEER_AS: &str = "peer_as";
+    /// space separated; an AS set is `{a,b}`
+    pub const AS_PATH: &str = "as_path";
+    /// space separated `a:b`
+    pub const COMMUNITIES: &str = "communities";
+    /// space separated `a:b:c`
+    pub const LARGE_COMMUNITIES: &str = "large_communities";
+    pub const LOCAL_PREF: &str = "local_pref";
+    pub const MED: &str = "med";
+    /// the ADD-PATH path id (RFC 7911) of the path the row shows; null when
+    /// the router does not send path ids
+    pub const PATH_ID: &str = "path_id";
+
+    /// The value [`VRF`] holds for the default table.
+    pub const GLOBAL_VRF: &str = "global";
+
+    /// Every column in table order, the prefix included.
+    pub const COLUMNS: [(&str, ValueType); 12] = [
+        (ROUTER, ValueType::Ip),
+        (VRF, ValueType::String),
+        (PREFIX, ValueType::String),
+        (NEXT_HOP, ValueType::Ip),
+        (ORIGIN_AS, ValueType::Integer),
+        (PEER_AS, ValueType::Integer),
+        (AS_PATH, ValueType::String),
+        (COMMUNITIES, ValueType::String),
+        (LARGE_COMMUNITIES, ValueType::String),
+        (LOCAL_PREF, ValueType::Integer),
+        (MED, ValueType::Integer),
+        (PATH_ID, ValueType::Integer),
+    ];
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
@@ -972,6 +1123,104 @@ mod tests {
         assert_eq!(p.columns[1].value_type, ValueType::Integer);
     }
 
+    #[test]
+    fn a_bgp_source_takes_its_fixed_key() {
+        let yaml = "id: 0192f8b0-0000-7000-8000-000000000003\n\
+                    name: routes\n\
+                    source:\n\
+                    \x20 type: bgp\n\
+                    \x20 listener: 0192f8b0-0000-7000-8000-0000000000aa\n";
+        let mut parsed: LookupTable = serde_yaml_ng::from_str(yaml).unwrap();
+        parsed.validate().unwrap();
+        assert_eq!(parsed.key, Bgp::key());
+        assert!(parsed.is_mutable());
+        assert!(!parsed.is_processor_writable());
+        let Source::Bgp(bgp) = &parsed.source else {
+            panic!("expected a bgp source");
+        };
+        assert_eq!(bgp.max_rows, default_bgp_max_rows());
+        assert_eq!(
+            parsed.source.known_columns().unwrap(),
+            bgp::COLUMNS.map(|(name, _)| name.to_string())
+        );
+        assert_eq!(
+            parsed.source.value_type_of(bgp::ROUTER),
+            ValueType::Ip,
+            "the fixed types, not the string default"
+        );
+
+        // serialized with its key, which parses back to the same table
+        let json = serde_json::to_value(&parsed).unwrap();
+        assert!(json.get("key").is_some());
+        let back: LookupTable = serde_json::from_value(json).unwrap();
+        assert_eq!(back, parsed);
+    }
+
+    #[test]
+    fn a_bgp_key_may_only_be_spelled_out_exactly() {
+        let with_key = |key: &str| {
+            format!(
+                "id: 0192f8b0-0000-7000-8000-000000000004\n\
+                 name: routes\n\
+                 source: {{type: bgp, listener: 0192f8b0-0000-7000-8000-0000000000aa}}\n\
+                 key: {key}\n"
+            )
+        };
+        let mut exact: LookupTable = serde_yaml_ng::from_str(&with_key(
+            "{type: prefix, prefix_column: prefix, partition_columns: [router, vrf]}",
+        ))
+        .unwrap();
+        exact.validate().unwrap();
+
+        let mut other: LookupTable = serde_yaml_ng::from_str(&with_key(
+            "{type: prefix, prefix_column: prefix, partition_columns: [router]}",
+        ))
+        .unwrap();
+        let err = other.validate().unwrap_err().to_string();
+        assert!(err.contains("fixed"), "{err}");
+    }
+
+    #[test]
+    fn only_a_bgp_source_may_leave_the_key_out() {
+        let yaml = "id: 0192f8b0-0000-7000-8000-000000000005\n\
+                    name: live\n\
+                    source:\n\
+                    \x20 type: processor\n\
+                    \x20 columns: [{name: host}]\n";
+        let err = serde_yaml_ng::from_str::<LookupTable>(yaml)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("key is required"), "{err}");
+
+        // and the spec still rejects a misplaced field
+        let yaml = "id: 0192f8b0-0000-7000-8000-000000000006\n\
+                    name: routes\n\
+                    source: {type: bgp, listener: 0192f8b0-0000-7000-8000-0000000000aa}\n\
+                    ttl: 60\n";
+        let err = serde_yaml_ng::from_str::<LookupTable>(yaml)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown field"), "{err}");
+    }
+
+    #[test]
+    fn a_bgp_table_needs_a_cap() {
+        let mut t = LookupTable {
+            id: Uuid::now_v7(),
+            name: "routes".into(),
+            source: Source::Bgp(Bgp {
+                listener: Uuid::now_v7(),
+                max_rows: 0,
+            }),
+            key: Bgp::key(),
+        };
+        assert!(t.validate().unwrap_err().to_string().contains("max_rows"));
+        if let Source::Bgp(bgp) = &mut t.source {
+            bgp.max_rows = 1;
+        }
+        t.validate().unwrap();
+    }
+
     /// The local config file names paths on the machine that reads it, so a path
     /// that is not there is a typo and the operator should be told at startup.
     #[test]
@@ -1048,6 +1297,10 @@ mod tests {
                 }],
                 ttl: Duration::from_secs(30),
                 max_rows: 7,
+            }),
+            Source::Bgp(Bgp {
+                listener: Uuid::now_v7(),
+                max_rows: 9,
             }),
         ];
         for source in sources {
@@ -1159,5 +1412,18 @@ mod config_full_yaml {
         };
         assert_eq!(p.columns.len(), 5);
         assert_eq!(p.max_rows, 1_000_000);
+
+        let mut routes = by_name("routes").clone();
+        routes.validate().unwrap();
+        assert_eq!(
+            routes.key,
+            Bgp::key(),
+            "the fixed key, though none is given"
+        );
+        assert!(!routes.is_processor_writable());
+        let Source::Bgp(bgp) = &routes.source else {
+            panic!("expected a bgp source")
+        };
+        assert_eq!(bgp.max_rows, default_bgp_max_rows());
     }
 }

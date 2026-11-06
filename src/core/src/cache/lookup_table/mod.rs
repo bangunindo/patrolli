@@ -15,6 +15,7 @@
 //! and `Worker::run_processor` is a sync fn, so an async read API would force
 //! a `block_on` on the hot path.
 
+pub mod bgp;
 pub mod cell;
 pub mod column;
 pub mod csv;
@@ -166,7 +167,7 @@ impl ImmutableTable {
     pub fn file(&self) -> Option<&cfg::File> {
         match &self.meta.config.source {
             cfg::Source::File(f) => Some(f),
-            cfg::Source::Processor(_) => None,
+            cfg::Source::Processor(_) | cfg::Source::Bgp(_) => None,
         }
     }
 
@@ -283,27 +284,19 @@ impl Table {
             metrics: Arc::new(TableMetrics::default()),
             created_at: SystemTime::now(),
         });
-        Ok(match &config.source {
-            cfg::Source::File(_) => Table::Immutable(Arc::new(ImmutableTable::new(meta))),
-            cfg::Source::Processor(processor) => {
-                let source: Vec<(SmolStr, cfg::ValueType)> = processor
-                    .columns
-                    .iter()
-                    .map(|c| (SmolStr::new(&c.name), c.value_type))
-                    .collect();
-                let (_, schema, plan) = ColumnLayout::build(&source, &config.key)?;
-                let ttl = (!processor.ttl.is_zero()).then_some(processor.ttl);
-                Table::Mutable(Arc::new(MutableTable {
-                    meta,
-                    table: Arc::new(Mutable::new(
-                        Arc::new(schema),
-                        plan,
-                        ttl,
-                        processor.max_rows,
-                    )),
-                }))
-            }
-        })
+        let Some(MutableShape {
+            columns,
+            ttl,
+            max_rows,
+        }) = MutableShape::of(&config.source)
+        else {
+            return Ok(Table::Immutable(Arc::new(ImmutableTable::new(meta))));
+        };
+        let (_, schema, plan) = ColumnLayout::build(&columns, &config.key)?;
+        Ok(Table::Mutable(Arc::new(MutableTable {
+            meta,
+            table: Arc::new(Mutable::new(Arc::new(schema), plan, ttl, max_rows)),
+        })))
     }
 
     /// Preserves serving data across compatible edits. File-backed replacements
@@ -317,8 +310,8 @@ impl Table {
                 previous.reconfigured(config, file),
             )));
         }
-        let (Some(Table::Mutable(previous)), cfg::Source::Processor(processor)) =
-            (existing, &config.source)
+        let (Some(Table::Mutable(previous)), Some(MutableShape { ttl, max_rows, .. })) =
+            (existing, MutableShape::of(&config.source))
         else {
             return Self::build(config);
         };
@@ -333,19 +326,16 @@ impl Table {
             );
             return Ok(table);
         }
-        if processor.max_rows < previous.table.len() {
+        if max_rows < previous.table.len() {
             warn!(
                 lookup_table_id = %config.id,
                 lookup_table = %config.name,
                 rows = previous.table.len(),
-                max_rows = processor.max_rows,
+                max_rows,
                 "max_rows lowered below current row count"
             );
         }
-        previous.table.reconfigure(
-            (!processor.ttl.is_zero()).then_some(processor.ttl),
-            processor.max_rows,
-        );
+        previous.table.reconfigure(ttl, max_rows);
         Ok(Table::Mutable(Arc::new(MutableTable {
             meta: Arc::new(Meta {
                 id: config.id,
@@ -703,12 +693,55 @@ impl Row<'_> {
 /// Whether a config change leaves a processor-fed table's rows valid. Only the
 /// columns and the key shape the stored rows; the name, `ttl` and `max_rows`
 /// are applied in place by [`Mutable::reconfigure`].
+///
+/// A `bgp` table's columns are fixed, but its rows belong to one listener's
+/// sessions: handed to another listener, they would never be withdrawn.
 fn reuses_rows(old: &cfg::LookupTable, new: &cfg::LookupTable) -> bool {
     match (&old.source, &new.source) {
         (cfg::Source::Processor(a), cfg::Source::Processor(b)) => {
             a.columns == b.columns && old.key == new.key
         }
+        (cfg::Source::Bgp(a), cfg::Source::Bgp(b)) => {
+            a.listener == b.listener && old.key == new.key
+        }
         _ => false,
+    }
+}
+
+/// What a mutable source builds.
+struct MutableShape {
+    /// in table order, the prefix column included
+    columns: Vec<(SmolStr, cfg::ValueType)>,
+    /// `None` never expires
+    ttl: Option<Duration>,
+    max_rows: usize,
+}
+
+impl MutableShape {
+    /// `None` for a file-backed source.
+    fn of(source: &cfg::Source) -> Option<Self> {
+        match source {
+            cfg::Source::File(_) => None,
+            cfg::Source::Processor(processor) => Some(Self {
+                columns: processor
+                    .columns
+                    .iter()
+                    .map(|c| (SmolStr::new(&c.name), c.value_type))
+                    .collect(),
+                ttl: (!processor.ttl.is_zero()).then_some(processor.ttl),
+                max_rows: processor.max_rows,
+            }),
+            cfg::Source::Bgp(bgp) => Some(Self {
+                columns: cfg::bgp::COLUMNS
+                    .iter()
+                    .map(|(name, ty)| (SmolStr::new_static(name), *ty))
+                    .collect(),
+                // routes leave by withdrawal, peer down or the resync sweep,
+                // never by age
+                ttl: None,
+                max_rows: bgp.max_rows,
+            }),
+        }
     }
 }
 

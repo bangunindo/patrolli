@@ -5,7 +5,7 @@
 use crate::common;
 use anyhow::{Context, Result, bail};
 use otel_arrow_dfe_pdata::otap::transform::LiteralValue;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use sensitive::{SecretError, Sensitive, SensitiveRefs};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
@@ -160,6 +160,41 @@ impl LocalFileConfig {
                 .with_context(|| format!("lookup table {name}"))?;
             if !lookup_ids.insert(lookup_table.id) {
                 bail!("duplicate lookup table id {}", lookup_table.id);
+            }
+        }
+        self.check_route_tables()
+    }
+
+    /// Each `bgp` lookup table names a `bgp` listener, and no listener fills
+    /// two tables. Backend mode cannot check this (tables have no API, and the
+    /// watcher reads them before the listeners); there the runtime takes the
+    /// lowest table id, and a listener without a table only counts.
+    fn check_route_tables(&self) -> Result<()> {
+        let mut claimed = FxHashMap::default();
+        for table in &self.lookup_tables {
+            let lookup_table::Source::Bgp(source) = &table.source else {
+                continue;
+            };
+            let Some(listener) = self.listeners.iter().find(|l| l.id == source.listener) else {
+                bail!(
+                    "lookup table {}: source.listener {} is not a listener",
+                    table.name,
+                    source.listener
+                );
+            };
+            if !matches!(listener.config, listener::Config::Bgp(_)) {
+                bail!(
+                    "lookup table {}: source.listener {} is not a bgp listener",
+                    table.name,
+                    source.listener
+                );
+            }
+            if let Some(other) = claimed.insert(source.listener, &table.name) {
+                bail!(
+                    "lookup tables {other} and {} both name listener {}",
+                    table.name,
+                    source.listener
+                );
             }
         }
         Ok(())
@@ -655,6 +690,81 @@ mod tests {
         let (_dir, mut config) = config_with_lookup_names(&[(ID_A, "alpha"), (ID_A, "beta")]);
         let err = format!("{:#}", config.validate().unwrap_err());
         assert!(err.contains("duplicate lookup table id"), "{err}");
+    }
+
+    /// A config of `bgp` tables (`(table id, listener id)`) and listeners
+    /// (`(listener id, type)`).
+    fn route_config(
+        tables: &[(&str, &str)],
+        listeners: &[(&str, &str)],
+    ) -> (tempfile::TempDir, LocalFileConfig) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tables: String = tables
+            .iter()
+            .map(|(id, listener)| {
+                format!(
+                    "  - id: {id}\n    name: routes-{id}\n    source:\n      type: bgp\n      \
+                     listener: {listener}\n"
+                )
+            })
+            .collect();
+        let listeners: String = listeners
+            .iter()
+            .enumerate()
+            .map(|(port, (id, kind))| {
+                let config = match *kind {
+                    "bgp" => format!(
+                        "{{bmp: {{listener: {{address: '127.0.0.1:{}'}}}}}}",
+                        port + 1
+                    ),
+                    _ => "{}".to_string(),
+                };
+                format!("  - id: {id}\n    name: l{port}\n    type: {kind}\n    config: {config}\n")
+            })
+            .collect();
+        let yaml = format!(
+            "global:\n  disk_channel:\n    data_dir: {}\nlookup_tables:\n{tables}listeners:\n{listeners}",
+            dir.path().display()
+        );
+        let config = serde_yaml_ng::from_str(&yaml).expect("valid yaml");
+        (dir, config)
+    }
+
+    const LISTENER_A: &str = "0192f8b0-0000-7000-8000-0000000000a1";
+    const LISTENER_B: &str = "0192f8b0-0000-7000-8000-0000000000b1";
+
+    #[test]
+    fn a_route_table_names_a_bgp_listener() {
+        let (_dir, mut config) = route_config(
+            &[(ID_A, LISTENER_A), (ID_B, LISTENER_B)],
+            &[(LISTENER_A, "bgp"), (LISTENER_B, "bgp")],
+        );
+        config.validate().unwrap();
+        // a bgp listener without a table is valid: it only counts
+        let (_dir, mut config) = route_config(&[], &[(LISTENER_A, "bgp")]);
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn a_route_table_naming_a_missing_or_wrong_listener_is_rejected() {
+        for (listeners, want) in [
+            (&[][..], "is not a listener"),
+            (&[(LISTENER_A, "dummy")][..], "is not a bgp listener"),
+        ] {
+            let (_dir, mut config) = route_config(&[(ID_A, LISTENER_A)], listeners);
+            let err = format!("{:#}", config.validate().unwrap_err());
+            assert!(err.contains(want), "{err}");
+        }
+    }
+
+    #[test]
+    fn two_route_tables_for_one_listener_are_rejected() {
+        let (_dir, mut config) = route_config(
+            &[(ID_A, LISTENER_A), (ID_B, LISTENER_A)],
+            &[(LISTENER_A, "bgp")],
+        );
+        let err = format!("{:#}", config.validate().unwrap_err());
+        assert!(err.contains("both name listener"), "{err}");
     }
 
     /// Symbolic OIDs resolve against the MIB, which unit tests do not load,
