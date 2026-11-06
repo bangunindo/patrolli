@@ -180,8 +180,9 @@ pub struct BgpListener {
     pub rows_swept: u64,
     pub keep_expiries: u64,
     pub events_dropped: u64,
-    /// (AFI, SAFI, MP_REACH/MP_UNREACH attributes skipped)
-    pub ignored_families: Vec<(u16, u8, u64)>,
+    /// MP_REACH/MP_UNREACH attributes skipped, by (AFI, SAFI) for the
+    /// families the listener names, `None` for all the others together
+    pub ignored_families: Vec<(Option<(u16, u8)>, u64)>,
 }
 
 #[derive(Default)]

@@ -147,14 +147,15 @@ impl Open {
     }
 }
 
-/// Whether routes received under `open` carry path ids for `family`: the
-/// sender said it sends them (RFC 7911 §4).
+/// Whether Loc-RIB routes under the fabricated `open` of a Loc-RIB peer carry
+/// path ids for `family`.
 ///
-/// For a Loc-RIB peer (RFC 9069 §5.2) the OPEN is fabricated and describes
-/// the router's own Loc-RIB, so its send bit is the answer. For a real
-/// neighbour both directions would have to agree; those peers are not read.
-pub fn sends_path_ids(open: &Open, family: Afi) -> bool {
-    open.add_path[family.index()] & ADD_PATH_SEND != 0
+/// RFC 9069 §5.2: the capability's send/receive intent is ignored, its
+/// presence alone means the Loc-RIB carries additional paths. Reading only the
+/// send bit would take a router's receive-only capability as no path ids and
+/// misread every path id as prefix bytes (a path id of 0 reads as `/0`).
+pub fn loc_rib_path_ids(open: &Open, family: Afi) -> bool {
+    open.add_path[family.index()] != 0
 }
 
 /// An OPEN body (after the BGP header) with the given capabilities, each
@@ -286,8 +287,15 @@ mod tests {
         assert!(open.four_octet_as);
         assert_eq!(open.bgp_id, id);
         assert_eq!(open.families, [true, true]);
-        assert!(sends_path_ids(&open, Afi::V4));
-        assert!(!sends_path_ids(&open, Afi::V6), "receive only");
+        assert_eq!(
+            open.add_path,
+            [ADD_PATH_SEND | ADD_PATH_RECEIVE, ADD_PATH_RECEIVE]
+        );
+        assert!(loc_rib_path_ids(&open, Afi::V4));
+        assert!(
+            loc_rib_path_ids(&open, Afi::V6),
+            "RFC 9069 §5.2: any mode means path ids"
+        );
         assert!(open.extended_message);
     }
 

@@ -517,12 +517,15 @@ fn bgp_metric(bgp: &BgpListener) -> ValueOwned {
     let ignored = bgp
         .ignored_families
         .iter()
-        .map(|(afi, safi, n)| {
-            ValueOwned::KvList(vec![
-                kv("afi", int((*afi).into())),
-                kv("safi", int((*safi).into())),
-                kv("count", int(*n)),
-            ])
+        // the `other` bucket is the entry without afi and safi
+        .map(|(family, n)| {
+            let mut list = Vec::with_capacity(3);
+            if let Some((afi, safi)) = family {
+                list.push(kv("afi", int((*afi).into())));
+                list.push(kv("safi", int((*safi).into())));
+            }
+            list.push(kv("count", int(*n)));
+            ValueOwned::KvList(list)
         })
         .collect();
     ValueOwned::KvList(vec![

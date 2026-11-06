@@ -570,7 +570,7 @@ mod tests {
                         sessions_closed: vec![("bmp", "eof", 1), ("bgp", "reset", 3)],
                         messages: vec![("bmp", "route_monitoring", 9), ("bgp", "update", 6)],
                         notifications_sent: vec![("cease", 2)],
-                        ignored_families: vec![(1, 128, 4)],
+                        ignored_families: vec![(Some((1, 128)), 4), (None, 3)],
                         ..Default::default()
                     })),
                     ..Default::default()
@@ -602,6 +602,9 @@ mod tests {
             format!("patrolli_listener_bgp_notifications_sent_total{{{labels},code=\"cease\"}} 2"),
             format!(
                 "patrolli_listener_bgp_ignored_families_total{{{labels},afi=\"1\",safi=\"128\"}} 4"
+            ),
+            format!(
+                "patrolli_listener_bgp_ignored_families_total{{{labels},afi=\"other\",safi=\"other\"}} 3"
             ),
         ] {
             assert!(output.contains(&line), "{line} missing from\n{output}");

@@ -8,8 +8,6 @@ use super::routers::Protocol;
 use super::session::SessionEnd;
 use super::wire::bgp::{CODE_NAMES, code_index};
 use crate::common::internal_metrics::BgpListener;
-use parking_lot::Mutex;
-use rustc_hash::FxHashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// BMP message types 0–6, then everything else.
@@ -48,6 +46,44 @@ pub fn bgp_message_index(kind: u8) -> usize {
 }
 
 type PerProtocol = [AtomicU64; 2];
+
+/// The (AFI, SAFI) pairs not kept but counted on their own (IANA registries):
+/// the families a router plausibly sends. Anything else counts as `other`, so
+/// a sender cannot grow the label set past these.
+pub const IGNORED_FAMILIES: [(u16, u8); 22] = [
+    (1, 2),      // IPv4 multicast
+    (1, 4),      // IPv4 labeled unicast
+    (1, 5),      // IPv4 MCAST-VPN
+    (1, 66),     // IPv4 MDT
+    (1, 73),     // IPv4 SR TE policy
+    (1, 128),    // VPNv4
+    (1, 129),    // VPNv4 multicast
+    (1, 132),    // route target constraint
+    (1, 133),    // IPv4 flowspec
+    (1, 134),    // VPNv4 flowspec
+    (2, 2),      // IPv6 multicast
+    (2, 4),      // IPv6 labeled unicast
+    (2, 5),      // IPv6 MCAST-VPN
+    (2, 73),     // IPv6 SR TE policy
+    (2, 128),    // VPNv6
+    (2, 129),    // VPNv6 multicast
+    (2, 133),    // IPv6 flowspec
+    (2, 134),    // VPNv6 flowspec
+    (25, 65),    // VPLS
+    (25, 70),    // EVPN
+    (16388, 71), // BGP-LS
+    (16388, 72), // BGP-LS VPN
+];
+
+/// [`IGNORED_FAMILIES`], then `other`.
+const IGNORED_SLOTS: usize = IGNORED_FAMILIES.len() + 1;
+
+fn ignored_index(afi: u16, safi: u8) -> usize {
+    IGNORED_FAMILIES
+        .iter()
+        .position(|&f| f == (afi, safi))
+        .unwrap_or(IGNORED_FAMILIES.len())
+}
 
 #[derive(Debug, Default)]
 pub struct Stats {
@@ -89,8 +125,8 @@ pub struct Stats {
     /// routers whose `keep` deadline passed
     pub keep_expiries: AtomicU64,
     /// MP_REACH/MP_UNREACH attributes of families that are not kept, by
-    /// (AFI, SAFI)
-    ignored_families: Mutex<FxHashMap<(u16, u8), u64>>,
+    /// [`IGNORED_FAMILIES`] index, the last slot for any other family
+    ignored_families: [AtomicU64; IGNORED_SLOTS],
 }
 
 impl Stats {
@@ -123,11 +159,17 @@ impl Stats {
     }
 
     pub fn ignored_family(&self, afi: u16, safi: u8) {
-        *self.ignored_families.lock().entry((afi, safi)).or_default() += 1;
+        Self::incr(&self.ignored_families[ignored_index(afi, safi)]);
     }
 
-    pub fn ignored_families(&self) -> FxHashMap<(u16, u8), u64> {
-        self.ignored_families.lock().clone()
+    /// The families seen so far, `None` for the `other` bucket.
+    pub fn ignored_families(&self) -> Vec<(Option<(u16, u8)>, u64)> {
+        let families = IGNORED_FAMILIES.iter().copied().map(Some).chain([None]);
+        families
+            .zip(&self.ignored_families)
+            .map(|(family, n)| (family, Self::get(n)))
+            .filter(|&(_, n)| n > 0)
+            .collect()
     }
 
     pub fn get(counter: &AtomicU64) -> u64 {
@@ -148,12 +190,6 @@ impl Stats {
     /// are filled in by the caller.
     pub fn snapshot(&self, protocols: &[Protocol]) -> BgpListener {
         let get = Self::get;
-        let mut ignored_families: Vec<_> = self
-            .ignored_families()
-            .into_iter()
-            .map(|((afi, safi), n)| (afi, safi, n))
-            .collect();
-        ignored_families.sort_unstable();
         let per = |counters: &PerProtocol| -> Vec<(&'static str, u64)> {
             protocols
                 .iter()
@@ -215,8 +251,28 @@ impl Stats {
             end_of_rib: get(&self.end_of_rib),
             rows_swept: get(&self.rows_swept),
             keep_expiries: get(&self.keep_expiries),
-            ignored_families,
+            ignored_families: self.ignored_families(),
             ..BgpListener::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unnamed_families_share_one_bucket() {
+        let stats = Stats::default();
+        stats.ignored_family(1, 128);
+        stats.ignored_family(1, 128);
+        stats.ignored_family(25, 70);
+        for afi in 3..1000 {
+            stats.ignored_family(afi, 255);
+        }
+        assert_eq!(
+            stats.ignored_families(),
+            [(Some((1, 128)), 2), (Some((25, 70)), 1), (None, 997)]
+        );
     }
 }

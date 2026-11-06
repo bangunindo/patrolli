@@ -16,7 +16,7 @@ use super::routers::{Protocol, Routers};
 use super::routes::{RouteWriter, TableCheck};
 use super::stats::Stats;
 use super::wire::bmp::{self, Message, PeerHeader};
-use super::wire::open::{Open, sends_path_ids};
+use super::wire::open::{Open, loc_rib_path_ids};
 use super::wire::update::Update;
 use super::wire::{Afi, BGP_UPDATE, Reader, bgp_message};
 use crate::cache::lookup_table::LookupTable;
@@ -582,7 +582,7 @@ impl<'c> Session<'c> {
         }
         // one emulated peer per family adds to what the others announced
         for family in Afi::ALL {
-            peer.add_path[family.index()] |= sends_path_ids(&open, family);
+            peer.add_path[family.index()] |= loc_rib_path_ids(&open, family);
         }
         let vrf = peer.vrf.clone();
         self.c.routers.note_vrf(self.w.router, &vrf);

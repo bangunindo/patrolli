@@ -1094,10 +1094,16 @@ fn walk_bgp_listeners<V: Visitor>(
         samples
             .iter()
             .flat_map(|sample| {
-                sample.item.ignored_families.iter().map(|(afi, safi, n)| {
+                sample.item.ignored_families.iter().map(|(family, n)| {
                     let mut labels = sample.labels.clone();
-                    labels.push(("afi", Cow::Owned(afi.to_string())));
-                    labels.push(("safi", Cow::Owned(safi.to_string())));
+                    let (afi, safi) = match family {
+                        Some((afi, safi)) => {
+                            (Cow::Owned(afi.to_string()), Cow::Owned(safi.to_string()))
+                        }
+                        None => (Cow::Borrowed("other"), Cow::Borrowed("other")),
+                    };
+                    labels.push(("afi", afi));
+                    labels.push(("safi", safi));
                     (labels, *n)
                 })
             })

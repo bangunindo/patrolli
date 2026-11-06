@@ -137,7 +137,7 @@ fn dump_all_peers(stream: &[u8]) -> BTreeMap<String, Vec<String>> {
                 let mut modes = [false; 2];
                 for f in Afi::ALL {
                     // Adj-RIB-In: the peer sends and the router receives
-                    modes[f.index()] = open::sends_path_ids(&received, f)
+                    modes[f.index()] = received.add_path[f.index()] & open::ADD_PATH_SEND != 0
                         && sent.add_path[f.index()] & open::ADD_PATH_RECEIVE != 0;
                 }
                 add_path.insert((peer.address, peer.distinguisher), modes);
@@ -625,6 +625,22 @@ async fn add_path_promotes_the_next_path_on_withdraw() {
     assert_eq!(h.text(g, "2001:db8::/32", "origin_as").unwrap(), "64502");
 }
 
+/// RFC 9069 §5.2: a Loc-RIB OPEN's ADD-PATH mode is ignored, so a router
+/// advertising receive only still sends path ids. Read as prefix bytes, a path
+/// id of 0 would announce `::/0`.
+#[tokio::test]
+async fn add_path_receive_mode_still_carries_path_ids() {
+    let h = Harness::new();
+    let g = cfg::bgp::GLOBAL_VRF;
+    let p = global_peer();
+    let mut s = start(&p, &[(AFI_IPV6, SAFI_UNICAST, open::ADD_PATH_RECEIVE)]);
+    s.extend(v6_route(&p, &["2001:db8::/32"], &[64501], Some(0)));
+    assert_eq!(h.run(&s).await, SessionEnd::Eof);
+    assert_eq!(h.table().len(), 1);
+    assert_eq!(h.text(g, "2001:db8::/32", "path_id").unwrap(), "0");
+    assert_eq!(h.text(g, "::/0", "origin_as"), None);
+}
+
 #[tokio::test]
 async fn a_malformed_attribute_withdraws_what_it_announces() {
     let h = Harness::new();
@@ -719,8 +735,8 @@ async fn routes_before_peer_up_and_other_families_are_skipped() {
     assert!(h.table().is_empty());
     assert_eq!(h.stat(|s| &s.without_peer_up), 1);
     assert_eq!(
-        h.collector.stats().ignored_families().get(&(AFI_IPV4, 128)),
-        Some(&1)
+        h.collector.stats().ignored_families(),
+        [(Some((AFI_IPV4, 128)), 1)]
     );
 }
 
