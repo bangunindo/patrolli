@@ -8,7 +8,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { computed, provide, ref, useSlots, watch } from 'vue'
 import type { z } from 'zod'
 import { JsonForms } from '@jsonforms/vue'
-import type { UISchemaElement } from '@jsonforms/core'
+import type { UISchemaElement, ValidationMode } from '@jsonforms/core'
 import { convertZodToJsonSchema } from '@/app/services/forms/json-schema-converter'
 import { hintsToUiSchema } from '@/app/services/forms/hints-to-uischema'
 import { zodFormRenderers } from './renderers'
@@ -51,6 +51,11 @@ const formRef = ref<HTMLFormElement | null>(null)
 const model = defineModel<Record<string, any>>({ default: () => ({}) })
 const issues = ref<Record<string, string>>({})
 const isSubmitting = ref(false)
+const hasSubmitted = ref(false)
+
+const validationMode = computed<ValidationMode>(() =>
+	hasSubmitted.value ? 'ValidateAndShow' : 'ValidateAndHide'
+)
 
 provide(
 	'formIssues',
@@ -105,6 +110,7 @@ const prepareDataForValidation = () => {
 
 // Zod validation on Submit (Dual-layer Validation)
 const handleSubmit = () => {
+	hasSubmitted.value = true
 	if (isSubmitting.value) return
 	isSubmitting.value = true
 	try {
@@ -141,6 +147,7 @@ const handleSubmit = () => {
 }
 
 const resetForm = () => {
+	hasSubmitted.value = false
 	model.value = props.initialData ? JSON.parse(JSON.stringify(props.initialData)) : {}
 	issues.value = {}
 }
@@ -151,6 +158,7 @@ const handleCloseAlert = () => {
 
 defineExpose({
 	validateAndSubmit: () => {
+		hasSubmitted.value = true
 		if (formRef.value) {
 			const submitEvent = new Event('submit', { cancelable: true, bubbles: false })
 			formRef.value.dispatchEvent(submitEvent)
@@ -219,6 +227,7 @@ defineExpose({
 			:schema="jsonSchema"
 			:uischema="activeUiSchema"
 			:renderers="zodFormRenderers"
+			:validation-mode="validationMode"
 			:readonly="props.disabled || props.loading"
 			@change="handleJsonFormsChange"
 		/>
