@@ -5,7 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
-import { computed, ref, unref } from 'vue'
+import { computed, ref, unref, watch } from 'vue'
 import AppLoading from '@/components/app/loading/AppLoading.vue'
 
 type TAlign = 'left' | 'center' | 'right'
@@ -98,8 +98,18 @@ const alignClassMap = (column: ITableColumn) => ({
 	'text-right': column.align === 'right'
 })
 
+const internalCurrentPage = ref<number | null>(null)
+
+watch(
+	() => [props.pagination?.currentPage, props.pagination?.offset],
+	() => {
+		internalCurrentPage.value = null
+	}
+)
+
 const updatePage = (page: number, pageProps: any) => {
 	const rows = pageProps?.rows ?? pageProps?.limit ?? 10
+	internalCurrentPage.value = page
 	const payload = {
 		limit: rows,
 		offset: (page - 1) * rows,
@@ -193,7 +203,18 @@ const totalRecords = computed(() => {
 	return tableData.value.length
 })
 
-const currentPage = computed(() => Number(props.pagination?.currentPage ?? 1))
+const currentPage = computed(() => {
+	if (internalCurrentPage.value !== null) {
+		return internalCurrentPage.value
+	}
+	if (props.pagination?.currentPage !== undefined) {
+		return Number(props.pagination.currentPage)
+	}
+	if (props.pagination?.offset !== undefined && rowsPerPage.value > 0) {
+		return Math.floor(Number(props.pagination.offset) / rowsPerPage.value) + 1
+	}
+	return 1
+})
 const rowsPerPage = computed(() => Number(props.pagination?.rows ?? props.pagination?.limit ?? 10))
 
 const fromRecord = computed(() => {
@@ -204,6 +225,17 @@ const fromRecord = computed(() => {
 const toRecord = computed(() => {
 	if (totalRecords.value === 0) return 0
 	return Math.min(currentPage.value * rowsPerPage.value, totalRecords.value)
+})
+
+watch([() => totalRecords.value, () => rowsPerPage.value], ([total, rows]) => {
+	if (total > 0 && rows > 0) {
+		const maxPage = Math.ceil(total / rows)
+		if (currentPage.value > maxPage) {
+			updatePage(maxPage, props.pagination)
+		}
+	} else if (total === 0 && currentPage.value > 1) {
+		updatePage(1, props.pagination)
+	}
 })
 </script>
 
