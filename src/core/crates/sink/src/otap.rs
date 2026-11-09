@@ -12,14 +12,14 @@
 //! connected is the endpoint's health.
 
 use super::export::{Encoded, Export, ExportSink, Exporter};
-use crate::common::internal_metrics::SinkEndpoint;
-use crate::common::otap_client::{Answer, Job, NodeMetrics, OtelClient, OtelClientConfig};
-use crate::config::sink::{OtelDistribution, OtelShardKey};
-use crate::{chan, config, payload};
+use crate::otap_client::{Answer, Job, NodeMetrics, OtelClient, OtelClientConfig};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use flume::Sender;
 use futures::future::join_all;
+use patrolli::common::internal_metrics::SinkEndpoint;
+use patrolli::config::sink::{OtelDistribution, OtelShardKey};
+use patrolli::{chan, config, payload};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;

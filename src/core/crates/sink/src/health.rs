@@ -9,7 +9,7 @@
 //! through as a probe (half-open); its outcome decides between healthy and
 //! another, longer wait.
 
-use super::uptime;
+use patrolli::common::uptime;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 use tracing::{info, warn};

@@ -130,6 +130,7 @@ exceptions = [
     { allow = ["AGPL-3.0-only"], crate = "patrolli-app" },
     { allow = ["AGPL-3.0-only"], crate = "patrolli-cluster" },
     { allow = ["AGPL-3.0-only"], crate = "patrolli-proto" },
+    { allow = ["AGPL-3.0-only"], crate = "patrolli-sink" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,

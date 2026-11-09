@@ -3,11 +3,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 pub mod backoff;
-pub mod health;
 pub mod internal_metrics;
 pub mod log_export;
 pub mod mib;
-pub mod otap_client;
 pub mod panic;
 pub mod prometheus;
 pub mod serde;

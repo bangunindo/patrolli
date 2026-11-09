@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::export::{Encoded, Export, ExportSink, Exporter};
-use crate::config::Format;
-use crate::{chan, config, payload};
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
+use patrolli::config::Format;
+use patrolli::{chan, config, payload};
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Duration;

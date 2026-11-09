@@ -7,17 +7,19 @@
 pub mod clickhouse;
 pub mod export;
 mod file;
+mod health;
 // Public so `tests/kafka_sink_test.rs` can run `KafkaSink` and read its final metrics after
 // `close`, which `WorkerGroup::close_all_sink` drops along with the sink.
 pub mod kafka;
 mod otap;
+mod otap_client;
 
-use crate::common::backoff::RestartBackoff;
-use crate::common::internal_metrics::{INTERNAL_METRICS, Sink as Metrics};
-use crate::common::shutdown::Deadline;
-use crate::{chan, config, payload};
 use anyhow::{Error, Result};
 use async_trait::async_trait;
+use patrolli::common::backoff::RestartBackoff;
+use patrolli::common::internal_metrics::{INTERNAL_METRICS, Sink as Metrics};
+use patrolli::common::shutdown::Deadline;
+use patrolli::{chan, config, payload};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -356,7 +358,7 @@ impl Worker {
     async fn supervise(&self) {
         // A panic is fatal and the process is shutting down: a unit restarted
         // now would run on whatever state the panic left behind.
-        if crate::common::panic::panicked() {
+        if patrolli::common::panic::panicked() {
             return;
         }
         let Ok(mut units) = self.units.try_lock() else {
@@ -617,8 +619,8 @@ mod tests {
 
     mod supervise {
         use super::super::{Metrics, Sink, Worker};
-        use crate::{chan, config, payload};
         use async_trait::async_trait;
+        use patrolli::{chan, config, payload};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::Duration;
@@ -680,7 +682,7 @@ config:
             worker
                 .close(
                     super::super::Input::Ends,
-                    crate::common::shutdown::Deadline::NONE,
+                    patrolli::common::shutdown::Deadline::NONE,
                 )
                 .await;
             tokio::time::advance(Duration::from_secs(5)).await;
@@ -693,12 +695,12 @@ config:
 
     mod replace {
         use super::super::WorkerGroup;
-        use crate::{chan, config, payload};
         use arc_swap::ArcSwap;
         use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
         use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
             LogRecord, LogsData, ResourceLogs, ScopeLogs,
         };
+        use patrolli::{chan, config, payload};
         use std::time::{Duration, Instant};
         use uuid::Uuid;
 
@@ -827,9 +829,9 @@ config:
 
     mod close {
         use super::super::{Input, Metrics, Sink, Worker};
-        use crate::common::shutdown::Deadline;
-        use crate::{chan, config, payload};
         use async_trait::async_trait;
+        use patrolli::common::shutdown::Deadline;
+        use patrolli::{chan, config, payload};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::Duration;

@@ -9,7 +9,6 @@
 //! including the dictionary encoding and the all-null column omission that the builders have
 //! to cope with — rather than a hand-assembled batch that happens to be convenient.
 
-use crate::payload::Payload;
 use arrow::array::{Array, AsArray, MapArray, RecordBatch};
 use arrow::datatypes::{DataType, Float64Type, Int32Type, TimestampSecondType, UInt64Type};
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value as AnyVal;
@@ -29,6 +28,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
 use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{
     ResourceSpans, ScopeSpans, Span, Status, TracesData, span, status,
 };
+use patrolli::payload::Payload;
 
 // ---------------------------------------------------------------------------
 // Builders

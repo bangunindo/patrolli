@@ -29,8 +29,8 @@ use clickhouse::Client;
 use clickhouse_ext_arrow::ArrowClientExt;
 use patrolli::config::sink::{ClickhouseCreateSchema, ClickhouseTables};
 use patrolli::payload::Payload;
-use patrolli::sink::clickhouse::ddl::{DEFAULT_DATABASE, Ddl};
-use patrolli::sink::clickhouse::record_batch::{ChTable, to_record_batches};
+use patrolli_sink::clickhouse::ddl::{DEFAULT_DATABASE, Ddl};
+use patrolli_sink::clickhouse::record_batch::{ChTable, to_record_batches};
 
 /// Start a server and create the full exporter schema on it.
 async fn setup_schema() -> (
@@ -115,7 +115,7 @@ async fn full_text_search_ddl_is_accepted() {
         let minor: u32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
         (major, minor)
     };
-    if (major, minor) < patrolli::sink::clickhouse::ddl::MIN_FULL_TEXT_SEARCH_VERSION {
+    if (major, minor) < patrolli_sink::clickhouse::ddl::MIN_FULL_TEXT_SEARCH_VERSION {
         eprintln!("server {version} predates text indexes; skipping");
         return;
     }
@@ -550,7 +550,7 @@ async fn run_sink(
     config: patrolli::config::sink::Sink,
     payloads: Vec<Payload>,
 ) -> patrolli::common::internal_metrics::Sink {
-    use patrolli::sink::Sink as _;
+    use patrolli_sink::Sink as _;
 
     let (tx, rx) = flume::bounded(payloads.len().max(1));
     for pl in payloads {
@@ -559,7 +559,7 @@ async fn run_sink(
     let rx = patrolli::chan::Consumer::from_flume(&tx, rx);
     drop(tx);
 
-    let sink = patrolli::sink::clickhouse::ClickhouseSink::new(config, rx)
+    let sink = patrolli_sink::clickhouse::ClickhouseSink::new(config, rx)
         .await
         .expect("build sink");
     sink.run(tokio_util::sync::CancellationToken::new()).await;

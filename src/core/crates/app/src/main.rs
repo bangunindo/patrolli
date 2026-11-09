@@ -12,7 +12,7 @@ use patrolli::common::internal_metrics::INTERNAL_METRICS;
 use patrolli::common::log_export::{self, LOG_EXPORT};
 use patrolli::common::shutdown::{Shutdown, join_step};
 use patrolli::config::global::{Format, Logger};
-use patrolli::{cache, chan, common, config, db, listener, monitor, processor, sink};
+use patrolli::{cache, chan, common, config, db, listener, monitor, processor};
 use patrolli_api as api;
 use std::fs::OpenOptions;
 use std::io;
@@ -669,7 +669,7 @@ async fn local_run(conf_content: String) -> Result<()> {
         local_conf.monitor.batch,
         config_cache.clone(),
     );
-    let sinks = sink::WorkerGroup::new(sink_admin);
+    let sinks = patrolli_sink::WorkerGroup::new(sink_admin);
     let sink_reporter = sinks
         .clone()
         .spawn_metrics_reporter(local_conf.global.internal_metrics_interval)

@@ -10,10 +10,6 @@
 //! OTAP stream, the response to an OTLP export. A connection that ends before
 //! the answer drops the oneshot, which the sender reads as "retry".
 
-use crate::common::tls;
-use crate::config::sink::OtelSinkMode;
-use crate::config::{OtapCompression, Tls};
-use crate::payload::{self};
 use anyhow::{Result, anyhow};
 use arrow_ipc::CompressionType;
 use flume::{Receiver, Sender};
@@ -38,6 +34,10 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::{
 };
 use otel_arrow_dfe_pdata::{OtapArrowRecords, Producer};
 use parking_lot::Mutex;
+use patrolli::common::tls;
+use patrolli::config::sink::OtelSinkMode;
+use patrolli::config::{OtapCompression, Tls};
+use patrolli::payload::{self};
 use prost::Message;
 use rustc_hash::FxHashMap as HashMap;
 use std::future::Future;
@@ -85,7 +85,7 @@ fn ipc_compression(compression: OtapCompression) -> Option<CompressionType> {
     }
 }
 
-pub use crate::common::internal_metrics::NodeMetrics;
+pub use patrolli::common::internal_metrics::NodeMetrics;
 
 /// What the destination made of one [`Job`]'s payload.
 pub enum Answer {

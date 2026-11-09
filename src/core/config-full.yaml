@@ -696,7 +696,7 @@ listeners:
       # Modules never exported. The longest matching prefix wins, so an
       # exclusion can carve a submodule out of an include.
       exclude:
-        - patrolli::sink::kafka
+        - patrolli_sink::kafka
       # Events held between capture and this listener. Default 10000.
       buffer_size: 10000
 

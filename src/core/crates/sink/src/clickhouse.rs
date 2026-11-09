@@ -6,10 +6,7 @@ pub mod ddl;
 pub mod record_batch;
 
 use super::export::{Encoded, Export, ExportSink, Exporter};
-use crate::common::health::{Health, SendGuard};
-use crate::common::internal_metrics::SinkEndpoint;
-use crate::config::sink::{ClickhouseCompression, ClickhouseCreateSchema, ClickhouseDistribution};
-use crate::{chan, config, payload};
+use crate::health::{Health, SendGuard};
 use anyhow::{Result, anyhow};
 use arrow::array::RecordBatch;
 use async_trait::async_trait;
@@ -20,6 +17,11 @@ use futures::future::join_all;
 use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
+use patrolli::common::internal_metrics::SinkEndpoint;
+use patrolli::config::sink::{
+    ClickhouseCompression, ClickhouseCreateSchema, ClickhouseDistribution,
+};
+use patrolli::{chan, config, payload};
 use record_batch::{ChTable, to_record_batches};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,7 +43,7 @@ const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
 /// be injected by building the hyper client ourselves and handing it over via
 /// [`ChClient::with_http_client`].
 fn build_tls_client(tls: &config::Tls) -> Result<ChClient> {
-    let tls_config = crate::common::tls::build_rustls_client_config(tls)?;
+    let tls_config = patrolli::common::tls::build_rustls_client_config(tls)?;
 
     let mut http = HttpConnector::new();
     http.set_keepalive(Some(TCP_KEEPALIVE));

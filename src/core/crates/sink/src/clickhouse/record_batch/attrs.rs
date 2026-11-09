@@ -311,7 +311,7 @@ impl AnyValueCols {
 /// same here as it does in the file sink's nested-JSON output.
 fn cbor_to_json(bytes: &[u8]) -> Option<String> {
     let value: ciborium::value::Value = ciborium::from_reader(bytes).ok()?;
-    serde_json::to_string(&crate::payload::json_ser::CborNativeSer(&value)).ok()
+    serde_json::to_string(&patrolli::payload::CborNativeSer(&value)).ok()
 }
 
 #[cfg(test)]
