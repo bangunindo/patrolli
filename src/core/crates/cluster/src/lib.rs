@@ -11,7 +11,7 @@ use crate::inter::InterCommManager as _;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use deadpool_postgres::{Pool, Transaction};
-use patrolli::chan::{AdminChannel, new as new_channel};
+use patrolli::chan::{AdminChannel, PROCESSOR_CHANNEL_NAME, new as new_channel};
 use patrolli::common::internal_metrics::INTERNAL_METRICS;
 use patrolli::common::shutdown::{Shutdown, join_step};
 use patrolli::config::MonitorConfig;
@@ -274,10 +274,7 @@ impl Cluster {
         let mut processors = processor::WorkerGroup::new(
             sink_send,
             processor_admin
-                .get_receiver(
-                    &processor::PROCESSOR_CHANNEL_NAME,
-                    global_conf.processor.channel,
-                )
+                .get_receiver(&PROCESSOR_CHANNEL_NAME, global_conf.processor.channel)
                 .await?,
             config_cache.clone(),
         );

@@ -8,10 +8,9 @@
 //! pipeline up as far as the transport.
 
 use super::{Listener, Worker};
-use crate::chan::{AdminChannel, SenderChannel};
+use crate::chan::{AdminChannel, PROCESSOR_CHANNEL_NAME, SenderChannel};
 use crate::common::internal_metrics;
 use crate::common::shutdown::Deadline;
-use crate::processor::PROCESSOR_CHANNEL_NAME;
 use crate::{cache, config, payload};
 use arc_swap::ArcSwap;
 use std::net::SocketAddr;

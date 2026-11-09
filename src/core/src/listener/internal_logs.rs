@@ -348,11 +348,11 @@ impl super::Listener for InternalLogsListener {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chan::PROCESSOR_CHANNEL_NAME;
     use crate::common::internal_metrics;
     use crate::config::global::{Level, LogModule};
     use crate::config::listener::{Config, InternalLogs};
     use crate::listener::Listener as _;
-    use crate::processor::PROCESSOR_CHANNEL_NAME;
     use arc_swap::ArcSwap;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value as AnyValue;
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};

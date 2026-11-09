@@ -656,7 +656,7 @@ async fn local_run(conf_content: String) -> Result<()> {
         sink_send,
         processor_admin
             .get_receiver(
-                &processor::PROCESSOR_CHANNEL_NAME,
+                &chan::PROCESSOR_CHANNEL_NAME,
                 local_conf.global.processor.channel,
             )
             .await?,

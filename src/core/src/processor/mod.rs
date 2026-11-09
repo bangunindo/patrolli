@@ -46,8 +46,6 @@ use uuid::Uuid;
 
 type PHashMap<K, V> = papaya::HashMap<K, V, FxBuildHasher>;
 
-pub static PROCESSOR_CHANNEL_NAME: &str = "processor";
-
 /// How long [`WorkerGroup::close`] waits for the workers to finish what their
 /// input holds before they stop waiting on full sink topics.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);

@@ -1493,7 +1493,7 @@ mod tests {
         );
         let rx = admin
             .get_receiver(
-                &crate::processor::PROCESSOR_CHANNEL_NAME,
+                &crate::chan::PROCESSOR_CHANNEL_NAME,
                 config::Channel::Memory(config::MemoryChannel {
                     non_blocking: false,
                     channel_buffer_size: 16,

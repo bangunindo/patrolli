@@ -242,10 +242,10 @@ impl super::Listener for InternalMetricsListener {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chan::PROCESSOR_CHANNEL_NAME;
     use crate::common::internal_metrics::Sink;
     use crate::config::listener::{Config, InternalMetrics as InternalMetricsConfig};
     use crate::listener::Listener as _;
-    use crate::processor::PROCESSOR_CHANNEL_NAME;
     use arc_swap::ArcSwap;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value as AnyValue;
