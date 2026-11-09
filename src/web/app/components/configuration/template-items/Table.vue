@@ -50,8 +50,13 @@ const headerTable = [
 	}
 ]
 
-function onChangePage(payload: { offset: number; limit: number }) {
-	if (templateItemsStore.filter.offset != payload.offset) {
+function onChangePage(payload: { offset: number; limit: number; page: number }) {
+	templateItemsStore.pagination.currentPage = payload.page
+	templateItemsStore.pagination.rows = payload.limit
+	if (
+		templateItemsStore.filter.offset !== payload.offset ||
+		templateItemsStore.filter.limit !== payload.limit
+	) {
 		templateItemsStore.filter.limit = payload.limit
 		templateItemsStore.filter.offset = payload.offset
 		fetchItems()
@@ -95,6 +100,7 @@ async function fetchItems() {
 }
 
 onMounted(() => {
+	templateItemsStore.pagination.currentPage = 1
 	templateItemsStore.filter.offset = 0
 	fetchItems()
 })
@@ -103,6 +109,7 @@ onMounted(() => {
 watchDebounced(
 	() => templateItemsStore.filter.name,
 	async () => {
+		templateItemsStore.pagination.currentPage = 1
 		templateItemsStore.filter.offset = 0
 		fetchItems()
 	},

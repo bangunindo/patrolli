@@ -60,8 +60,10 @@ const headerTable = [
 	}
 ]
 
-function onChangePage(payload) {
-	if (sinksStore.filter.offset != payload.offset) {
+function onChangePage(payload: { limit: number; offset: number; page: number }) {
+	sinksStore.pagination.currentPage = payload.page
+	sinksStore.pagination.rows = payload.limit
+	if (sinksStore.filter.offset !== payload.offset || sinksStore.filter.limit !== payload.limit) {
 		sinksStore.filter.limit = payload.limit
 		sinksStore.filter.offset = payload.offset
 		sinksStore.fetchSinks()
@@ -99,6 +101,7 @@ async function onDelete() {
 }
 
 onMounted(() => {
+	sinksStore.pagination.currentPage = 1
 	sinksStore.filter.offset = 0
 	sinksStore.fetchSinks()
 })
@@ -107,6 +110,7 @@ onMounted(() => {
 watchDebounced(
 	() => sinksStore.filter.name,
 	async () => {
+		sinksStore.pagination.currentPage = 1
 		sinksStore.filter.offset = 0
 		sinksStore.fetchSinks()
 	},
