@@ -7,6 +7,7 @@
 //! the table's schema per batch, because a CSV table's columns are known only
 //! once it has loaded and can change on reload.
 
+use super::attribute_collect::{RegexPattern, default_group};
 use super::{AttributeFilter, AttributeTable};
 use anyhow::{Context, Result, bail};
 use rustc_hash::FxHashSet;
@@ -24,7 +25,8 @@ use uuid::Uuid;
 /// Missing inputs, failed casts, lookup misses and null result cells leave the
 /// destination unchanged; invalid inputs are counted separately from misses.
 /// Default values are not supported; an input key may list fallback
-/// attributes ([`AttributeKeys`]).
+/// attributes, and may probe with a regex capture of the value instead of the
+/// whole of it ([`AttributeKeys`]).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AttributeLookup {
@@ -127,6 +129,11 @@ pub struct AttributeLookupInput {
     /// from its exporter where a mapping exists. `table` and `cast` apply to
     /// each. A present value that fails its cast is an invalid input; the next
     /// key is not tried.
+    ///
+    /// `{from: <key or list>, pattern: <regex>, group: <n>}` probes with one
+    /// capture group of the value instead of the whole of it, such as
+    /// `{from: interface.name, pattern: '^(.+)\.\d+$'}` to look up `ae21`
+    /// from `ae21.0`. Extraction runs before `cast` ([`AttributeKeyExtract`]).
     pub key: AttributeKeys,
     /// Explicit conversion before probing. Without a cast the input must
     /// already match the table's key type. A conversion failure skips the
@@ -140,20 +147,73 @@ pub struct AttributeLookupInput {
     pub cast: Option<AttributeLookupCast>,
 }
 
-/// One attribute key, or keys tried in order. A single key keeps its plain
-/// string form when written back.
+/// One attribute key, or keys tried in order, optionally narrowed by a regular
+/// expression. A single key keeps its plain string form when written back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum AttributeKeys {
     One(String),
     FirstOf(Vec<String>),
+    /// Probe with part of the value instead of all of it.
+    Extract(AttributeKeyExtract),
 }
 
-impl AttributeKeys {
+/// Read `from` as a plain key would be read, then probe with one capture group
+/// of `pattern` instead of the whole value: `ae21.0` with `^(.+)\.\d+$` probes
+/// `ae21`.
+///
+/// Extraction runs before `cast`, so `cast: integer` turns an extracted `"21"`
+/// into `21`; without a cast the result is a string. Only string values are
+/// searched. A non-string value, no match, or an unmatched or empty group is an
+/// invalid input, like a failed cast: the next fallback key is not tried.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AttributeKeyExtract {
+    /// The attribute key, or fallback keys, whose value is searched; the first
+    /// key present on the parent supplies it.
+    pub from: AttributeKeyList,
+    /// Regular expression in Rust `regex` syntax, searched anywhere in the
+    /// value; the first match is used.
+    #[schema(value_type = String)]
+    pub pattern: RegexPattern,
+    /// Capture group whose text becomes the probe value, `0` being the whole
+    /// match. Must exist in `pattern`. Defaults to `1`.
+    #[serde(default = "default_group")]
+    #[schema(default = 1)]
+    pub group: usize,
+}
+
+/// One attribute key, or keys tried in order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum AttributeKeyList {
+    One(String),
+    FirstOf(Vec<String>),
+}
+
+impl AttributeKeyList {
     pub fn as_slice(&self) -> &[String] {
         match self {
             Self::One(key) => std::slice::from_ref(key),
             Self::FirstOf(keys) => keys,
+        }
+    }
+}
+
+impl AttributeKeys {
+    /// The attribute keys read, in fallback order, extracted from or not.
+    pub fn as_slice(&self) -> &[String] {
+        match self {
+            Self::One(key) => std::slice::from_ref(key),
+            Self::FirstOf(keys) => keys,
+            Self::Extract(extract) => extract.from.as_slice(),
+        }
+    }
+
+    pub fn extract(&self) -> Option<&AttributeKeyExtract> {
+        match self {
+            Self::Extract(extract) => Some(extract),
+            _ => None,
         }
     }
 
@@ -168,6 +228,9 @@ impl AttributeKeys {
             if !seen.insert(key.as_str()) {
                 bail!("attribute key {key:?} is listed twice");
             }
+        }
+        if let Some(extract) = self.extract() {
+            extract.pattern.check_group(extract.group)?;
         }
         Ok(())
     }
@@ -628,6 +691,81 @@ mod tests {
             invalid["match"]["keys"]["index"]["key"] = keys;
             let err = format!("{:#}", config(vec![invalid]).validate().unwrap_err());
             assert!(err.contains(error), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_key_may_extract_a_regex_group_from_its_value() {
+        let mut extract = rule();
+        extract["match"]["keys"]["index"]["key"] =
+            json!({"from": "interface.name", "pattern": r"^(.+)\.\d+$"});
+        extract["match"]["point"] =
+            json!({"key": {"from": ["dst4", "dst6"], "pattern": r"^[^:]+", "group": 0}});
+        let parsed = config(vec![extract]);
+        parsed.validate().unwrap();
+        let by = &parsed.lookups[0].match_by;
+        let index = by.keys["index"].key.extract().unwrap();
+        assert_eq!(index.group, 1, "defaults to the first capture group");
+        assert_eq!(index.pattern.0.as_str(), r"^(.+)\.\d+$");
+        assert_eq!(by.keys["index"].key.as_slice(), ["interface.name"]);
+        let point = &by.point.as_ref().unwrap().key;
+        assert_eq!(point.as_slice(), ["dst4", "dst6"]);
+        assert_eq!(point.extract().unwrap().group, 0);
+        assert!(by.keys["device"].key.extract().is_none());
+
+        // written back as given, through JSON and YAML alike
+        let back = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(
+            back["lookups"][0]["match"]["keys"]["index"]["key"],
+            json!({"from": "interface.name", "pattern": r"^(.+)\.\d+$", "group": 1})
+        );
+        let yaml = serde_yaml_ng::to_string(&parsed).unwrap();
+        let restored: AttributeLookup = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(
+            restored.lookups[0].match_by.keys["index"].key,
+            by.keys["index"].key
+        );
+    }
+
+    #[test]
+    fn a_bad_extraction_is_rejected() {
+        for (key, error) in [
+            (
+                json!({"from": "a", "pattern": "(x)", "group": 2}),
+                "group 2 does not exist",
+            ),
+            (
+                json!({"from": "a", "pattern": "x"}),
+                "group 1 does not exist",
+            ),
+            (json!({"from": [], "pattern": "(x)"}), "must not be empty"),
+            (
+                json!({"from": ["a", "a"], "pattern": "(x)"}),
+                "listed twice",
+            ),
+            (
+                json!({"from": "a..b", "pattern": "(x)"}),
+                "empty path segments",
+            ),
+        ] {
+            let mut invalid = rule();
+            invalid["match"]["keys"]["index"]["key"] = key;
+            let err = format!("{:#}", config(vec![invalid]).validate().unwrap_err());
+            assert!(err.contains(error), "{err}");
+        }
+        // shapes no variant accepts fail when the config is read
+        for key in [
+            json!({"from": "a", "pattern": "(unclosed"}),
+            json!({"from": "a", "pattern": "(x)", "grop": 1}),
+            json!({"from": {"from": "a", "pattern": "(x)"}, "pattern": "(x)"}),
+            json!({"pattern": "(x)"}),
+        ] {
+            let mut invalid = rule();
+            invalid["match"]["keys"]["index"]["key"] = key.clone();
+            assert!(
+                serde_json::from_value::<AttributeLookupRule>(invalid).is_err(),
+                "{key}"
+            );
         }
     }
 

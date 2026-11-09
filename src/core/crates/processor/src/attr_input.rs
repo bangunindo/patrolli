@@ -62,6 +62,12 @@ pub(super) fn convert<'a>(value: &'a Value<'_>, cast: Option<ValueType>) -> Opti
         Value::String(v) => CellRef::String(v.as_str()),
         _ => return None,
     };
+    convert_cell(cell, cast)
+}
+
+/// [`convert`] for a value already read into a cell, such as text extracted
+/// from an attribute.
+pub(super) fn convert_cell(cell: CellRef<'_>, cast: Option<ValueType>) -> Option<Converted<'_>> {
     let Some(cast) = cast else {
         return Some(Converted::Borrowed(cell));
     };

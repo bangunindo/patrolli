@@ -39,6 +39,7 @@ use patrolli::config::processor::attribute_lookup::{
     AttributeLookup, AttributeLookupCast, AttributeLookupInput, AttributeLookupRule,
 };
 use patrolli::payload::{self, Payload, Value, attr};
+use regex::{CaptureLocations, Regex};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use smol_str::{SmolStr, format_smolstr};
@@ -271,6 +272,13 @@ impl<'a> Plan<'a> {
                 (_, lt::ValueType::Double) => {
                     bail!("key column {name:?} is a double and cannot index a lookup table")
                 }
+                // Extracted text stays text without a cast, and would miss
+                // every record of a non-string column.
+                (None, ty) if input.key.extract().is_some() && ty != lt::ValueType::String => {
+                    bail!(
+                        "match.keys[{name:?}] extracts text, so a {ty:?} key column needs a `cast`"
+                    )
+                }
                 _ => {}
             }
             Ok(Binding::Attribute(input))
@@ -410,6 +418,16 @@ fn run_rule(
         })
         .collect::<Result<Vec<_>>>()?;
     let point_source = plan.point.map(source).transpose()?;
+    // Regex scratch space, allocated once per batch; aligned with `plan.keys`.
+    let mut key_extractors: Vec<Option<Extractor>> = plan
+        .keys
+        .iter()
+        .map(|binding| match binding {
+            Binding::Attribute(input) => Extractor::new(input),
+            Binding::Literal(_) => None,
+        })
+        .collect();
+    let mut point_extractor = plan.point.and_then(Extractor::new);
 
     let candidates = attr_input::candidates(
         key_sources.iter().flatten().chain(point_source.as_ref()),
@@ -420,14 +438,16 @@ fn run_rule(
     for parent in candidates {
         converted.clear();
         let mut usable = true;
-        for (binding, source) in plan.keys.iter().zip(&key_sources) {
+        for ((binding, source), extractor) in
+            plan.keys.iter().zip(&key_sources).zip(&mut key_extractors)
+        {
             let part = match (binding, source) {
                 (Binding::Literal(key), _) => {
                     Some(attr_input::Converted::Borrowed(key_cell(key.as_ref())))
                 }
-                (Binding::Attribute(input), Some(source)) => {
-                    source.get(parent).and_then(|v| key_part(v, input.cast))
-                }
+                (Binding::Attribute(input), Some(source)) => source
+                    .get(parent)
+                    .and_then(|v| key_part(v, input.cast, extractor.as_mut())),
                 (Binding::Attribute(_), None) => None,
             };
             match part {
@@ -439,7 +459,10 @@ fn run_rule(
             }
         }
         let point = match &point_source {
-            Some(source) if usable => match source.get(parent).and_then(probe_address) {
+            Some(source) if usable => match source
+                .get(parent)
+                .and_then(|v| probe_address(v, point_extractor.as_mut()))
+            {
                 Some(point) => Some(point),
                 None => {
                     usable = false;
@@ -509,16 +532,54 @@ fn key_cell(key: KeyRef<'_>) -> CellRef<'_> {
     }
 }
 
+/// A binding's regex extraction as executed: the capture scratch space is
+/// allocated once per batch, and the extracted text is a sub-slice of the
+/// attribute value, so extraction costs no allocation per record.
+struct Extractor<'a> {
+    regex: &'a Regex,
+    group: usize,
+    locations: CaptureLocations,
+}
+
+impl<'a> Extractor<'a> {
+    fn new(input: &'a AttributeLookupInput) -> Option<Self> {
+        let extract = input.key.extract()?;
+        Some(Extractor {
+            regex: &extract.pattern.0,
+            group: extract.group,
+            locations: extract.pattern.0.capture_locations(),
+        })
+    }
+
+    /// The configured group's text, or `None` for a non-string value, no
+    /// match, or an unmatched or empty group.
+    fn extract<'v>(&mut self, value: &'v Value<'_>) -> Option<&'v str> {
+        let Value::String(text) = value else {
+            return None;
+        };
+        let text = text.as_str();
+        self.regex.captures_read(&mut self.locations, text)?;
+        let (start, end) = self.locations.get(self.group)?;
+        (start < end).then(|| &text[start..end])
+    }
+}
+
 /// Convert an attribute value into one probe key part.
 ///
 /// Without a cast the value must already be the key column's type: the index
 /// compares variants, so `"42"` never matches an integer key. Strings go
 /// through [`CellRef::parse`], the parser the table was built with, so probe
-/// and build agree — including IPv4-mapped IPv6.
+/// and build agree — including IPv4-mapped IPv6. With an extractor, the
+/// extracted text is what gets cast.
 fn key_part<'a>(
     value: &'a Value<'_>,
     cast: Option<AttributeLookupCast>,
+    extractor: Option<&mut Extractor<'_>>,
 ) -> Option<attr_input::Converted<'a>> {
+    if let Some(extractor) = extractor {
+        let text = extractor.extract(value)?;
+        return attr_input::convert_cell(CellRef::String(text), cast.map(cast_type));
+    }
     // Null is never a key. Nor is a bare double — but `cast: string` renders
     // one, and `attribute_collect` stores exactly that rendering through the
     // same `convert`, so refusing it would leave those rows unprobeable.
@@ -544,8 +605,8 @@ fn cast_type(cast: AttributeLookupCast) -> lt::ValueType {
 /// no IP value, so it arrives as text (or the bare-integer form `parse_ip`
 /// also accepts) — whatever `cast` says, which plan time has already pinned
 /// to `ip` or unset.
-fn probe_address(value: &Value<'_>) -> Option<IpAddr> {
-    match key_part(value, Some(AttributeLookupCast::Ip))?.as_ref() {
+fn probe_address(value: &Value<'_>, extractor: Option<&mut Extractor<'_>>) -> Option<IpAddr> {
+    match key_part(value, Some(AttributeLookupCast::Ip), extractor)?.as_ref() {
         CellRef::Ip(addr) => Some(addr),
         _ => None,
     }
@@ -1657,6 +1718,172 @@ mod tests {
         let m = run_counted(pl, &cfg, &cache, id);
         assert_eq!(m.lookups_hit, 3);
         assert_eq!(m.lookups_errored, 1);
+    }
+
+    /// The value of `key` on each record parent, in parent order.
+    fn values_of(pl: &Payload, key: &str) -> Vec<(u16, String)> {
+        record_attrs(pl)
+            .into_iter()
+            .filter(|(_, k, _)| k == key)
+            .map(|(parent, _, value)| (parent, value))
+            .collect()
+    }
+
+    #[test]
+    fn an_extracted_group_probes_instead_of_the_whole_value() {
+        let cache = cache::Cache::new();
+        let id = hash_table(
+            &cache,
+            &["ifname"],
+            &[
+                ("ifname", lt::ValueType::String),
+                ("alias", lt::ValueType::String),
+            ],
+            &[&[CellRef::String("ae21"), CellRef::String("uplink")]],
+        );
+        let pl = logs(
+            vec![],
+            vec![
+                vec![kv("interface.name", s("ae21.0"))], // unit stripped -> hit
+                vec![kv("interface.name", s("ae21"))],   // no unit: no match -> key error
+                vec![kv("interface.name", s("ae22.0"))], // extracted, no row -> miss
+                vec![kv("interface.name", int(21))],     // not a string -> key error
+                // the first key is present but does not match: an error, and
+                // the second key is not tried
+                vec![kv("if.name", s("ae21")), kv("interface.name", s("ae21.0"))],
+            ],
+        );
+        let cfg = config(json!({"lookups": [{
+            "lookup_table": id, "table": "record",
+            "match": {"keys": {"ifname": {"key": {
+                "from": ["if.name", "interface.name"],
+                "pattern": r"^(.+)\.\d+$",
+            }}}},
+            "output": {"interface.alias": "alias"},
+        }]}));
+
+        let (out, errored) = run(pl.clone(), &cfg, &cache);
+        assert!(!errored);
+        assert_eq!(
+            values_of(&out, "interface.alias"),
+            vec![(0, "uplink".into())]
+        );
+        let m = run_counted(pl, &cfg, &cache, id);
+        assert_eq!(m.lookups_hit, 1);
+        assert_eq!(m.lookups_missed, 1);
+        assert_eq!(m.lookups_errored, 3);
+    }
+
+    #[test]
+    fn extracted_text_is_cast_and_a_point_can_be_extracted_too() {
+        let cache = cache::Cache::new();
+        let hash = hash_table(
+            &cache,
+            &["idx"],
+            &[
+                ("idx", lt::ValueType::Integer),
+                ("name", lt::ValueType::String),
+            ],
+            &[&[CellRef::Integer(21), CellRef::String("ge-0/0/21")]],
+        );
+        let prefix = prefix_table(
+            &cache,
+            &[],
+            &[
+                ("network", lt::ValueType::String),
+                ("site", lt::ValueType::String),
+            ],
+            &[(&[CellRef::String("jkt")], "10.0.0.0/8")],
+        );
+        let pl = logs(
+            vec![],
+            vec![vec![kv("port", s("Gi0/21")), kv("peer", s("10.1.1.1:443"))]],
+        );
+        let cfg = config(json!({"lookups": [
+            {
+                "lookup_table": hash, "table": "record",
+                "match": {"keys": {"idx": {
+                    "key": {"from": "port", "pattern": r"(\d+)$"},
+                    "cast": "integer",
+                }}},
+                "output": {"port.name": "name"},
+            },
+            {
+                "lookup_table": prefix, "table": "record",
+                "match": {"point": {"key": {"from": "peer", "pattern": "^[^:]+", "group": 0}}},
+                "output": {"peer.site": "site"},
+            },
+        ]}));
+
+        let (out, errored) = run(pl, &cfg, &cache);
+        assert!(!errored);
+        assert_eq!(values_of(&out, "port.name"), vec![(0, "ge-0/0/21".into())]);
+        assert_eq!(values_of(&out, "peer.site"), vec![(0, "jkt".into())]);
+    }
+
+    #[test]
+    fn an_uncast_extraction_into_a_non_string_column_is_a_plan_error() {
+        let cache = cache::Cache::new();
+        let id = hash_table(
+            &cache,
+            &["idx"],
+            &[
+                ("idx", lt::ValueType::Integer),
+                ("name", lt::ValueType::String),
+            ],
+            &[&[CellRef::Integer(21), CellRef::String("ge-0/0/21")]],
+        );
+        let pl = logs(vec![], vec![vec![kv("port", s("Gi0/21"))]]);
+        let cfg = config(json!({"lookups": [{
+            "lookup_table": id, "table": "record",
+            "match": {"keys": {"idx": {"key": {"from": "port", "pattern": r"(\d+)$"}}}},
+            "output": {"port.name": "name"},
+        }]}));
+        let (out, errored) = run(pl.clone(), &cfg, &cache);
+        assert!(errored);
+        assert_eq!(record_attrs(&out), record_attrs(&pl));
+    }
+
+    #[test]
+    fn extraction_adds_no_per_candidate_allocations() {
+        let cache = cache::Cache::new();
+        let id = hash_table(
+            &cache,
+            &["host"],
+            &[
+                ("host", lt::ValueType::String),
+                ("site", lt::ValueType::String),
+            ],
+            &[],
+        );
+        let pl = logs(
+            vec![],
+            (0..1000)
+                .map(|_| vec![kv("host", s("a-long-host-name-past-inline.example.net"))])
+                .collect(),
+        );
+        let node = Uuid::now_v7();
+        let counts: Vec<usize> = [
+            json!("host"),
+            json!({"from": "host", "pattern": r"^([^.]+)\."}),
+        ]
+        .into_iter()
+        .map(|key| {
+            let cfg = config(json!({"lookups": [{
+                "lookup_table": id, "table": "record",
+                "match": {"keys": {"host": {"key": key}}},
+                "output": {"site": "site"},
+            }]}));
+            let _ = attribute_lookup(pl.clone(), &cfg, node, &cache);
+            let ((_, errored), allocations) = super::super::test_alloc::measure(|| {
+                attribute_lookup(pl.clone(), &cfg, node, &cache)
+            });
+            assert!(!errored);
+            allocations.calls
+        })
+        .collect();
+        // the capture scratch space, once per batch, and nothing per record
+        assert!(counts[1] <= counts[0] + 4, "{counts:?}");
     }
 
     #[test]

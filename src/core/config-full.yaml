@@ -825,6 +825,11 @@ processors:
   #           keys:            # lookup-table key column -> input attribute
   #             tenant: {key: tenant.id}
   #             hostname: {key: host.name}
+  #             # a key may probe with one regex capture group of its value
+  #             # instead of the whole of it (searched before `cast`; group
+  #             # defaults to 1, 0 is the whole match; a non-string value or no
+  #             # match is an invalid input): `ae21.0` -> `ae21`
+  #             #   ifname: {key: {from: interface.name, pattern: '^(.+)\.\d+$'}}
   #         output:            # destination attribute -> lookup-table column
   #           owner.team: team
   #           owner.email: email
