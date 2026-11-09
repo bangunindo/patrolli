@@ -237,7 +237,7 @@ pub(super) static METRICS_EXP_HISTOGRAM: LazyLock<SchemaRef> = LazyLock::new(|| 
 #[cfg(test)]
 mod tests {
     use super::super::ChTable;
-    use crate::config::sink::ClickhouseTables;
+    use patrolli::config::sink::ClickhouseTables;
 
     /// Every column the converter emits must exist in the `CREATE TABLE` the sink runs,
     /// otherwise `ArrowInsert::end()` fails with `NO_SUCH_COLUMN_IN_TABLE`. The DDL renders
@@ -246,8 +246,8 @@ mod tests {
     /// `flatten_nested = 1`.
     #[test]
     fn every_emitted_column_exists_in_the_ddl() {
-        use crate::config::sink::ClickhouseCreateSchema;
-        use crate::sink::clickhouse::ddl::Ddl;
+        use crate::clickhouse::ddl::Ddl;
+        use patrolli::config::sink::ClickhouseCreateSchema;
 
         let tables = ClickhouseTables::default();
         let cs = ClickhouseCreateSchema::default();

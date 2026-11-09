@@ -15,7 +15,7 @@
 //! Insert-side compatibility follows from the column layout, so if you change anything
 //! here, change it to match upstream — don't improve on it.
 
-use crate::config::sink::{ClickhouseCreateSchema, ClickhouseTableEngine, ClickhouseTables};
+use patrolli::config::sink::{ClickhouseCreateSchema, ClickhouseTableEngine, ClickhouseTables};
 use std::time::Duration;
 
 /// Always present, so the exporter skips `CREATE DATABASE` for it — and so do we.

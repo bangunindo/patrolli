@@ -47,7 +47,8 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::{
 };
 use patrolli::common::internal_metrics;
 use patrolli::config::sink::{KafkaCompression, KafkaRequiredAcks};
-use patrolli::{chan, config, payload::Payload, sink::WorkerGroup};
+use patrolli::{chan, config, payload::Payload};
+use patrolli_sink::WorkerGroup;
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::message::DeliveryResult;
 use rdkafka::producer::{BaseRecord, Producer, ProducerContext, ThreadedProducer};

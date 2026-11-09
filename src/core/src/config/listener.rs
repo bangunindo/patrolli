@@ -1286,7 +1286,7 @@ config:
   level: warn
   include:
     - { name: patrolli_cluster, level: debug }
-  exclude: [patrolli::sink::kafka]
+  exclude: [patrolli_sink::kafka]
   buffer_size: 500
 "#,
         );
@@ -1303,7 +1303,7 @@ config:
                 level: Level::Debug
             }]
         );
-        assert_eq!(logs.exclude, ["patrolli::sink::kafka"]);
+        assert_eq!(logs.exclude, ["patrolli_sink::kafka"]);
         assert_eq!(logs.buffer_size, 500);
     }
 

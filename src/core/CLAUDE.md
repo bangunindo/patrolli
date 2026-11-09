@@ -11,9 +11,10 @@ generates its API client from the `openapi.json` produced by `schema_gen`. All c
 
 Two binaries: `patrolli` (`crates/app/src/main.rs`, the daemon) and `schema_gen` (`crates/app/src/schema_gen.rs`, writes
 `openapi.json`). `src/lib.rs` declares every core module (`pub`, so integration tests can drive
-internals); the REST API is the `patrolli-api` crate (`crates/api`) and the cluster machinery is
-`patrolli-cluster` (`crates/cluster`). Both binaries reach them through `use patrolli::...`,
-`use patrolli_api::...` and `use patrolli_cluster::...`. Never add a `mod` for a lib module
+internals); the REST API is the `patrolli-api` crate (`crates/api`), the cluster machinery is
+`patrolli-cluster` (`crates/cluster`) and the sinks are `patrolli-sink` (`crates/sink`). Both binaries
+reach them through `use patrolli::...`, `use patrolli_api::...`, `use patrolli_cluster::...` and
+`use patrolli_sink::...`. Never add a `mod` for a lib module
 to `main.rs`: the binary would compile its own copy of the whole crate, doubling every rebuild and
 running each unit test twice. Unit tests live in the lib (`cargo test --lib`).
 
@@ -356,9 +357,9 @@ against the newest Kafka, Redpanda and ClickHouse instead of the pinned versions
   each further `SIGUSR1` dumps `/tmp/patrolli.heap.<pid>.<seq>.prof`, `SIGUSR2` dumps and disarms; read
   the long comment on `install_mem_profile_signals` in `main.rs` before touching it. Dumps do not
   work on macOS — capture on Linux.
-- `src/sink/clickhouse` is `pub` (unlike its sibling sinks) purely so integration tests can drive
+- `crates/sink/src/clickhouse` is `pub` (unlike its sibling sinks) purely so integration tests can drive
   the DDL and the `Payload` → Arrow conversion directly. Its schema in `record_batch::schema` and its
   `ddl` must stay in sync; `crates/app/tests/clickhouse_insert_test.rs` is what catches drift.
-- `src/sink/kafka` is `pub` for the same reason: `crates/app/tests/kafka_sink_test.rs` runs `KafkaSink` against
+- `crates/sink/src/kafka` is `pub` for the same reason: `crates/app/tests/kafka_sink_test.rs` runs `KafkaSink` against
   Apache Kafka and Redpanda and reads its metrics after `close`. Its `flush` calls `rd_kafka_flush`
   directly because rust-rdkafka's `Producer::flush` never cuts `linger.ms` short (see the comment).

@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use patrolli::config::MonitorConfig;
 use patrolli::config::listener::Listener;
 use patrolli::config::sink::Sink;
-use patrolli::{cache, listener, monitor, sink};
+use patrolli::{cache, listener, monitor};
 use patrolli_cluster as cluster;
 use patrolli_cluster::inter;
 use setup::eventually;
@@ -35,7 +35,7 @@ struct DummyWorkerManager {
 }
 
 #[async_trait]
-impl sink::WorkerManager for DummyWorkerManager {
+impl patrolli_sink::WorkerManager for DummyWorkerManager {
     async fn close_all_sink(&self) {}
 
     async fn add(&self, _conf: Sink) -> Result<()> {

@@ -28,6 +28,7 @@ use crate::config::Format;
 pub use attr::AttrLocation;
 pub use attr_builder::AttrsBuilder;
 pub use batch::PayloadBatch;
+pub use json_ser::CborNativeSer;
 pub use logs::{LogRow, LogRowOwned, LogsBuilder};
 pub use metrics::{
     BucketsOwned, DataPointsOwned, ExemplarOwned, ExponentialHistogramDataPointOwned,

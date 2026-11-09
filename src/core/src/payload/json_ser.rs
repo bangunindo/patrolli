@@ -224,7 +224,7 @@ fn ts_at(col: &Option<Prim<'_, TimestampNanosecondType>>, row: usize) -> u64 {
 
 /// Stream a CBOR `ser` value as native JSON (Nested mode): arrays stay arrays,
 /// maps become objects with keys kept verbatim, bytes become base64.
-pub(crate) struct CborNativeSer<'a>(pub(crate) &'a ciborium::value::Value);
+pub struct CborNativeSer<'a>(pub &'a ciborium::value::Value);
 impl Serialize for CborNativeSer<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use ciborium::value::Value as C;

@@ -13,11 +13,11 @@
 //! nacks what it holds, so the topic delivers it again.
 
 use super::{InternalMetrics, Sink};
-use crate::common::backoff::RetryBackoff;
-use crate::common::internal_metrics::{Sink as Metrics, SinkEndpoint};
-use crate::{chan, config, payload};
 use anyhow::Result;
 use async_trait::async_trait;
+use patrolli::common::backoff::RetryBackoff;
+use patrolli::common::internal_metrics::{Sink as Metrics, SinkEndpoint};
+use patrolli::{chan, config, payload};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::time::{Instant, MissedTickBehavior, interval};
@@ -728,7 +728,7 @@ config:
         drop(rx);
         let started = Instant::now();
         worker
-            .close(Input::Ends, crate::common::shutdown::Deadline::NONE)
+            .close(Input::Ends, patrolli::common::shutdown::Deadline::NONE)
             .await;
         // cancelled at the drain timeout, it requeues right away instead of
         // using up its grace

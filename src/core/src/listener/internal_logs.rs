@@ -499,10 +499,10 @@ mod tests {
             log_export::layer(export.clone()).with_filter(log_export::filter(export.clone())),
         );
         tracing::subscriber::with_default(subscriber, || {
-            let span = info_span!(target: "patrolli::sink", "run", sink_id = 7u64, sink = "span");
+            let span = info_span!(target: "patrolli_sink", "run", sink_id = 7u64, sink = "span");
             let _e = span.enter();
             tracing::warn!(
-                target: "patrolli::sink::kafka",
+                target: "patrolli_sink::kafka",
                 sink = "event",
                 ok = true,
                 signed = -2i64,
@@ -528,7 +528,7 @@ mod tests {
         );
         assert_eq!(
             attr(r, CODE_NAMESPACE),
-            Some(&str_attr("patrolli::sink::kafka"))
+            Some(&str_attr("patrolli_sink::kafka"))
         );
         assert_eq!(attr(r, CODE_FILEPATH), Some(&str_attr(file!())));
         assert!(matches!(attr(r, CODE_LINENO), Some(AnyValue::IntValue(_))));
@@ -560,8 +560,8 @@ mod tests {
         })
         .await;
         let worker = h.spawn().await;
-        tracing::info!(target: "patrolli::sink::file", "included");
-        tracing::debug!(target: "patrolli::sink::file", "below level");
+        tracing::info!(target: "patrolli_sink::file", "included");
+        tracing::debug!(target: "patrolli_sink::file", "below level");
         tracing::debug!(target: "patrolli_cluster::node_lock", "debug include");
         tracing::info!(target: "patrolli::api::audit", "excluded");
         tracing::info!(target: "patrolli::listener::internal_logs", "self");

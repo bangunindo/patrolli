@@ -42,12 +42,12 @@ mod schema;
 mod tests_support;
 mod traces;
 
-use crate::config::sink::ClickhouseTables;
-use crate::payload::Payload;
 use anyhow::{Context, Result};
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
+use patrolli::config::sink::ClickhouseTables;
+use patrolli::payload::Payload;
 
 /// One insertable ClickHouse destination.
 ///
@@ -155,7 +155,7 @@ fn decode_ids(payload: &mut Payload) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::sink::ClickhouseTables;
+    use patrolli::config::sink::ClickhouseTables;
 
     #[test]
     fn table_names_track_the_config() {

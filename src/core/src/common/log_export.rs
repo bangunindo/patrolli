@@ -569,15 +569,15 @@ mod tests {
             targets(
                 ConfigLevel::Info,
                 &include,
-                &["patrolli::sink::kafka".into()],
+                &["patrolli_sink::kafka".into()],
             ),
             16,
         );
         with_export(&export, || {
-            info!(target: "patrolli::sink::kafka::producer", "excluded");
-            info!(target: "patrolli::sink::file", "included");
+            info!(target: "patrolli_sink::kafka::producer", "excluded");
+            info!(target: "patrolli_sink::file", "included");
             info!(target: "other_crate", "not included");
-            debug!(target: "patrolli::sink::file", "below level");
+            debug!(target: "patrolli_sink::file", "below level");
             debug!(target: "patrolli_cluster::node_lock", "debug include");
         });
         let messages: Vec<_> = drain(&rx).iter().map(|e| e.message.clone()).collect();
@@ -651,12 +651,12 @@ mod tests {
         let export = LogExport::new();
         let (_reg, rx) = export.register(patrolli_info(), 16);
         with_export(&export, || {
-            let outer = info_span!(target: "patrolli::sink", "sink", sink_id = 1u64, sink = "outer", host = tracing::field::Empty);
+            let outer = info_span!(target: "patrolli_sink", "sink", sink_id = 1u64, sink = "outer", host = tracing::field::Empty);
             let _o = outer.enter();
             outer.record("host", "h1");
-            let inner = info_span!(target: "patrolli::sink", "batch", sink = "inner");
+            let inner = info_span!(target: "patrolli_sink", "batch", sink = "inner");
             let _i = inner.enter();
-            info!(target: "patrolli::sink", "delivered");
+            info!(target: "patrolli_sink", "delivered");
         });
         let events = drain(&rx);
         let spans = &events[0].span_fields;

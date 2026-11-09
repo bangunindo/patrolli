@@ -12,11 +12,11 @@
 //! attempt, which `message.timeout.ms` (`write_timeout_seconds`) bounds.
 
 use super::export::{Encoded, Export, ExportSink, Exporter};
-use crate::{chan, config, payload};
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
 use parking_lot::Mutex;
+use patrolli::{chan, config, payload};
 use rdkafka::config::{ClientConfig, RDKafkaLogLevel};
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::message::DeliveryResult;

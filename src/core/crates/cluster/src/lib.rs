@@ -21,7 +21,7 @@ use patrolli::config::sensitive::SecretKeys;
 use patrolli::db::schema::{ConfigKeys, Configs};
 use patrolli::payload;
 use patrolli::processor;
-use patrolli::{cache, common, listener, monitor, sink};
+use patrolli::{cache, common, listener, monitor};
 use sea_query::{Expr, ExprTrait, PostgresQueryBuilder, Query};
 use sea_query_postgres::PostgresBinder;
 use serde::Serialize;
@@ -121,7 +121,7 @@ pub struct Cluster {
     cache: cache::Cache,
     listeners: Arc<listener::WorkerGroup>,
     monitors: Arc<monitor::WorkerGroup>,
-    sinks: Arc<sink::WorkerGroup>,
+    sinks: Arc<patrolli_sink::WorkerGroup>,
     inter_comm: Arc<inter::InterComm>,
     node_lock: Arc<NodeState>,
     processors: processor::WorkerGroup,
@@ -289,7 +289,7 @@ impl Cluster {
         );
         let monitors =
             monitor::WorkerGroup::new(processor_send, monitor_config.batch, config_cache.clone());
-        let sinks = sink::WorkerGroup::new(sink_admin.clone());
+        let sinks = patrolli_sink::WorkerGroup::new(sink_admin.clone());
         let sink_reporter = sinks
             .clone()
             .spawn_metrics_reporter(global_conf.internal_metrics_interval)

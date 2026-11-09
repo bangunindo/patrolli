@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 [workspace]
-members = ["crates/api", "crates/app", "crates/cluster", "crates/proto"]
-default-members = [".", "crates/api", "crates/app", "crates/cluster", "crates/proto"]
+members = ["crates/api", "crates/app", "crates/cluster", "crates/proto", "crates/sink"]
+default-members = [".", "crates/api", "crates/app", "crates/cluster", "crates/proto", "crates/sink"]
 
 [workspace.package]
 version = "0.1.0-beta.2"
@@ -29,6 +29,7 @@ base64 = "0.23.1"
 bytes = { version = "1.12.1", features = ["serde"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 chrono-tz = { version = "0.10.4", features = ["serde"] }
+ciborium = "0.2.2"
 clickhouse = { version = "0.15.3", features = [
     "chrono",
     "lz4",
@@ -37,6 +38,7 @@ clickhouse = { version = "0.15.3", features = [
     "uuid",
 ] }
 clickhouse-ext-arrow = "0.2.0"
+const-hex = "1.19.3"
 deadpool-postgres = "0.14.2"
 fjall = { version = "3.1.13", default-features = false, features = ["bytes_1"] }
 flate2 = "1.1.10"
@@ -53,6 +55,7 @@ parking_lot = { version = "0.12.5" }
 patrolli = { path = "." }
 patrolli-cluster = { path = "crates/cluster" }
 patrolli-proto = { path = "crates/proto" }
+patrolli-sink = { path = "crates/sink" }
 petgraph = "0.8.3"
 prost = "0.14.4"
 rand = "0.10.3"
@@ -122,10 +125,8 @@ base64.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
-ciborium = "0.2.2"
-clickhouse.workspace = true
-clickhouse-ext-arrow.workspace = true
-const-hex = "1.19.3"
+ciborium.workspace = true
+const-hex.workspace = true
 cron = "0.17.0"
 csv = "1.4.0"
 datafusion-expr = "55.2.0"
@@ -137,12 +138,6 @@ futures.workspace = true
 futures-util.workspace = true
 hashbrown = "0.17.1"
 http.workspace = true
-hyper-rustls = { version = "0.27.10", features = ["http1", "tls12"] }
-hyper-util = { version = "0.1.21", features = [
-    "client-legacy",
-    "http1",
-    "tokio",
-] }
 lz4_flex.workspace = true
 memchr = "2.8.3"
 mib-rs = "0.10.0"
@@ -173,7 +168,6 @@ prefix-trie = { version = "0.10.2", features = ["ipnet"] }
 prost.workspace = true
 ipnet.workspace = true
 regex = "1.13.1"
-rdkafka.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
 serde_json.workspace = true

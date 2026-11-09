@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+[package]
+name = "patrolli-sink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+patrolli.workspace = true
+anyhow.workspace = true
+arrow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+ciborium.workspace = true
+clickhouse.workspace = true
+clickhouse-ext-arrow.workspace = true
+const-hex.workspace = true
+flume.workspace = true
+futures.workspace = true
+hyper-rustls = { version = "0.27.10", features = ["http1", "tls12"] }
+hyper-util = { version = "0.1.21", features = [
+    "client-legacy",
+    "http1",
+    "tokio",
+] }
+otel-arrow-dfe-pdata.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+rdkafka.workspace = true
+rustc-hash.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+xxhash-rust.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+arc-swap.workspace = true
+async-stream.workspace = true
+axum.workspace = true
+serde_yaml_ng.workspace = true
+tempfile.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
