@@ -235,6 +235,15 @@ impl TryFrom<String> for RegexPattern {
     }
 }
 
+/// Two patterns are equal when they are spelled the same.
+impl PartialEq for RegexPattern {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_str() == other.0.as_str()
+    }
+}
+
+impl Eq for RegexPattern {}
+
 impl From<RegexPattern> for String {
     fn from(pattern: RegexPattern) -> Self {
         pattern.0.as_str().to_owned()
@@ -302,7 +311,7 @@ fn default_true() -> bool {
     true
 }
 
-fn default_group() -> usize {
+pub(super) fn default_group() -> usize {
     1
 }
 
@@ -405,13 +414,20 @@ impl AttributeCollectPivot {
 
 impl RegexExtractFormat {
     fn validate(&self) -> Result<()> {
+        self.pattern.check_group(self.group)
+    }
+}
+
+impl RegexPattern {
+    /// Reject a capture group the pattern does not have, `0` being the whole
+    /// match.
+    pub(super) fn check_group(&self, group: usize) -> Result<()> {
         // `captures_len` counts the implicit whole-match group 0.
-        let groups = self.pattern.0.captures_len();
-        if self.group >= groups {
+        let groups = self.0.captures_len();
+        if group >= groups {
             bail!(
-                "group {} does not exist: pattern {:?} has {} capture group(s)",
-                self.group,
-                self.pattern.0.as_str(),
+                "group {group} does not exist: pattern {:?} has {} capture group(s)",
+                self.0.as_str(),
                 groups - 1
             );
         }

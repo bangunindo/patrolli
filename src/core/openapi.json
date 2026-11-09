@@ -7,7 +7,7 @@
       "name": "AGPL-3.0-only",
       "identifier": "AGPL-3.0-only"
     },
-    "version": "0.1.0-beta.2"
+    "version": "0.1.0-beta.3"
   },
   "paths": {
     "/api/v1/auth/change-password": {
@@ -4736,7 +4736,32 @@
         },
         "additionalProperties": false
       },
-      "AttributeKeys": {
+      "AttributeKeyExtract": {
+        "type": "object",
+        "description": "Read `from` as a plain key would be read, then probe with one capture group\nof `pattern` instead of the whole value: `ae21.0` with `^(.+)\\.\\d+$` probes\n`ae21`.\n\nExtraction runs before `cast`, so `cast: integer` turns an extracted `\"21\"`\ninto `21`; without a cast the result is a string. Only string values are\nsearched. A non-string value, no match, or an unmatched or empty group is an\ninvalid input, like a failed cast: the next fallback key is not tried.",
+        "required": [
+          "from",
+          "pattern"
+        ],
+        "properties": {
+          "from": {
+            "$ref": "#/components/schemas/AttributeKeyList",
+            "description": "The attribute key, or fallback keys, whose value is searched; the first\nkey present on the parent supplies it."
+          },
+          "group": {
+            "type": "integer",
+            "description": "Capture group whose text becomes the probe value, `0` being the whole\nmatch. Must exist in `pattern`. Defaults to `1`.",
+            "default": 1,
+            "minimum": 0
+          },
+          "pattern": {
+            "type": "string",
+            "description": "Regular expression in Rust `regex` syntax, searched anywhere in the\nvalue; the first match is used."
+          }
+        },
+        "additionalProperties": false
+      },
+      "AttributeKeyList": {
         "oneOf": [
           {
             "type": "string"
@@ -4748,11 +4773,29 @@
             }
           }
         ],
-        "description": "One attribute key, or keys tried in order. A single key keeps its plain\nstring form when written back."
+        "description": "One attribute key, or keys tried in order."
+      },
+      "AttributeKeys": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/schemas/AttributeKeyExtract",
+            "description": "Probe with part of the value instead of all of it."
+          }
+        ],
+        "description": "One attribute key, or keys tried in order, optionally narrowed by a regular\nexpression. A single key keeps its plain string form when written back."
       },
       "AttributeLookup": {
         "type": "object",
-        "description": "Enrich attributes with independent lookups, applying their writes together.\n\nEvery rule reads the incoming attributes: another rule's outputs are not\nvisible as inputs. Each parent matches at most one lookup row, whose\nselected columns supply scalar output attributes.\n\nMissing inputs, failed casts, lookup misses and null result cells leave the\ndestination unchanged; invalid inputs are counted separately from misses.\nDefault values are not supported; an input key may list fallback\nattributes ([`AttributeKeys`]).",
+        "description": "Enrich attributes with independent lookups, applying their writes together.\n\nEvery rule reads the incoming attributes: another rule's outputs are not\nvisible as inputs. Each parent matches at most one lookup row, whose\nselected columns supply scalar output attributes.\n\nMissing inputs, failed casts, lookup misses and null result cells leave the\ndestination unchanged; invalid inputs are counted separately from misses.\nDefault values are not supported; an input key may list fallback\nattributes, and may probe with a regex capture of the value instead of the\nwhole of it ([`AttributeKeys`]).",
         "required": [
           "lookups"
         ],
@@ -4813,7 +4856,7 @@
           },
           "key": {
             "$ref": "#/components/schemas/AttributeKeys",
-            "description": "Dotted attribute key, matched byte for byte. A flattened array element\nis addressed by its literal index, such as `interfaces.0.ifIndex`; no\nsegment carries a special meaning. Composite inputs align by parent ID,\nnever by Arrow row position.\n\nA list names fallbacks: the first key present on the parent supplies\nthe input, such as `[bgp.router, source.address]` for a router mapped\nfrom its exporter where a mapping exists. `table` and `cast` apply to\neach. A present value that fails its cast is an invalid input; the next\nkey is not tried."
+            "description": "Dotted attribute key, matched byte for byte. A flattened array element\nis addressed by its literal index, such as `interfaces.0.ifIndex`; no\nsegment carries a special meaning. Composite inputs align by parent ID,\nnever by Arrow row position.\n\nA list names fallbacks: the first key present on the parent supplies\nthe input, such as `[bgp.router, source.address]` for a router mapped\nfrom its exporter where a mapping exists. `table` and `cast` apply to\neach. A present value that fails its cast is an invalid input; the next\nkey is not tried.\n\n`{from: <key or list>, pattern: <regex>, group: <n>}` probes with one\ncapture group of the value instead of the whole of it, such as\n`{from: interface.name, pattern: '^(.+)\\.\\d+$'}` to look up `ae21`\nfrom `ae21.0`. Extraction runs before `cast` ([`AttributeKeyExtract`])."
           },
           "table": {
             "oneOf": [
