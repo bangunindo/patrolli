@@ -9,6 +9,5 @@ pub mod config;
 pub mod db;
 pub mod listener;
 pub mod monitor;
-pub mod processor;
 
 pub mod payload;

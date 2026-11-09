@@ -11,13 +11,13 @@
 //! tree: each processor worker keeps its own per processor instead, rebuilt
 //! when the processor's config is replaced.
 
-use crate::config::processor::{self, transform};
-use crate::payload::Payload;
 use anyhow::{Context, Result};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::transform::sanitize::sanitize_otap_batch;
 use otel_arrow_dfe_query_engine::pipeline::{Pipeline as Engine, PipelineOptions};
+use patrolli::config::processor::{self, transform};
+use patrolli::payload::Payload;
 use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
@@ -110,9 +110,9 @@ impl Transforms {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::processor::Config;
-    use crate::processor::test_payloads::{attr_strs, logs_with_unowned_resource, signals};
+    use crate::test_payloads::{attr_strs, logs_with_unowned_resource, signals};
     use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use patrolli::config::processor::Config;
 
     fn processor(opl: &str) -> Arc<processor::Processor> {
         let mut processor: processor::Processor = serde_json::from_value(serde_json::json!({

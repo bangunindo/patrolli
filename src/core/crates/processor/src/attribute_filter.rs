@@ -2,10 +2,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use crate::config::processor::AttributeFilter;
-use crate::payload::{self, attr};
 use anyhow::Result;
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
+use patrolli::config::processor::AttributeFilter;
+use patrolli::payload::{self, attr};
 
 /// Drop every record that does not match `filter`, keeping the rest. The matching
 /// per-record mask is evaluated by [`attr::attribute_filter_mask`] (shared with the
@@ -28,9 +28,9 @@ pub(super) fn attribute_filter(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::processor::{AttributeFilterExpr, AttributeTable, KeyValueOp, Value};
-    use crate::processor::test_payloads::{attr_strs, rows, tagged_signals};
+    use crate::test_payloads::{attr_strs, rows, tagged_signals};
     use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::{self, *};
+    use patrolli::config::processor::{AttributeFilterExpr, AttributeTable, KeyValueOp, Value};
 
     fn matches(
         table: AttributeTable,

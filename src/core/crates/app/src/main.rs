@@ -12,7 +12,7 @@ use patrolli::common::internal_metrics::INTERNAL_METRICS;
 use patrolli::common::log_export::{self, LOG_EXPORT};
 use patrolli::common::shutdown::{Shutdown, join_step};
 use patrolli::config::global::{Format, Logger};
-use patrolli::{cache, chan, common, config, db, listener, monitor, processor};
+use patrolli::{cache, chan, common, config, db, listener, monitor};
 use patrolli_api as api;
 use std::fs::OpenOptions;
 use std::io;
@@ -652,7 +652,7 @@ async fn local_run(conf_content: String) -> Result<()> {
         local_conf.global.internal_metrics_interval,
         INTERNAL_METRICS.sink_channel.clone(),
     );
-    let mut processors = processor::WorkerGroup::new(
+    let mut processors = patrolli_processor::WorkerGroup::new(
         sink_send,
         processor_admin
             .get_receiver(

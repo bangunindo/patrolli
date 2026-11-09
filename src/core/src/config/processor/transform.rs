@@ -43,7 +43,7 @@ impl Transform {
 
     /// Parse the program into the engine's expression tree and the signals it
     /// selects.
-    pub(crate) fn compile(&self) -> Result<(PipelineExpression, SignalContext)> {
+    pub fn compile(&self) -> Result<(PipelineExpression, SignalContext)> {
         let expr = match self {
             Self::Opl(program) => {
                 OplParser::parse_with_options(program, default_parser_options())

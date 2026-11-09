@@ -12,8 +12,9 @@ generates its API client from the `openapi.json` produced by `schema_gen`. All c
 Two binaries: `patrolli` (`crates/app/src/main.rs`, the daemon) and `schema_gen` (`crates/app/src/schema_gen.rs`, writes
 `openapi.json`). `src/lib.rs` declares every core module (`pub`, so integration tests can drive
 internals); the REST API is the `patrolli-api` crate (`crates/api`), the cluster machinery is
-`patrolli-cluster` (`crates/cluster`) and the sinks are `patrolli-sink` (`crates/sink`). Both binaries
-reach them through `use patrolli::...`, `use patrolli_api::...`, `use patrolli_cluster::...` and
+`patrolli-cluster` (`crates/cluster`), the processors are `patrolli-processor` (`crates/processor`) and
+the sinks are `patrolli-sink` (`crates/sink`). Both binaries reach them through `use patrolli::...`,
+`use patrolli_api::...`, `use patrolli_cluster::...`, `use patrolli_processor::...` and
 `use patrolli_sink::...`. Never add a `mod` for a lib module
 to `main.rs`: the binary would compile its own copy of the whole crate, doubling every rebuild and
 running each unit test twice. Unit tests live in the lib (`cargo test --lib`).

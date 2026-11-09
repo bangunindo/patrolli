@@ -5,11 +5,13 @@
 //! Drives [`Worker`] over a real processor graph: a [`cache::Cache`] of its
 //! own, and one memory topic per sink that the test reads back.
 use super::*;
-use crate::chan::AdminChannel;
-use crate::config::processor::{AttributeFilter, AttributeFilterExpr, AttributeTable, KeyValueOp};
-use crate::config::{self, sink};
-use crate::processor::test_payloads::{logs, signals};
+use crate::test_payloads::{logs, signals};
 use arc_swap::ArcSwap;
+use patrolli::chan::AdminChannel;
+use patrolli::config::processor::{
+    AttributeFilter, AttributeFilterExpr, AttributeTable, KeyValueOp,
+};
+use patrolli::config::{self, sink};
 use patrolli_proto::v1::CaptureRequest;
 use payload::{Payload, ProcessorPayload};
 

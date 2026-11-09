@@ -405,7 +405,7 @@ impl Processor {
         })
     }
 
-    pub(crate) fn remove_capture_if_inactive(&self, processor_id: Uuid, expected: &Arc<Capture>) {
+    pub fn remove_capture_if_inactive(&self, processor_id: Uuid, expected: &Arc<Capture>) {
         let mut captures = self.captures.write();
         let should_remove = captures.get(&processor_id).is_some_and(|capture| {
             Arc::ptr_eq(capture, expected) && capture.sender.receiver_count() == 0

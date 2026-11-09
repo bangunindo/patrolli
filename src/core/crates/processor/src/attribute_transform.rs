@@ -2,12 +2,12 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use crate::config::processor::TableTransform;
-use crate::payload::{self};
 use anyhow::Result;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::transform::apply_attribute_transform;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use patrolli::config::processor::TableTransform;
+use patrolli::payload::{self};
 
 pub(super) fn attribute_transform(
     mut pl: payload::Payload,
@@ -47,9 +47,9 @@ pub(super) fn attribute_transform(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::processor::{AddAttributes, Config, DropAttributes, RenameAttributes};
-    use crate::processor::test_payloads::{attr_strs, tagged_signals};
+    use crate::test_payloads::{attr_strs, tagged_signals};
     use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::*;
+    use patrolli::config::processor::{AddAttributes, Config, DropAttributes, RenameAttributes};
 
     fn transforms(r#type: &str, config: serde_json::Value) -> TableTransform {
         let mut processor: Config =

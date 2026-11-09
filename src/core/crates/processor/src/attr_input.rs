@@ -10,15 +10,15 @@
 //! easy to get subtly wrong: the record-reads-resource indirection and parent
 //! selection.
 
-use crate::cache::lookup_table::cell::CellRef;
-use crate::config::lookup_table::ValueType;
-use crate::config::processor::{AttributeFilter, AttributeTable};
-use crate::payload::attr::AttrLocation;
-use crate::payload::{Payload, Value, attr};
 use anyhow::Result;
 use arrow::array::{Array, BooleanArray, RecordBatch};
 use arrow::compute::kernels;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use patrolli::cache::lookup_table::cell::CellRef;
+use patrolli::config::lookup_table::ValueType;
+use patrolli::config::processor::{AttributeFilter, AttributeTable};
+use patrolli::payload::attr::AttrLocation;
+use patrolli::payload::{Payload, Value, attr};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smol_str::{SmolStr, format_smolstr};
 
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn string_conversions_borrow_the_source_buffer() {
         let text = "a long string that should never be copied just to probe a table".to_string();
-        let value = Value::String(crate::payload::ZString::from_ref(&text));
+        let value = Value::String(patrolli::payload::ZString::from_ref(&text));
         for cast in [None, Some(ValueType::String)] {
             let (converted, counts) =
                 super::super::test_alloc::measure(|| convert(&value, cast).unwrap());

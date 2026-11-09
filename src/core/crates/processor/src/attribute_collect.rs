@@ -5,7 +5,7 @@
 //! The `attribute_collect` processor: complete rows harvested out of incoming
 //! attributes and upserted into mutable lookup tables, or keys harvested the
 //! same way and deleted from them. Config contract on
-//! [`crate::config::processor::attribute_collect`]; this module is its execution.
+//! [`patrolli::config::processor::attribute_collect`]; this module is its execution.
 //!
 //! The mirror of [`super::attribute_lookup`] — same guards, same parents, same
 //! parser — differing only in direction: a parent becomes a table row rather
@@ -25,20 +25,20 @@
 
 use super::attr_input;
 use super::attr_input::Parent;
-use crate::cache;
-use crate::cache::lookup_table::cell::{CellRef, Delete, KeyRef};
-use crate::cache::lookup_table::mutable::Mutable;
-use crate::cache::lookup_table::prefix::parse_prefix;
-use crate::cache::lookup_table::schema::{ColumnIdx, KeyPlan};
-use crate::config::lookup_table as lt;
-use crate::config::processor::AttributeTable;
-use crate::config::processor::attribute_collect::{
+use anyhow::{Result, anyhow, bail};
+use arrow::array::BooleanArray;
+use patrolli::cache;
+use patrolli::cache::lookup_table::cell::{CellRef, Delete, KeyRef};
+use patrolli::cache::lookup_table::mutable::Mutable;
+use patrolli::cache::lookup_table::prefix::parse_prefix;
+use patrolli::cache::lookup_table::schema::{ColumnIdx, KeyPlan};
+use patrolli::config::lookup_table as lt;
+use patrolli::config::processor::AttributeTable;
+use patrolli::config::processor::attribute_collect::{
     AttributeCollect, AttributeCollectAction, AttributeCollectCast, AttributeCollectInput,
     AttributeCollectPivot, AttributeCollectRule, NameFormat,
 };
-use crate::payload::{self, Payload, Value, attr};
-use anyhow::{Result, anyhow, bail};
-use arrow::array::BooleanArray;
+use patrolli::payload::{self, Payload, Value, attr};
 use regex::{CaptureLocations, Regex};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
@@ -674,9 +674,6 @@ fn cast_type(cast: AttributeCollectCast) -> lt::ValueType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::lookup_table::cell::{CellOwned, KeyRef, Lookup};
-    use crate::cache::lookup_table::mutable::Upsert;
-    use crate::common::internal_metrics::LookupTableProcessor;
     use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
     use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value as AnyVal;
@@ -685,6 +682,9 @@ mod tests {
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use patrolli::cache::lookup_table::cell::{CellOwned, KeyRef, Lookup};
+    use patrolli::cache::lookup_table::mutable::Upsert;
+    use patrolli::common::internal_metrics::LookupTableProcessor;
     use serde_json::{Value as Json, json};
     use smol_str::SmolStr;
     use std::net::IpAddr;

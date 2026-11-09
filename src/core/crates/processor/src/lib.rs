@@ -16,22 +16,22 @@ mod transform;
 #[cfg(test)]
 mod worker_tests;
 
-use crate::cache::processor::{Capture, Node, Step};
-use crate::chan::{self, SenderChannel};
-use crate::common::HasLength;
-use crate::common::internal_metrics::{
+use anyhow::Result;
+use flume::{Receiver, RecvTimeoutError};
+use patrolli::cache::processor::{Capture, Node, Step};
+use patrolli::chan::{self, SenderChannel};
+use patrolli::common::HasLength;
+use patrolli::common::internal_metrics::{
     INTERNAL_METRICS, Processor as ProcessorMetrics, ProcessorEdge as ProcessorEdgeMetrics,
     ProcessorNode as ProcessorNodeMetrics,
 };
-use crate::common::shutdown::Deadline;
-use crate::config::Format;
-use crate::config::processor::{
+use patrolli::common::shutdown::Deadline;
+use patrolli::config::Format;
+use patrolli::config::processor::{
     AddAttributes, Config, DropAttributes, Processor, RenameAttributes,
 };
-use crate::payload::PayloadBatch;
-use crate::{cache, common, payload};
-use anyhow::Result;
-use flume::{Receiver, RecvTimeoutError};
+use patrolli::payload::PayloadBatch;
+use patrolli::{cache, common, payload};
 use patrolli_proto::v1::CaptureMessage;
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use std::cell::Cell;
@@ -792,8 +792,8 @@ impl WorkerGroup {
 #[cfg(test)]
 mod retain_tests {
     use super::{EdgeMetrics, InternalMetrics, NodeMetrics};
-    use crate::cache;
-    use crate::config::processor::{Config, Processor as ProcessorConfig};
+    use patrolli::cache;
+    use patrolli::config::processor::{Config, Processor as ProcessorConfig};
     use uuid::Uuid;
 
     fn null_processor(id: Uuid, inputs: Vec<Uuid>) -> ProcessorConfig {

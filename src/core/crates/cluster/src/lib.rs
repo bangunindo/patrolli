@@ -20,7 +20,6 @@ use patrolli::config::global::Global;
 use patrolli::config::sensitive::SecretKeys;
 use patrolli::db::schema::{ConfigKeys, Configs};
 use patrolli::payload;
-use patrolli::processor;
 use patrolli::{cache, common, listener, monitor};
 use sea_query::{Expr, ExprTrait, PostgresQueryBuilder, Query};
 use sea_query_postgres::PostgresBinder;
@@ -124,7 +123,7 @@ pub struct Cluster {
     sinks: Arc<patrolli_sink::WorkerGroup>,
     inter_comm: Arc<inter::InterComm>,
     node_lock: Arc<NodeState>,
-    processors: processor::WorkerGroup,
+    processors: patrolli_processor::WorkerGroup,
     sink_channel: AdminChannel<Uuid, payload::Payload>,
     processor_channel: AdminChannel<&'static str, payload::ProcessorPayload>,
     forwarder_channel: AdminChannel<&'static str, payload::ForwarderPayload>,
@@ -271,7 +270,7 @@ impl Cluster {
         )?;
         let grpc_server =
             Self::spawn_grpc_server(grpc_service, &cluster_config, grpc_token.clone()).await?;
-        let mut processors = processor::WorkerGroup::new(
+        let mut processors = patrolli_processor::WorkerGroup::new(
             sink_send,
             processor_admin
                 .get_receiver(&PROCESSOR_CHANNEL_NAME, global_conf.processor.channel)

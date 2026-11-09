@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Common OTLP fixtures exercise resource broadcasts across all three signals.
-use crate::payload::Payload;
 use arrow::array::{Array, ArrayRef, AsArray, RecordBatch, StructArray, UInt16Array};
 use arrow::buffer::NullBuffer;
 use otel_arrow_dfe_pdata::encode::{
@@ -23,6 +22,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::{
     },
 };
 use otel_arrow_dfe_pdata::schema::consts;
+use patrolli::payload::Payload;
 use std::sync::Arc;
 
 pub(super) fn signals() -> Vec<Payload> {

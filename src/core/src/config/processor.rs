@@ -220,7 +220,7 @@ pub struct DropAttributes {
     pub keys: HashMap<AttributeTable, Vec<String>>,
     #[serde(skip)]
     #[debug(skip)]
-    pub(crate) transforms: Option<TableTransform>,
+    pub transforms: Option<TableTransform>,
 }
 
 impl Clone for DropAttributes {
@@ -277,7 +277,7 @@ pub struct AddAttributes {
     pub overwrite: bool,
     #[serde(skip)]
     #[debug(skip)]
-    pub(crate) transforms: Option<TableTransform>,
+    pub transforms: Option<TableTransform>,
 }
 
 impl Clone for AddAttributes {
@@ -347,7 +347,7 @@ pub struct RenameAttributes {
     pub rename_map: HashMap<AttributeTable, BTreeMap<String, String>>,
     #[serde(skip)]
     #[debug(skip)]
-    pub(crate) transforms: Option<TableTransform>,
+    pub transforms: Option<TableTransform>,
 }
 
 impl Clone for RenameAttributes {

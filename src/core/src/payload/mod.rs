@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-pub(crate) mod attr;
+pub mod attr;
 mod attr_builder;
 mod batch;
 mod builder;

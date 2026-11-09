@@ -4,7 +4,7 @@
 
 //! The `attribute_lookup` processor: batched attribute enrichment from the
 //! configured lookup tables. Config contract on
-//! [`crate::config::processor::attribute_lookup`]; this module is its execution.
+//! [`patrolli::config::processor::attribute_lookup`]; this module is its execution.
 //!
 //! Every rule reads the *incoming* attributes — one rule never sees another's
 //! output — and the writes are applied together at the end, one rebuild per
@@ -22,16 +22,6 @@
 
 use super::attr_input;
 use super::attr_input::Parent;
-use crate::cache;
-use crate::cache::lookup_table::TableRead;
-use crate::cache::lookup_table::cell::{CellRef, KeyOwned, KeyRef, Lookup};
-use crate::cache::lookup_table::schema::{ColumnIdx, KeyPlan};
-use crate::config::lookup_table as lt;
-use crate::config::processor::AttributeTable;
-use crate::config::processor::attribute_lookup::{
-    AttributeLookup, AttributeLookupCast, AttributeLookupInput, AttributeLookupRule,
-};
-use crate::payload::{self, Payload, Value, attr};
 use anyhow::{Result, anyhow, bail};
 use arrow::array::{ArrayRef, AsArray, BooleanArray, RecordBatch, UInt16Array};
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
@@ -39,6 +29,16 @@ use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::transform::upsert_attributes::EMPTY_U16_ATTRS_RECORD_BATCH;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
+use patrolli::cache;
+use patrolli::cache::lookup_table::TableRead;
+use patrolli::cache::lookup_table::cell::{CellRef, KeyOwned, KeyRef, Lookup};
+use patrolli::cache::lookup_table::schema::{ColumnIdx, KeyPlan};
+use patrolli::config::lookup_table as lt;
+use patrolli::config::processor::AttributeTable;
+use patrolli::config::processor::attribute_lookup::{
+    AttributeLookup, AttributeLookupCast, AttributeLookupInput, AttributeLookupRule,
+};
+use patrolli::payload::{self, Payload, Value, attr};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use smol_str::{SmolStr, format_smolstr};
@@ -740,9 +740,6 @@ fn attrs_payload_type(data: &OtapArrowRecords, table: &AttributeTable) -> ArrowP
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::lookup_table::mutable::Upsert;
-    use crate::config::processor::attribute_lookup::AttributeLookup;
-    use crate::payload::attr::{AttrValueCols, StrCol};
     use arrow::datatypes::UInt16Type;
     use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value as AnyVal;
@@ -751,6 +748,9 @@ mod tests {
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use patrolli::cache::lookup_table::mutable::Upsert;
+    use patrolli::config::processor::attribute_lookup::AttributeLookup;
+    use patrolli::payload::attr::{AttrValueCols, StrCol};
     use serde_json::{Value as Json, json};
     use std::time::Duration;
 
@@ -957,7 +957,7 @@ mod tests {
         cfg: &AttributeLookup,
         cache: &cache::Cache,
         table: Uuid,
-    ) -> crate::common::internal_metrics::LookupTableProcessor {
+    ) -> patrolli::common::internal_metrics::LookupTableProcessor {
         let node = Uuid::now_v7();
         let _ = attribute_lookup(pl, cfg, node, cache);
         cache
@@ -1967,7 +1967,7 @@ mod tests {
 
     #[test]
     fn a_literal_vrf_probes_only_the_global_routes_of_the_exporter() {
-        use crate::cache::lookup_table::bgp::{PathSegment, RouteRow, RouteText};
+        use patrolli::cache::lookup_table::bgp::{PathSegment, RouteRow, RouteText};
         let cache = cache::Cache::new();
         let table: lt::LookupTable = serde_json::from_value(json!({
             "id": Uuid::now_v7(),

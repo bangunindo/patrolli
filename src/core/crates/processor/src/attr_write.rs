@@ -4,8 +4,6 @@
 
 //! Sparse attribute upserts: one lookup per existing row, one merge per column.
 
-use crate::cache::lookup_table::cell::CellRef;
-use crate::payload::attr::StrCol;
 use anyhow::{Result, bail};
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, DictionaryArray, Float64Array, Int64Array,
@@ -18,6 +16,8 @@ use arrow::datatypes::{
 };
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::schema::consts;
+use patrolli::cache::lookup_table::cell::CellRef;
+use patrolli::payload::attr::StrCol;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
@@ -398,8 +398,8 @@ fn write_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::payload::{Value, attr::AttrValueCols};
     use arrow::array::BinaryArray;
+    use patrolli::payload::{Value, attr::AttrValueCols};
 
     /// A batch of exactly these writes, with the plain key column a caller that
     /// has no existing batch to match gets.
