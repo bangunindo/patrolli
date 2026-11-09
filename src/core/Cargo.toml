@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 [workspace]
-members = ["crates/api", "crates/app", "crates/cluster", "crates/processor", "crates/proto", "crates/sink"]
-default-members = [".", "crates/api", "crates/app", "crates/cluster", "crates/processor", "crates/proto", "crates/sink"]
+members = ["crates/api", "crates/app", "crates/cluster", "crates/monitor", "crates/processor", "crates/proto", "crates/sink"]
+default-members = [".", "crates/api", "crates/app", "crates/cluster", "crates/monitor", "crates/processor", "crates/proto", "crates/sink"]
 
 [workspace.package]
 version = "0.1.0-beta.2"
@@ -22,6 +22,7 @@ arc-swap = "1.9.3"
 arrow = "59.3.2"
 arrow-ipc = "59.3.2"
 async-recursion = "1.2.0"
+async-snmp = "0.18.1"
 async-stream = "0.3.6"
 async-trait = "0.1.92"
 axum = { version = "0.8.9", features = ["macros", "http2", "ws"] }
@@ -57,10 +58,12 @@ papaya = "0.2.5"
 parking_lot = { version = "0.12.5" }
 patrolli = { path = "." }
 patrolli-cluster = { path = "crates/cluster" }
+patrolli-monitor = { path = "crates/monitor" }
 patrolli-processor = { path = "crates/processor" }
 patrolli-proto = { path = "crates/proto" }
 patrolli-sink = { path = "crates/sink" }
 petgraph = "0.8.3"
+prometheus-scraper = { version = "0.2.0", features = ["client"] }
 prost = "0.14.4"
 rand = "0.10.3"
 rdkafka = { version = "^0.39.0", features = [
@@ -122,8 +125,7 @@ arc-swap.workspace = true
 arrayvec = "0.7.8"
 arrow.workspace = true
 arrow-ipc.workspace = true
-async-recursion.workspace = true
-async-snmp = "0.18.1"
+async-snmp.workspace = true
 async-stream.workspace = true
 async-trait.workspace = true
 aws-lc-rs = "1.19.0"
@@ -141,7 +143,6 @@ fjall.workspace = true
 flate2.workspace = true
 flume.workspace = true
 futures.workspace = true
-futures-util.workspace = true
 hashbrown = "0.17.1"
 http.workspace = true
 lz4_flex.workspace = true
@@ -168,7 +169,7 @@ papaya.workspace = true
 parking_lot.workspace = true
 petgraph.workspace = true
 priority-queue = "2.7.0"
-prometheus-scraper = { version = "0.2.0", features = ["client"] }
+prometheus-scraper.workspace = true
 prometheus-client = "0.25.2"
 prefix-trie = { version = "0.10.2", features = ["ipnet"] }
 prost.workspace = true
@@ -226,8 +227,6 @@ libc = "0.2.191"
 tokio = { workspace = true, features = ["test-util"] }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 tempfile.workspace = true
-# An in-process agent for the snmp monitor tests.
-async-snmp = { version = "0.18.1", features = ["agent"] }
 # An independent BGP encoder for the BMP decoder's differential test.
 netgauze-bgp-pkt = "0.13"
 netgauze-parse-utils = "0.13"

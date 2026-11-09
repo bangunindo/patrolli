@@ -2,23 +2,23 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use crate::cache::item::Stats;
-use crate::common;
-use crate::config::Tls;
-use crate::config::endpoint::{Config as EndpointConfig, Endpoint, HttpAuth};
-use crate::config::host::Host;
-use crate::config::item::{Config as ItemConfig, Item, ItemKind};
-use crate::monitor::MonitorRecord;
-use crate::payload::{
+use crate::MonitorRecord;
+use chrono::{DateTime, Utc};
+use futures_util::StreamExt;
+use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::AggregationTemporality;
+use patrolli::cache::item::Stats;
+use patrolli::common;
+use patrolli::config::Tls;
+use patrolli::config::endpoint::{Config as EndpointConfig, Endpoint, HttpAuth};
+use patrolli::config::host::Host;
+use patrolli::config::item::{Config as ItemConfig, Item, ItemKind};
+use patrolli::payload::{
     BucketsOwned, DataPointsOwned, ExemplarOwned, ExponentialHistogramDataPointOwned,
     ExponentialHistogramOwned, GaugeOwned, HistogramDataPointOwned, HistogramOwned, MetricRowOwned,
     NumberDataPointOwned, NumberValue, Quantile, SumOwned, SummaryDataPointOwned, SummaryOwned,
     ValueOwned, ZStringOwned,
 };
-use chrono::{DateTime, Utc};
-use futures_util::StreamExt;
-use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
-use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::AggregationTemporality;
 use prometheus_scraper::client::{Certificate, Identity};
 use prometheus_scraper::{Client, ClientBuilder, ScrapeError, owned};
 use std::mem::discriminant;

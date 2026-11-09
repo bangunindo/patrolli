@@ -3,15 +3,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::MonitorRecord;
-use crate::cache;
-use crate::cache::item::Stats;
-use crate::common::snmp as snmp_common;
-use crate::config::endpoint::{Config as EndpointConfig, Endpoint};
-use crate::config::host::Host;
-use crate::config::item::{Config as ItemConfig, Item, ItemKind, Snmp, SnmpWalk};
-use crate::config::snmp::{ChainStrategy, OidChain};
-use crate::payload;
-use crate::payload::ZStringOwned;
 use anyhow::Context;
 use async_recursion::async_recursion;
 use async_snmp::{
@@ -19,6 +10,15 @@ use async_snmp::{
     Retry, UdpHandle, UdpTransport, Value, WalkMethod, WalkOptions, WalkStream,
 };
 use chrono::Utc;
+use patrolli::cache;
+use patrolli::cache::item::Stats;
+use patrolli::common::snmp as snmp_common;
+use patrolli::config::endpoint::{Config as EndpointConfig, Endpoint};
+use patrolli::config::host::Host;
+use patrolli::config::item::{Config as ItemConfig, Item, ItemKind, Snmp, SnmpWalk};
+use patrolli::config::snmp::{ChainStrategy, OidChain};
+use patrolli::payload;
+use patrolli::payload::ZStringOwned;
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use smol_str::ToSmolStr;
 use std::collections::{BTreeMap, VecDeque};
@@ -700,7 +700,7 @@ async fn snmp_client(
             // unused by the other protocols.
             client = Client::builder(ip_dest, &ep_conf.security_model)
                 .engine_cache(ENGINE_CACHE.clone())
-                .des_salt_state(crate::common::snmp::des_salt_state());
+                .des_salt_state(patrolli::common::snmp::des_salt_state());
             walk_options.method = walk_method(ep_conf.disable_bulk);
             walk_options.max_repetitions = ep_conf.max_bulk_repetitions;
         }
@@ -752,8 +752,8 @@ pub async fn process_snmp_walk(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::item::FailureKind;
-    use crate::config::snmp::OidPositions;
+    use patrolli::cache::item::FailureKind;
+    use patrolli::config::snmp::OidPositions;
 
     /// ifXTable entry, standing in for a chained oid
     const BASE: &str = "1.3.6.1.2.1.31.1.1.1.18";
@@ -861,7 +861,7 @@ mod tests {
             "test".into(),
             None,
             Uuid::now_v7(),
-            crate::config::item::Schedule::Never,
+            patrolli::config::item::Schedule::Never,
             None,
             Duration::from_secs(1),
             vec![],
@@ -881,7 +881,7 @@ mod tests {
             Uuid::now_v7(),
             "agent".into(),
             host.id,
-            EndpointConfig::SnmpV1(crate::config::endpoint::SnmpV1 {
+            EndpointConfig::SnmpV1(patrolli::config::endpoint::SnmpV1 {
                 address: "127.0.0.1:161".parse().unwrap(),
                 community: "public".into(),
             }),

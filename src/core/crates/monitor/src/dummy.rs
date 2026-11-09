@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use crate::cache::item::Stats;
-use crate::config::host::Host;
-use crate::config::item::{Config as ItemConfig, Item, ItemKind};
+use patrolli::cache::item::Stats;
+use patrolli::config::host::Host;
+use patrolli::config::item::{Config as ItemConfig, Item, ItemKind};
 use std::mem::discriminant;
 use std::sync::Arc;
 

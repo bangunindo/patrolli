@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use patrolli::config::MonitorConfig;
 use patrolli::config::listener::Listener;
 use patrolli::config::sink::Sink;
-use patrolli::{cache, listener, monitor};
+use patrolli::{cache, listener};
 use patrolli_cluster as cluster;
 use patrolli_cluster::inter;
 use setup::eventually;
@@ -63,7 +63,7 @@ impl listener::WorkerManager for DummyWorkerManager {
 }
 
 #[async_trait]
-impl monitor::WorkerManager for DummyWorkerManager {
+impl patrolli_monitor::WorkerManager for DummyWorkerManager {
     async fn apply_config(&self, config: MonitorConfig) -> bool {
         let mut applied = self.monitor_configs.lock();
         if applied.last() == Some(&config) {

@@ -13,7 +13,7 @@ use patrolli::config::processor::{Config, Processor};
 use patrolli::config::sensitive::{SecretError, SecretKeys, SensitiveFields};
 use patrolli::config::sink::{Config as SinkConfig, Sink};
 use patrolli::db::{query, schema};
-use patrolli::{cache, listener, monitor};
+use patrolli::{cache, listener};
 
 use anyhow::{Context, Result};
 use deadpool_postgres::{GenericClient, Pool, Transaction};
@@ -59,7 +59,7 @@ pub struct ConfigWatcher {
     pub initialized: bool,
 
     pub listeners: Arc<dyn listener::WorkerManager>,
-    pub monitors: Arc<dyn monitor::WorkerManager>,
+    pub monitors: Arc<dyn patrolli_monitor::WorkerManager>,
     pub sinks: Arc<dyn patrolli_sink::WorkerManager>,
     pub inter_comm: Arc<dyn super::inter::InterCommManager>,
 }

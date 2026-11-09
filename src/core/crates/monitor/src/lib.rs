@@ -6,19 +6,19 @@ mod dummy;
 mod prometheus;
 mod snmp;
 
-use crate::cache::item::{Failure, FailureKind, Stats};
-use crate::chan::SenderChannel;
-use crate::common;
-use crate::common::internal_metrics::{INTERNAL_METRICS, Monitor as MonitorMetrics};
-use crate::config::endpoint::{Endpoint, EndpointKind};
-use crate::config::host::Host;
-use crate::config::{Batch, MonitorConfig, item};
-use crate::payload::Scope;
-use crate::{cache, config, payload};
 use async_trait::async_trait;
 use flume::{Receiver, Sender, bounded};
 use futures_util::StreamExt;
 use parking_lot::RwLock;
+use patrolli::cache::item::{Failure, FailureKind, Stats};
+use patrolli::chan::SenderChannel;
+use patrolli::common;
+use patrolli::common::internal_metrics::{INTERNAL_METRICS, Monitor as MonitorMetrics};
+use patrolli::config::endpoint::{Endpoint, EndpointKind};
+use patrolli::config::host::Host;
+use patrolli::config::{Batch, MonitorConfig, item};
+use patrolli::payload::Scope;
+use patrolli::{cache, config, payload};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
@@ -1255,8 +1255,8 @@ impl Batcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::host::Host as HostConfig;
-    use crate::config::item::{Config as ItemConfig, Dummy, DummyPayload, Schedule};
+    use patrolli::config::host::Host as HostConfig;
+    use patrolli::config::item::{Config as ItemConfig, Dummy, DummyPayload, Schedule};
     use std::time::Duration as StdDuration;
 
     /// Retryability is derived from the kind, so this is the table that decides
@@ -1407,7 +1407,7 @@ mod tests {
         // SnmpWalk requires an endpoint; the item has none.
         let unit = schedule(
             &h.cache,
-            ItemConfig::SnmpWalk(crate::config::item::SnmpWalk {
+            ItemConfig::SnmpWalk(patrolli::config::item::SnmpWalk {
                 oids: vec![],
                 table_format: false,
                 use_mib: false,
@@ -1480,11 +1480,11 @@ mod tests {
 
     /// A processor topic the test reads from directly.
     async fn processor_channel() -> (
-        crate::chan::AdminChannel<&'static str, payload::ProcessorPayload>,
+        patrolli::chan::AdminChannel<&'static str, payload::ProcessorPayload>,
         SenderChannel<&'static str, payload::ProcessorPayload>,
         Receiver<payload::ProcessorPayload>,
     ) {
-        let (admin, sender) = crate::chan::new(
+        let (admin, sender) = patrolli::chan::new(
             StdDuration::from_secs(3600),
             Arc::new(arc_swap::ArcSwap::from_pointee((
                 std::time::Instant::now(),
@@ -1493,7 +1493,7 @@ mod tests {
         );
         let rx = admin
             .get_receiver(
-                &crate::chan::PROCESSOR_CHANNEL_NAME,
+                &patrolli::chan::PROCESSOR_CHANNEL_NAME,
                 config::Channel::Memory(config::MemoryChannel {
                     non_blocking: false,
                     channel_buffer_size: 16,
@@ -1599,15 +1599,15 @@ mod tests {
 
     mod snmp_get {
         use super::*;
-        use crate::config::endpoint::{Config as EndpointConfig, SnmpV1, SnmpV2C};
-        use crate::config::item::Snmp;
         use async_snmp::agent::Agent;
         use async_snmp::handler::{
             BoxFuture, GetNextResult, GetResult, HandlerResult, MibHandler, RequestContext,
         };
         use async_snmp::{Oid, Value};
+        use patrolli::config::endpoint::{Config as EndpointConfig, SnmpV1, SnmpV2C};
+        use patrolli::config::item::Snmp;
 
-        use crate::monitor::snmp::TEST_RUNTIME as RUNTIME;
+        use crate::snmp::TEST_RUNTIME as RUNTIME;
 
         const PREFIX: &str = "1.3.6.1.4.1.99999";
         const KNOWN: &str = "1.3.6.1.4.1.99999.1.0";
