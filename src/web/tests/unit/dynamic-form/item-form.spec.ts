@@ -748,4 +748,41 @@ describe('Item DynamicZodForm Integration', () => {
 		expect(submittedPayload.payload.schedule).toBe('60s')
 		expect(submittedPayload.payload.timeout_ms).toBe(5000)
 	})
+
+	it('should default timeout_ms to 1000 for Host Item in ADD mode and not show premature validation errors', async () => {
+		const pinia = createPinia()
+		setActivePinia(pinia)
+		const store = useItemsStore()
+		store.itemsFormMode = FormMode.ADD
+
+		const AppInputTextMock = {
+			name: 'AppInputText',
+			props: ['modelValue', 'error', 'required', 'label', 'type'],
+			template:
+				'<div class="app-input-text-mock" :data-error="error || \'\'">{{ label }}: {{ modelValue }}</div>'
+		}
+
+		const wrapper = mount(ItemForm, {
+			props: {
+				isTemplateContext: false
+			},
+			global: {
+				plugins: [pinia],
+				stubs: {
+					...commonStubs,
+					AppInputText: AppInputTextMock
+				}
+			}
+		})
+
+		await flushPromises()
+
+		const vm = wrapper.vm as any
+		expect(vm.form.timeout_ms).toBe(1000)
+
+		const textInputs = wrapper.findAllComponents(AppInputTextMock)
+		const timeoutComp = textInputs.find((c) => c.props('label') === 'Timeout (ms)')
+		expect(timeoutComp?.exists()).toBe(true)
+		expect(timeoutComp?.props('error')).toBeFalsy()
+	})
 })
