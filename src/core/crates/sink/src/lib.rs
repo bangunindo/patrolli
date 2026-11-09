@@ -7,10 +7,12 @@
 pub mod clickhouse;
 pub mod export;
 mod file;
+mod health;
 // Public so `tests/kafka_sink_test.rs` can run `KafkaSink` and read its final metrics after
 // `close`, which `WorkerGroup::close_all_sink` drops along with the sink.
 pub mod kafka;
 mod otap;
+mod otap_client;
 
 use anyhow::{Error, Result};
 use async_trait::async_trait;

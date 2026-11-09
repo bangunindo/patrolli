@@ -6,6 +6,7 @@ pub mod ddl;
 pub mod record_batch;
 
 use super::export::{Encoded, Export, ExportSink, Exporter};
+use crate::health::{Health, SendGuard};
 use anyhow::{Result, anyhow};
 use arrow::array::RecordBatch;
 use async_trait::async_trait;
@@ -16,7 +17,6 @@ use futures::future::join_all;
 use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
-use patrolli::common::health::{Health, SendGuard};
 use patrolli::common::internal_metrics::SinkEndpoint;
 use patrolli::config::sink::{
     ClickhouseCompression, ClickhouseCreateSchema, ClickhouseDistribution,
