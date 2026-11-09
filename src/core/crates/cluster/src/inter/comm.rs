@@ -17,8 +17,8 @@ use patrolli::common::internal_metrics::{
     Forwarder as ForwarderMetrics, ForwarderServer as ForwarderServerMetrics, INTERNAL_METRICS,
     NodeMetrics,
 };
-use patrolli::listener::item_listener_annotate;
 use patrolli::{cache, common, config, payload};
+use patrolli_listener::item_listener_annotate;
 use patrolli_proto::v1::inter_cluster_service_client::InterClusterServiceClient;
 use patrolli_proto::v1::inter_cluster_service_server::{
     InterClusterService, InterClusterServiceServer,

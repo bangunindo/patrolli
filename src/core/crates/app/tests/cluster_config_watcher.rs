@@ -7,10 +7,10 @@ mod setup;
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use parking_lot::Mutex;
+use patrolli::cache;
 use patrolli::config::MonitorConfig;
 use patrolli::config::listener::Listener;
 use patrolli::config::sink::Sink;
-use patrolli::{cache, listener};
 use patrolli_cluster as cluster;
 use patrolli_cluster::inter;
 use setup::eventually;
@@ -50,7 +50,7 @@ impl patrolli_sink::WorkerManager for DummyWorkerManager {
 }
 
 #[async_trait]
-impl listener::WorkerManager for DummyWorkerManager {
+impl patrolli_listener::WorkerManager for DummyWorkerManager {
     async fn close_all_listener(&self) {}
 
     async fn add(&self, _conf: Listener) -> Result<()> {

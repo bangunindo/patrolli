@@ -15,6 +15,7 @@ workspace = true
 patrolli.workspace = true
 patrolli-api = { path = "../api" }
 patrolli-cluster.workspace = true
+patrolli-listener.workspace = true
 patrolli-monitor.workspace = true
 patrolli-processor.workspace = true
 patrolli-sink.workspace = true

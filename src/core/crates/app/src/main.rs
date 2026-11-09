@@ -12,7 +12,7 @@ use patrolli::common::internal_metrics::INTERNAL_METRICS;
 use patrolli::common::log_export::{self, LOG_EXPORT};
 use patrolli::common::shutdown::{Shutdown, join_step};
 use patrolli::config::global::{Format, Logger};
-use patrolli::{cache, chan, common, config, db, listener};
+use patrolli::{cache, chan, common, config, db};
 use patrolli_api as api;
 use std::fs::OpenOptions;
 use std::io;
@@ -662,8 +662,12 @@ async fn local_run(conf_content: String) -> Result<()> {
             .await?,
         config_cache.clone(),
     );
-    let listeners =
-        listener::WorkerGroup::new(processor_send.clone(), None, config_cache.clone(), None);
+    let listeners = patrolli_listener::WorkerGroup::new(
+        processor_send.clone(),
+        None,
+        config_cache.clone(),
+        None,
+    );
     let monitors = patrolli_monitor::WorkerGroup::new(
         processor_send,
         local_conf.monitor.batch,

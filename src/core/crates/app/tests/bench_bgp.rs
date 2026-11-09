@@ -65,9 +65,9 @@
 use patrolli::cache::lookup_table::LookupTable;
 use patrolli::config::listener::OnFull;
 use patrolli::config::lookup_table as cfg;
-use patrolli::listener::bgp::events::EventSink;
-use patrolli::listener::bgp::stats::Stats;
-use patrolli::listener::bgp::{BgpConfig, BmpConfig, Collector, CollectorConfig, SessionEnd};
+use patrolli_listener::bgp::events::EventSink;
+use patrolli_listener::bgp::stats::Stats;
+use patrolli_listener::bgp::{BgpConfig, BmpConfig, Collector, CollectorConfig, SessionEnd};
 use rustc_hash::FxHashMap;
 use std::alloc::{GlobalAlloc, Layout};
 use std::fs::File;

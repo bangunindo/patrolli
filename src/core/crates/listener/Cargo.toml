@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+[package]
+name = "patrolli-listener"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+patrolli.workspace = true
+ahash.workspace = true
+anyhow.workspace = true
+arc-swap.workspace = true
+arrayvec.workspace = true
+arrow.workspace = true
+async-snmp.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+datafusion-expr = "55.2.0"
+etherparse = "0.21.0"
+flume.workspace = true
+futures.workspace = true
+ipnet.workspace = true
+memchr = "2.8.3"
+netflow_parser.workspace = true
+nix = { version = "0.31.3", features = ["net", "uio"] }
+nom.workspace = true
+num-bigint = "0.5.1"
+opentelemetry-proto.workspace = true
+otel-arrow-dfe-pdata.workspace = true
+parking_lot.workspace = true
+rustc-hash.workspace = true
+sflow-parser = { version = "0.7", features = ["serde"] }
+smallvec.workspace = true
+smol_str.workspace = true
+socket2 = { version = "0.6.5", features = ["all"] }
+syslog_loose = "0.23.0"
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls = "0.26.6"
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tonic.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+# TCP_MD5SIG for passive BGP session passwords.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.191"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+prost.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+# An independent BGP encoder for the BMP decoder's differential test.
+netgauze-bgp-pkt = "0.13"
+netgauze-parse-utils = "0.13"

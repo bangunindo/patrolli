@@ -173,10 +173,7 @@ pub fn get_record_attr(pl: &Payload) -> Option<&RecordBatch> {
 
 /// `record.<struct_name>.id` column (e.g. the resource/scope id referenced by a
 /// record), or `None` if the struct or its id column is absent.
-pub(crate) fn struct_id_column<'a>(
-    record: &'a RecordBatch,
-    struct_name: &str,
-) -> Option<&'a ArrayRef> {
+pub fn struct_id_column<'a>(record: &'a RecordBatch, struct_name: &str) -> Option<&'a ArrayRef> {
     record
         .column_by_name(struct_name)?
         .as_struct_opt()?
@@ -187,7 +184,7 @@ pub(crate) fn struct_id_column<'a>(
 /// length `pl.num_rows()` — the root row count, which is what `filter_otap_batch`
 /// requires. Note this is *not* `pl.num_items()`: for metrics that counts data
 /// points, not metric rows.
-pub(crate) fn get_mask_by_id(
+pub fn get_mask_by_id(
     pl: &Payload,
     loc: AttrLocation,
     id_set: &FxHashSet<u16>,
@@ -262,10 +259,7 @@ pub fn location_parent_ids(pl: &Payload, loc: AttrLocation) -> Result<Vec<Option
 /// rendered as their decimal string). Rows with any other type, a missing key, or
 /// a null value are simply absent from the map — their records fall in the `None`
 /// shard. When a `parent_id` carries `key` more than once, the last row wins.
-pub(crate) fn parent_id_values(
-    attr_batch: &RecordBatch,
-    key: &str,
-) -> Result<FxHashMap<u16, SmolStr>> {
+pub fn parent_id_values(attr_batch: &RecordBatch, key: &str) -> Result<FxHashMap<u16, SmolStr>> {
     let mut out = FxHashMap::default();
     if attr_batch.num_rows() == 0 {
         return Ok(out);
@@ -354,7 +348,7 @@ pub(crate) fn parent_id_values(
 
 /// Insert the `parent_id` of every attribute row whose `row_mask` is `true` into
 /// `set`. `parent_id` points back at the owning record/resource/scope id.
-pub(crate) fn collect_parent_ids(
+pub fn collect_parent_ids(
     attr_batch: &RecordBatch,
     row_mask: &BooleanArray,
     set: &mut FxHashSet<u16>,

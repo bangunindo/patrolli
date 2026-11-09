@@ -20,7 +20,7 @@ use patrolli::config::global::Global;
 use patrolli::config::sensitive::SecretKeys;
 use patrolli::db::schema::{ConfigKeys, Configs};
 use patrolli::payload;
-use patrolli::{cache, common, listener};
+use patrolli::{cache, common};
 use sea_query::{Expr, ExprTrait, PostgresQueryBuilder, Query};
 use sea_query_postgres::PostgresBinder;
 use serde::Serialize;
@@ -118,7 +118,7 @@ pub struct Cluster {
     db_pool: Pool,
     secret_keys: Arc<SecretKeys>,
     cache: cache::Cache,
-    listeners: Arc<listener::WorkerGroup>,
+    listeners: Arc<patrolli_listener::WorkerGroup>,
     monitors: Arc<patrolli_monitor::WorkerGroup>,
     sinks: Arc<patrolli_sink::WorkerGroup>,
     inter_comm: Arc<inter::InterComm>,
@@ -277,7 +277,7 @@ impl Cluster {
                 .await?,
             config_cache.clone(),
         );
-        let listeners = listener::WorkerGroup::new(
+        let listeners = patrolli_listener::WorkerGroup::new(
             processor_send.clone(),
             Some(forwarder_send),
             config_cache.clone(),

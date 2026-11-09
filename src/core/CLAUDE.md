@@ -12,9 +12,10 @@ generates its API client from the `openapi.json` produced by `schema_gen`. All c
 Two binaries: `patrolli` (`crates/app/src/main.rs`, the daemon) and `schema_gen` (`crates/app/src/schema_gen.rs`, writes
 `openapi.json`). `src/lib.rs` declares every core module (`pub`, so integration tests can drive
 internals); the REST API is the `patrolli-api` crate (`crates/api`), the cluster machinery is
-`patrolli-cluster` (`crates/cluster`), the monitors are `patrolli-monitor` (`crates/monitor`), the
-processors are `patrolli-processor` (`crates/processor`) and the sinks are `patrolli-sink` (`crates/sink`).
-Both binaries reach them through `use patrolli::...`, `use patrolli_api::...`, `use patrolli_cluster::...`,
+`patrolli-cluster` (`crates/cluster`), the listeners are `patrolli-listener` (`crates/listener`), the
+monitors are `patrolli-monitor` (`crates/monitor`), the processors are `patrolli-processor`
+(`crates/processor`) and the sinks are `patrolli-sink` (`crates/sink`). Both binaries reach them through
+`use patrolli::...`, `use patrolli_api::...`, `use patrolli_cluster::...`, `use patrolli_listener::...`,
 `use patrolli_monitor::...`, `use patrolli_processor::...` and
 `use patrolli_sink::...`. Never add a `mod` for a lib module
 to `main.rs`: the binary would compile its own copy of the whole crate, doubling every rebuild and
@@ -114,7 +115,7 @@ monitor::WorkerGroup   (snmp, snmp_walk, prometheus_scrape,         │
   from `global.disk_channel.data_dir`.
 - The `netflow` listener also handles sFlow on the same socket — `sflow::is_sflow` sniffs each
   datagram, so there is no separate sFlow listener type.
-- **UDP intake** for syslog and netflow is `common::udp_listener`: one `SO_REUSEPORT` socket per
+- **UDP intake** for syslog and netflow is `patrolli_listener::udp_listener`: one `SO_REUSEPORT` socket per
   socket-level worker, each read by a dedicated OS thread (`udp-recv-N`, `recvmmsg`), never a tokio
   task, so parsing load cannot starve the kernel receive queue. `crates/app/tests/bench_udp_listener.rs` is its
   Docker-free throughput/`RcvbufErrors` harness (`cargo test --release --test bench_udp_listener -- --ignored --nocapture`).
@@ -321,7 +322,7 @@ event fields and span fields as attributes.
   the filters' `max_level_hint` (so every filter must report one — see `NoLevelBound` in
   `main.rs`), and registrations move it along in `rebuild_interest`.
 - **Feedback loops.** The listener excludes its own module. Warnings from the path it sends
-  through (`patrolli::listener`, the destination sink) can still come back through it. The export
+  through (`patrolli_listener`, the destination sink) can still come back through it. The export
   layer's own throttle instance and the bounded buffer keep that finite.
 
 ### API layer

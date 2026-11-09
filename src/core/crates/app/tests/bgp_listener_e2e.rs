@@ -40,7 +40,7 @@ const STARTUP_LIMIT: Duration = Duration::from_secs(60);
 const LIMIT: Duration = Duration::from_secs(30);
 
 const LOC_RIB_PCAP: &[u8] =
-    include_bytes!("../../../src/listener/bgp/testdata/akvorado/bmp-locrib.pcap");
+    include_bytes!("../../listener/src/bgp/testdata/akvorado/bmp-locrib.pcap");
 
 /// The concatenated TCP payloads of a classic Ethernet pcap. A copy of the
 /// unit tests' reader, which integration tests cannot reach.

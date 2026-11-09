@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 [workspace]
-members = ["crates/api", "crates/app", "crates/cluster", "crates/monitor", "crates/processor", "crates/proto", "crates/sink"]
-default-members = [".", "crates/api", "crates/app", "crates/cluster", "crates/monitor", "crates/processor", "crates/proto", "crates/sink"]
+members = ["crates/api", "crates/app", "crates/cluster", "crates/listener", "crates/monitor", "crates/processor", "crates/proto", "crates/sink"]
+default-members = [".", "crates/api", "crates/app", "crates/cluster", "crates/listener", "crates/monitor", "crates/processor", "crates/proto", "crates/sink"]
 
 [workspace.package]
 version = "0.1.0-beta.2"
@@ -17,8 +17,10 @@ license = "AGPL-3.0-only"
 double_must_use = "allow"
 
 [workspace.dependencies]
+ahash = "0.8.12"
 anyhow = "1.0.104"
 arc-swap = "1.9.3"
+arrayvec = "0.7.8"
 arrow = "59.3.2"
 arrow-ipc = "59.3.2"
 async-recursion = "1.2.0"
@@ -51,6 +53,15 @@ http = "1.5.0"
 http-serde = "2.1.1"
 ipnet = "2.12.2"
 lz4_flex = "0.14.0"
+netflow_parser = "1.0.6"
+nom = "8.0.0"
+opentelemetry-proto = { version = "0.33.1", default-features = false, features = [
+    "gen-tonic",
+    "with-serde",
+    "logs",
+    "metrics",
+    "trace",
+] }
 otel-arrow-dfe-config = "0.64.0"
 otel-arrow-dfe-pdata = "0.64.0"
 otel-arrow-dfe-query-engine = "0.64.0"
@@ -58,6 +69,7 @@ papaya = "0.2.5"
 parking_lot = { version = "0.12.5" }
 patrolli = { path = "." }
 patrolli-cluster = { path = "crates/cluster" }
+patrolli-listener = { path = "crates/listener" }
 patrolli-monitor = { path = "crates/monitor" }
 patrolli-processor = { path = "crates/processor" }
 patrolli-proto = { path = "crates/proto" }
@@ -119,14 +131,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-ahash = "0.8.12"
+ahash.workspace = true
 anyhow.workspace = true
 arc-swap.workspace = true
-arrayvec = "0.7.8"
+arrayvec.workspace = true
 arrow.workspace = true
 arrow-ipc.workspace = true
 async-snmp.workspace = true
-async-stream.workspace = true
 async-trait.workspace = true
 aws-lc-rs = "1.19.0"
 base64.workspace = true
@@ -137,8 +148,6 @@ ciborium.workspace = true
 const-hex.workspace = true
 cron = "0.17.0"
 csv = "1.4.0"
-datafusion-expr = "55.2.0"
-etherparse = "0.21.0"
 fjall.workspace = true
 flate2.workspace = true
 flume.workspace = true
@@ -146,25 +155,16 @@ futures.workspace = true
 hashbrown = "0.17.1"
 http.workspace = true
 lz4_flex.workspace = true
-memchr = "2.8.3"
 mib-rs = "0.10.0"
-netflow_parser = "1.0.6"
-nix = { version = "0.31.3", features = ["net", "uio"] }
-nom = "8.0.0"
-num-bigint = "0.5.1"
+netflow_parser.workspace = true
+nom.workspace = true
 otel-arrow-dfe-pdata.workspace = true
 otel-arrow-dfe-config.workspace = true
 otel-arrow-dfe-query-engine.workspace = true
 otel-arrow-dfe-query-engine-languages = "0.64.0"
 otel-arrow-contrib-data-engine-expressions = "0.1.1"
 otel-arrow-contrib-data-engine-parser-abstractions = "0.1.1"
-opentelemetry-proto = { version = "0.33.1", default-features = false, features = [
-    "gen-tonic",
-    "with-serde",
-    "logs",
-    "metrics",
-    "trace",
-] }
+opentelemetry-proto.workspace = true
 papaya.workspace = true
 parking_lot.workspace = true
 petgraph.workspace = true
@@ -179,18 +179,14 @@ rustc-hash.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
-sflow-parser = { version = "0.7", features = ["serde"] }
 smallvec.workspace = true
 smol_str.workspace = true
-socket2 = { version = "0.6.5", features = ["all"] }
 string-interner = "0.20.0"
 strum.workspace = true
 strum_macros.workspace = true
 subtle = "2.6.1"
-syslog_loose = "0.23.0"
 thiserror.workspace = true
 tokio.workspace = true
-tokio-rustls = "0.26.6"
 tokio-stream.workspace = true
 tokio-util.workspace = true
 tonic.workspace = true
@@ -219,17 +215,10 @@ time = "0.3.55"
 derive_more = { version = "2.1.1", features = ["debug"] }
 rand.workspace = true
 
-# TCP_MD5SIG for passive BGP session passwords.
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2.191"
-
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 tempfile.workspace = true
-# An independent BGP encoder for the BMP decoder's differential test.
-netgauze-bgp-pkt = "0.13"
-netgauze-parse-utils = "0.13"
 
 [lints]
 workspace = true

@@ -12,7 +12,6 @@ pub mod serde;
 pub mod shutdown;
 pub mod snmp;
 pub mod tls;
-mod udp_listener;
 
 use chrono::{DateTime, FixedOffset, Offset, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -20,7 +19,6 @@ use std::env;
 use std::net::IpAddr;
 use std::sync::LazyLock;
 use tokio::time::{Duration, Instant};
-pub use udp_listener::{ByteCounters, ByteCounts, UdpListenerWorker};
 
 pub static DEFAULT_TZ: LazyLock<Tz> = LazyLock::new(|| {
     env::var("TZ")
