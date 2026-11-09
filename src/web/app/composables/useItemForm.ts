@@ -214,23 +214,6 @@ export function useItemForm(options: {
 
 	let isInitializing = false
 
-	const form = reactive({
-		adm_status: 1,
-		name: '',
-		host_id: '',
-		template_id: '',
-		flags: 0,
-		schedule: '',
-		timeout_ms: undefined as number | string | null | undefined,
-		labels: '{}',
-		endpoint_id: undefined as string | null | undefined,
-		listener_id: undefined as string | null | undefined,
-		config: {
-			type: ItemType.SNMP || 'snmp',
-			config: undefined
-		} as any
-	})
-
 	const category = computed<ItemCategory>(() =>
 		getItemCategory(currentItem.value, itemsFormMode.value, options.isTemplateContext)
 	)
@@ -240,6 +223,27 @@ export function useItemForm(options: {
 			category.value === ItemCategory.HOST_ONLY ||
 			category.value === ItemCategory.TEMPLATE_ROOT
 	)
+
+	const form = reactive({
+		adm_status: 1,
+		name: '',
+		host_id: '',
+		template_id: '',
+		flags: 0,
+		schedule: '',
+		timeout_ms: (isFieldsRequired.value ? 1000 : undefined) as
+			| number
+			| string
+			| null
+			| undefined,
+		labels: '{}',
+		endpoint_id: undefined as string | null | undefined,
+		listener_id: undefined as string | null | undefined,
+		config: {
+			type: ItemType.SNMP || 'snmp',
+			config: undefined
+		} as any
+	})
 
 	const canHaveReceiver = computed(
 		() =>
@@ -689,6 +693,14 @@ export function useItemForm(options: {
 			}
 			if (newMode === FormMode.UPDATE && newItem) {
 				populateForm(newItem)
+			} else if (
+				newMode === FormMode.ADD &&
+				isFieldsRequired.value &&
+				(form.timeout_ms === undefined ||
+					form.timeout_ms === null ||
+					form.timeout_ms === '')
+			) {
+				form.timeout_ms = 1000
 			}
 		},
 		{ immediate: true, deep: true }

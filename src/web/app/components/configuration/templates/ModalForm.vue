@@ -5,14 +5,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useTemplatesStore } from '@/stores/templates.store'
 import { useAuthStore } from '@/stores/auth.store'
 import { FormMode } from '@@/shared/types/app.type'
-import type { ITemplateForm } from '@@/shared/types/template.type'
+import type { ITemplate, ITemplateForm } from '@@/shared/types/template.type'
 import { CreateTemplateRequest } from '@@/shared/generated/patrolliAPI.schemas.type'
 import { templateHints } from '@/app/services/forms/ui-hints/host.hints'
+import templatesApi from '@/app/api/templates.api'
 
 import appHelper from '@/app/helpers/app.helper'
 import AppInputCluster from '@/components/app/input/AppInputCluster.vue'
@@ -48,12 +49,28 @@ const pendingFormData = ref<{
 	unlinkChoices: { unlink_from_template_id: string; keep_items: boolean }[]
 } | null>(null)
 
+const linkTemplateOptions = ref<ITemplate[]>([])
+
+const fetchAvailableTemplates = async () => {
+	try {
+		const clusterURLs = selectedCluster.value ? [selectedCluster.value] : undefined
+		const res = await templatesApi.getTemplates({ limit: 100 }, clusterURLs)
+		if (res?.success && res.data?.templates) {
+			linkTemplateOptions.value = res.data.templates
+		}
+	} catch (e) {
+		console.error('Failed to fetch available templates for linking', e)
+	}
+}
+
 // Compute templates for selection (excluding current template to prevent self-linking)
 const availableTemplates = computed(() => {
+	const source =
+		linkTemplateOptions.value.length > 0 ? linkTemplateOptions.value : templates.value
 	if (templateFormMode.value === FormMode.UPDATE && currentTemplate.value) {
-		return templates.value.filter((t) => t.template_id !== currentTemplate.value?.template_id)
+		return source.filter((t) => t.template_id !== currentTemplate.value?.template_id)
 	}
-	return templates.value
+	return source
 })
 
 const saveOrUpdate = async (
@@ -177,8 +194,10 @@ const closeFormModal = () => {
 	templatesStore.toggleTemplateModalForm(false)
 }
 
-onMounted(() => {
-	if (templateFormMode.value === FormMode.UPDATE) {
+const initFormState = async (isOpen: boolean) => {
+	if (!isOpen) return
+
+	if (templateFormMode.value === FormMode.UPDATE && currentTemplate.value) {
 		form.value.labels =
 			typeof currentTemplate.value?.labels === 'object' &&
 			currentTemplate.value?.labels !== null
@@ -194,6 +213,8 @@ onMounted(() => {
 			formTemplate.template_ids = []
 		}
 	} else {
+		form.value.name = ''
+		form.value.labels = JSON.stringify({})
 		formTemplate.template_ids = []
 	}
 
@@ -204,7 +225,23 @@ onMounted(() => {
 			activeClusterURL
 	)
 
-	templatesStore.fetchTemplates()
+	await fetchAvailableTemplates()
+}
+
+watch(templateModalShow, (open) => {
+	initFormState(open)
+})
+
+watch(selectedCluster, () => {
+	if (templateModalShow.value) {
+		fetchAvailableTemplates()
+	}
+})
+
+onMounted(() => {
+	if (templateModalShow.value) {
+		initFormState(true)
+	}
 })
 </script>
 
