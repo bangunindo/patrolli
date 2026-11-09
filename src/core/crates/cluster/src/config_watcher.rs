@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::{NodeState, NodeStateType};
+use patrolli::cache;
 use patrolli::config::cluster::NodeMetadata;
 use patrolli::config::endpoint::{Config as EndpointConfig, Endpoint};
 use patrolli::config::host::Host;
@@ -13,7 +14,6 @@ use patrolli::config::processor::{Config, Processor};
 use patrolli::config::sensitive::{SecretError, SecretKeys, SensitiveFields};
 use patrolli::config::sink::{Config as SinkConfig, Sink};
 use patrolli::db::{query, schema};
-use patrolli::{cache, listener, monitor};
 
 use anyhow::{Context, Result};
 use deadpool_postgres::{GenericClient, Pool, Transaction};
@@ -58,8 +58,8 @@ pub struct ConfigWatcher {
     pub node_lock: Arc<NodeState>,
     pub initialized: bool,
 
-    pub listeners: Arc<dyn listener::WorkerManager>,
-    pub monitors: Arc<dyn monitor::WorkerManager>,
+    pub listeners: Arc<dyn patrolli_listener::WorkerManager>,
+    pub monitors: Arc<dyn patrolli_monitor::WorkerManager>,
     pub sinks: Arc<dyn patrolli_sink::WorkerManager>,
     pub inter_comm: Arc<dyn super::inter::InterCommManager>,
 }

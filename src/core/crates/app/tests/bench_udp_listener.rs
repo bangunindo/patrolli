@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Throughput harness for `common::UdpListenerWorker`, no Docker needed.
+//! Throughput harness for `patrolli_listener::UdpListenerWorker`, no Docker needed.
 //!
 //! Blasts loopback UDP at the listener with `sendmmsg` from several sender
 //! threads (distinct source ports, so SO_REUSEPORT spreads them) and reports
@@ -29,7 +29,7 @@
 // sendmmsg and /proc/net are Linux-only.
 #![cfg(target_os = "linux")]
 
-use patrolli::common::UdpListenerWorker;
+use patrolli_listener::UdpListenerWorker;
 use std::net::{SocketAddr, UdpSocket};
 use std::os::fd::AsRawFd;
 use std::sync::Arc;

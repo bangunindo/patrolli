@@ -11,7 +11,7 @@ use crate::inter::InterCommManager as _;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use deadpool_postgres::{Pool, Transaction};
-use patrolli::chan::{AdminChannel, new as new_channel};
+use patrolli::chan::{AdminChannel, PROCESSOR_CHANNEL_NAME, new as new_channel};
 use patrolli::common::internal_metrics::INTERNAL_METRICS;
 use patrolli::common::shutdown::{Shutdown, join_step};
 use patrolli::config::MonitorConfig;
@@ -20,8 +20,7 @@ use patrolli::config::global::Global;
 use patrolli::config::sensitive::SecretKeys;
 use patrolli::db::schema::{ConfigKeys, Configs};
 use patrolli::payload;
-use patrolli::processor;
-use patrolli::{cache, common, listener, monitor};
+use patrolli::{cache, common};
 use sea_query::{Expr, ExprTrait, PostgresQueryBuilder, Query};
 use sea_query_postgres::PostgresBinder;
 use serde::Serialize;
@@ -119,12 +118,12 @@ pub struct Cluster {
     db_pool: Pool,
     secret_keys: Arc<SecretKeys>,
     cache: cache::Cache,
-    listeners: Arc<listener::WorkerGroup>,
-    monitors: Arc<monitor::WorkerGroup>,
+    listeners: Arc<patrolli_listener::WorkerGroup>,
+    monitors: Arc<patrolli_monitor::WorkerGroup>,
     sinks: Arc<patrolli_sink::WorkerGroup>,
     inter_comm: Arc<inter::InterComm>,
     node_lock: Arc<NodeState>,
-    processors: processor::WorkerGroup,
+    processors: patrolli_processor::WorkerGroup,
     sink_channel: AdminChannel<Uuid, payload::Payload>,
     processor_channel: AdminChannel<&'static str, payload::ProcessorPayload>,
     forwarder_channel: AdminChannel<&'static str, payload::ForwarderPayload>,
@@ -271,24 +270,24 @@ impl Cluster {
         )?;
         let grpc_server =
             Self::spawn_grpc_server(grpc_service, &cluster_config, grpc_token.clone()).await?;
-        let mut processors = processor::WorkerGroup::new(
+        let mut processors = patrolli_processor::WorkerGroup::new(
             sink_send,
             processor_admin
-                .get_receiver(
-                    &processor::PROCESSOR_CHANNEL_NAME,
-                    global_conf.processor.channel,
-                )
+                .get_receiver(&PROCESSOR_CHANNEL_NAME, global_conf.processor.channel)
                 .await?,
             config_cache.clone(),
         );
-        let listeners = listener::WorkerGroup::new(
+        let listeners = patrolli_listener::WorkerGroup::new(
             processor_send.clone(),
             Some(forwarder_send),
             config_cache.clone(),
             Some(cluster_config.node_id),
         );
-        let monitors =
-            monitor::WorkerGroup::new(processor_send, monitor_config.batch, config_cache.clone());
+        let monitors = patrolli_monitor::WorkerGroup::new(
+            processor_send,
+            monitor_config.batch,
+            config_cache.clone(),
+        );
         let sinks = patrolli_sink::WorkerGroup::new(sink_admin.clone());
         let sink_reporter = sinks
             .clone()

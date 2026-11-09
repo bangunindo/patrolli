@@ -37,11 +37,11 @@
 #![cfg(target_os = "linux")]
 
 use arc_swap::ArcSwap;
+use patrolli::chan::PROCESSOR_CHANNEL_NAME;
 use patrolli::common::internal_metrics;
-use patrolli::listener::WorkerGroup;
 use patrolli::payload::ProcessorPayload;
-use patrolli::processor::PROCESSOR_CHANNEL_NAME;
 use patrolli::{cache, chan, config};
+use patrolli_listener::WorkerGroup;
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::os::fd::AsRawFd;

@@ -13,6 +13,9 @@ workspace = true
 
 [dependencies]
 patrolli.workspace = true
+patrolli-listener.workspace = true
+patrolli-monitor.workspace = true
+patrolli-processor.workspace = true
 patrolli-proto.workspace = true
 patrolli-sink.workspace = true
 anyhow.workspace = true

@@ -19,6 +19,8 @@ pub use channel::{
 pub use codec::Codec;
 pub use consumer::{AckToken, Consumer, Delivery};
 
+pub static PROCESSOR_CHANNEL_NAME: &str = "processor";
+
 type PHashMap<K, V> = papaya::HashMap<K, V, FxBuildHasher>;
 
 struct InternalMetrics<K> {

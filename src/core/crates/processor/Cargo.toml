@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+[package]
+name = "patrolli-processor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+patrolli.workspace = true
+patrolli-proto.workspace = true
+anyhow.workspace = true
+arrow.workspace = true
+flume.workspace = true
+futures.workspace = true
+otel-arrow-dfe-config.workspace = true
+otel-arrow-dfe-pdata.workspace = true
+otel-arrow-dfe-query-engine.workspace = true
+papaya.workspace = true
+regex.workspace = true
+rustc-hash.workspace = true
+smallvec.workspace = true
+smol_str.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+arc-swap.workspace = true
+prost.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true

@@ -285,7 +285,7 @@ fn build_tonic_identity(tls: &config::Tls) -> Result<Option<Identity>> {
 /// Returns plaintext PEM key bytes for tonic's [`Identity::from_pem`], which only
 /// accepts unencrypted PEM. An encrypted PKCS#8 key is decrypted (matching
 /// [`load_private_key`]) and re-emitted as plaintext PKCS#8 PEM.
-pub(crate) fn load_private_key_pem(path: &str, password: Option<&str>) -> Result<Vec<u8>> {
+pub fn load_private_key_pem(path: &str, password: Option<&str>) -> Result<Vec<u8>> {
     let key_pem =
         std::fs::read(path).with_context(|| format!("failed to read key file: {path}"))?;
     match password {

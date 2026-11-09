@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+[package]
+name = "patrolli-monitor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+patrolli.workspace = true
+anyhow.workspace = true
+async-recursion.workspace = true
+async-snmp.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+flume.workspace = true
+futures-util.workspace = true
+otel-arrow-dfe-pdata.workspace = true
+parking_lot.workspace = true
+prometheus-scraper.workspace = true
+rustc-hash.workspace = true
+smallvec.workspace = true
+smol_str.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+arc-swap.workspace = true
+# An in-process agent for the snmp monitor tests.
+async-snmp = { workspace = true, features = ["agent"] }
+bytes.workspace = true
+serde_yaml_ng.workspace = true

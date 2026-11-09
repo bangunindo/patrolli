@@ -167,8 +167,7 @@ impl LogExport {
         rebuild_interest();
     }
 
-    #[cfg(test)]
-    pub(crate) fn subscriptions(&self) -> usize {
+    pub fn subscriptions(&self) -> usize {
         self.state.load().subs.len()
     }
 

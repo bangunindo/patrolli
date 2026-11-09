@@ -129,6 +129,9 @@ exceptions = [
     { allow = ["AGPL-3.0-only"], crate = "patrolli-api" },
     { allow = ["AGPL-3.0-only"], crate = "patrolli-app" },
     { allow = ["AGPL-3.0-only"], crate = "patrolli-cluster" },
+    { allow = ["AGPL-3.0-only"], crate = "patrolli-listener" },
+    { allow = ["AGPL-3.0-only"], crate = "patrolli-monitor" },
+    { allow = ["AGPL-3.0-only"], crate = "patrolli-processor" },
     { allow = ["AGPL-3.0-only"], crate = "patrolli-proto" },
     { allow = ["AGPL-3.0-only"], crate = "patrolli-sink" },
 ]

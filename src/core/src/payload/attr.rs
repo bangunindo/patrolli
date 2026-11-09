@@ -28,14 +28,14 @@ use smol_str::{SmolStr, format_smolstr};
 use super::{Payload, Value, ZString};
 
 /// A plain-or-dictionary Utf8 column read positionally.
-pub(crate) enum StrCol<'a> {
+pub enum StrCol<'a> {
     Plain(&'a StringArray),
     Dict8(TypedDictionaryArray<'a, UInt8Type, StringArray>),
     Dict16(TypedDictionaryArray<'a, UInt16Type, StringArray>),
 }
 
 impl<'a> StrCol<'a> {
-    pub(crate) fn try_new(arr: &'a dyn Array) -> Result<Self> {
+    pub fn try_new(arr: &'a dyn Array) -> Result<Self> {
         match arr.data_type() {
             DataType::Utf8 => Ok(Self::Plain(arr.as_string::<i32>())),
             DataType::Dictionary(k, v) if **k == DataType::UInt8 && **v == DataType::Utf8 => {
@@ -56,7 +56,7 @@ impl<'a> StrCol<'a> {
         }
     }
 
-    pub(crate) fn is_valid(&self, i: usize) -> bool {
+    pub fn is_valid(&self, i: usize) -> bool {
         match self {
             Self::Plain(a) => a.is_valid(i),
             Self::Dict8(a) => a.is_valid(i),
@@ -66,7 +66,7 @@ impl<'a> StrCol<'a> {
 
     /// Borrows from the batch, not from `self`, so a reader may hand the `&str`
     /// back to a caller that has already dropped the column wrapper.
-    pub(crate) fn value(&self, i: usize) -> &'a str {
+    pub fn value(&self, i: usize) -> &'a str {
         match self {
             Self::Plain(a) => a.value(i),
             Self::Dict8(a) => a.value(i),
@@ -81,7 +81,7 @@ impl<'a> StrCol<'a> {
     /// per-row scan for the usual case of looking for keys the batch does not
     /// carry. A plain column has no such summary and always answers yes, which
     /// is the conservative answer: `false` is a promise, `true` is a maybe.
-    pub(crate) fn may_hold_any<'n>(&self, needles: impl IntoIterator<Item = &'n str>) -> bool {
+    pub fn may_hold_any<'n>(&self, needles: impl IntoIterator<Item = &'n str>) -> bool {
         let values = match self {
             Self::Plain(_) => return true,
             Self::Dict8(a) => a.values(),
@@ -154,7 +154,7 @@ pub enum AttrLocation {
 }
 
 /// The root record batch (Logs / UnivariateMetrics / Spans).
-pub(crate) fn get_record(pl: &Payload) -> Option<&RecordBatch> {
+pub fn get_record(pl: &Payload) -> Option<&RecordBatch> {
     match &pl.data {
         OtapArrowRecords::Logs(records) => records.get(ArrowPayloadType::Logs),
         OtapArrowRecords::Metrics(records) => records.get(ArrowPayloadType::UnivariateMetrics),
@@ -163,7 +163,7 @@ pub(crate) fn get_record(pl: &Payload) -> Option<&RecordBatch> {
 }
 
 /// The record-level attribute batch (LogAttrs / MetricAttrs / SpanAttrs).
-pub(crate) fn get_record_attr(pl: &Payload) -> Option<&RecordBatch> {
+pub fn get_record_attr(pl: &Payload) -> Option<&RecordBatch> {
     match &pl.data {
         OtapArrowRecords::Logs(records) => records.get(ArrowPayloadType::LogAttrs),
         OtapArrowRecords::Metrics(records) => records.get(ArrowPayloadType::MetricAttrs),
@@ -173,10 +173,7 @@ pub(crate) fn get_record_attr(pl: &Payload) -> Option<&RecordBatch> {
 
 /// `record.<struct_name>.id` column (e.g. the resource/scope id referenced by a
 /// record), or `None` if the struct or its id column is absent.
-pub(crate) fn struct_id_column<'a>(
-    record: &'a RecordBatch,
-    struct_name: &str,
-) -> Option<&'a ArrayRef> {
+pub fn struct_id_column<'a>(record: &'a RecordBatch, struct_name: &str) -> Option<&'a ArrayRef> {
     record
         .column_by_name(struct_name)?
         .as_struct_opt()?
@@ -187,7 +184,7 @@ pub(crate) fn struct_id_column<'a>(
 /// length `pl.num_rows()` — the root row count, which is what `filter_otap_batch`
 /// requires. Note this is *not* `pl.num_items()`: for metrics that counts data
 /// points, not metric rows.
-pub(crate) fn get_mask_by_id(
+pub fn get_mask_by_id(
     pl: &Payload,
     loc: AttrLocation,
     id_set: &FxHashSet<u16>,
@@ -222,7 +219,7 @@ pub(crate) fn get_mask_by_id(
 ///
 /// Missing/null IDs and null resource/scope structs have no attribute owner.
 /// ID 0 is a real owner and must never stand in for an absent one.
-pub(crate) fn location_parent_ids(pl: &Payload, loc: AttrLocation) -> Result<Vec<Option<u16>>> {
+pub fn location_parent_ids(pl: &Payload, loc: AttrLocation) -> Result<Vec<Option<u16>>> {
     let n = pl.num_rows();
     let Some(record) = get_record(pl) else {
         return Ok(vec![None; n]);
@@ -262,10 +259,7 @@ pub(crate) fn location_parent_ids(pl: &Payload, loc: AttrLocation) -> Result<Vec
 /// rendered as their decimal string). Rows with any other type, a missing key, or
 /// a null value are simply absent from the map — their records fall in the `None`
 /// shard. When a `parent_id` carries `key` more than once, the last row wins.
-pub(crate) fn parent_id_values(
-    attr_batch: &RecordBatch,
-    key: &str,
-) -> Result<FxHashMap<u16, SmolStr>> {
+pub fn parent_id_values(attr_batch: &RecordBatch, key: &str) -> Result<FxHashMap<u16, SmolStr>> {
     let mut out = FxHashMap::default();
     if attr_batch.num_rows() == 0 {
         return Ok(out);
@@ -354,7 +348,7 @@ pub(crate) fn parent_id_values(
 
 /// Insert the `parent_id` of every attribute row whose `row_mask` is `true` into
 /// `set`. `parent_id` points back at the owning record/resource/scope id.
-pub(crate) fn collect_parent_ids(
+pub fn collect_parent_ids(
     attr_batch: &RecordBatch,
     row_mask: &BooleanArray,
     set: &mut FxHashSet<u16>,
@@ -381,7 +375,7 @@ pub(crate) fn collect_parent_ids(
 // whose row satisfies `key <op> value`, then mapped to a per-record mask via
 // `get_mask_by_id`; `And`/`Or` combine those record-level masks. Shared by the
 // listener's `AttributeMatch` item-matching path (`src/listener/annotate.rs`) and
-// the `attribute_filter` processor (`src/processor/attribute_filter.rs`).
+// the `attribute_filter` processor (`crates/processor/src/attribute_filter.rs`).
 //
 // The returned per-record mask is always non-null (the `Match` arm ends in
 // `get_mask_by_id`, which builds from `vec![false; len]`, and `And`/`Or` of
@@ -391,7 +385,7 @@ pub(crate) fn collect_parent_ids(
 
 /// Per-record mask (`true` where the record matches `filter`), length
 /// `pl.num_rows()`.
-pub(crate) fn attribute_filter_mask(
+pub fn attribute_filter_mask(
     pl: &Payload,
     filter: &config::processor::AttributeFilter,
 ) -> Result<BooleanArray> {
@@ -562,7 +556,7 @@ fn regex_mask(col: &ArrayRef, pattern: &str) -> Result<BooleanArray> {
 /// `str` and `int` may arrive plain or dictionary-encoded (hence [`StrCol`] /
 /// [`IntCol`]); `double` and `bool` never are, per the OTAP `attributes_16`
 /// schema, so they downcast directly.
-pub(crate) struct AttrValueCols<'a> {
+pub struct AttrValueCols<'a> {
     type_col: Option<&'a UInt8Array>,
     str_col: Option<StrCol<'a>>,
     int_col: Option<IntCol<'a>>,
@@ -571,7 +565,7 @@ pub(crate) struct AttrValueCols<'a> {
 }
 
 impl<'a> AttrValueCols<'a> {
-    pub(crate) fn try_new(attr_batch: &'a RecordBatch) -> Result<Self> {
+    pub fn try_new(attr_batch: &'a RecordBatch) -> Result<Self> {
         Ok(Self {
             type_col: attr_batch
                 .column_by_name(consts::ATTRIBUTE_TYPE)
@@ -596,7 +590,7 @@ impl<'a> AttrValueCols<'a> {
     /// Row `i`'s value, or `None` when it is null, its column is absent, or
     /// its type is one this reader does not surface — `Empty`, `Bytes` and the
     /// CBOR `Map`/`Slice` forms are neither probe keys nor scalar values.
-    pub(crate) fn value_at(&self, i: usize) -> Option<Value<'a>> {
+    pub fn value_at(&self, i: usize) -> Option<Value<'a>> {
         let str_at = || {
             self.str_col
                 .as_ref()
@@ -678,7 +672,7 @@ fn read<'a>(values: &AttrValueCols<'a>, i: usize, keep_nulls: bool) -> Option<Va
 /// `key`; the last row wins on a repeat, matching [`parent_id_values`]. With
 /// `keep_nulls`, a present-but-null attribute maps to [`Value::Null`] — see
 /// [`AttrValueCols::value_at_or_null`].
-pub(crate) fn parent_id_typed_values<'a>(
+pub fn parent_id_typed_values<'a>(
     attr_batch: &'a RecordBatch,
     key: &str,
     keep_nulls: bool,
@@ -717,7 +711,7 @@ pub(crate) fn parent_id_typed_values<'a>(
 /// field of every element. Gaps survive because the index is read from the
 /// key, not assigned by position. `keep_nulls` behaves as in
 /// [`parent_id_typed_values`].
-pub(crate) fn parent_id_element_values<'a>(
+pub fn parent_id_element_values<'a>(
     attr_batch: &'a RecordBatch,
     prefix: &str,
     suffix: &str,

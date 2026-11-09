@@ -6,7 +6,7 @@
 //!
 //! There are two renderers of [`super::INTERNAL_METRICS`]: the Prometheus text
 //! exporter in [`crate::common::prometheus`], and the OTAP metrics signal in
-//! [`crate::listener`]'s `internal_metrics`. Both need the same catalogue — name,
+//! `patrolli_listener`'s `internal_metrics`. Both need the same catalogue — name,
 //! help text, unit, counter-vs-gauge, and label set — for every one of the ~115
 //! families, so the catalogue lives here exactly once and each renderer only
 //! decides how to spell it.
@@ -1332,7 +1332,7 @@ fn walk_processor_edges<V: Visitor>(v: &mut V, edges: &[ProcessorEdge]) -> Resul
 /// `SkipCounts::summary`, so a log line and a metric name the same reason.
 type SkipReason = (&'static str, fn(&SkipCounts) -> u64);
 
-pub(crate) const SKIP_REASONS: [SkipReason; 5] = [
+pub const SKIP_REASONS: [SkipReason; 5] = [
     ("field_count", |c| c.arity),
     ("cast", |c| c.bad_cell),
     ("prefix", |c| c.bad_prefix),
