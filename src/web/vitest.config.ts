@@ -21,12 +21,8 @@ export default defineConfig({
 	},
 
 	test: {
-		include: [
-			// 'src/tests/unit/**/*.(test|spec).ts', // Unit tests
-			// 'src/tests/integration/**/*.(test|spec).ts', // Integration tests
-			'tests/**/*.{test,spec}.ts',
-			'src/tests/**/*.{test,spec}.ts'
-		],
+		include: ['tests/**/*.{test,spec}.ts', 'src/tests/**/*.{test,spec}.ts'],
+		exclude: ['**/node_modules/**', '**/tests/e2e/**'],
 		globals: true,
 		environment: 'happy-dom',
 		testTimeout: 10000
