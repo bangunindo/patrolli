@@ -57,7 +57,7 @@ SPDX-License-Identifier = "LicenseRef-ISOC-RFC"
 # Test fixtures: BMP captures from akvorado's BMP provider tests (Juniper vMX,
 # and GoBGP for the Loc-RIB one).
 [[annotations]]
-path = "src/core/src/listener/bgp/testdata/akvorado/**"
+path = "src/core/crates/listener/src/bgp/testdata/akvorado/**"
 precedence = "override"
 SPDX-FileCopyrightText = "2022 Free Mobile"
 SPDX-License-Identifier = "AGPL-3.0-only"
