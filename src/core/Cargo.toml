@@ -7,7 +7,7 @@ members = ["crates/api", "crates/app", "crates/cluster", "crates/listener", "cra
 default-members = [".", "crates/api", "crates/app", "crates/cluster", "crates/listener", "crates/monitor", "crates/processor", "crates/proto", "crates/sink"]
 
 [workspace.package]
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 edition = "2024"
 license = "AGPL-3.0-only"
 
