@@ -1,38 +1,38 @@
 # Web E2E Stack & GitHub Actions CI Guide
 
-Panduan ini ditujukan bagi DevOps dan engineer untuk menjalankan serta mengintegrasikan E2E testing frontend (`src/web`) ke GitHub Actions CI maupun di device baru.
+This guide is intended for DevOps and engineers to run and integrate frontend E2E testing (`src/web`) into GitHub Actions CI as well as on a new local machine.
 
 ---
 
-## 1. Arsitektur Stack E2E
+## 1. E2E Stack Architecture
 
-Suite E2E Web (`npm run test:e2e`) menguji aplikasi Nuxt SSR + Nitro BFF secara end-to-end terhadap layanan backend nyata:
+The Web E2E suite (`npm run test:e2e`) tests the Nuxt SSR + Nitro BFF application end-to-end against real backend services:
 
-| Service      | Image / Runtime                                             | Port Host         | Peran                                                                           |
-| ------------ | ----------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------- |
-| `postgres`   | `postgres:18-alpine`                                        | `127.0.0.1:5432`  | Database untuk `patrolli` (`patrolli`, `patrolli1`) dan `keycloak` (`keycloak`) |
-| `keycloak`   | `quay.io/keycloak/keycloak:26.7.1`                          | `127.0.0.1:8443`  | Identity Provider OIDC SSO (`https://kc.localtest.me:8443/realms/patrolli`)     |
-| `patrolli`   | `${PATROLLI_CORE_IMAGE}`                                    | `127.0.0.1:8080`  | Cluster utama Patrolli Core (local auth + OIDC)                                 |
-| `patrolli_1` | `${PATROLLI_CORE_IMAGE}`                                    | `127.0.0.1:30001` | Cluster kedua untuk pengujian multi-cluster switching                           |
-| `frontend`   | Playwright `webServer` (`npm run build && npm run preview`) | `3000`            | Server Nuxt/Nitro BFF (`https://localhost:3000`)                                |
+| Service      | Image / Runtime                                             | Host Port         | Role                                                                          |
+| ------------ | ----------------------------------------------------------- | ----------------- | ----------------------------------------------------------------------------- |
+| `postgres`   | `postgres:18-alpine`                                        | `127.0.0.1:5432`  | Database for `patrolli` (`patrolli`, `patrolli1`) and `keycloak` (`keycloak`) |
+| `keycloak`   | `quay.io/keycloak/keycloak:26.7.1`                          | `127.0.0.1:8443`  | OIDC SSO Identity Provider (`https://kc.localtest.me:8443/realms/patrolli`)   |
+| `patrolli`   | `${PATROLLI_CORE_IMAGE}`                                    | `127.0.0.1:8080`  | Primary Patrolli Core cluster (local auth + OIDC)                             |
+| `patrolli_1` | `${PATROLLI_CORE_IMAGE}`                                    | `127.0.0.1:30001` | Secondary cluster for multi-cluster switching tests                           |
+| `frontend`   | Playwright `webServer` (`npm run build && npm run preview`) | `3000`            | Nuxt/Nitro BFF server (`https://localhost:3000`)                              |
 
 ---
 
-## 2. Struktur Direktori `src/web/dev/`
+## 2. `src/web/dev/` Directory Structure
 
 ```text
 src/web/dev/
 ├── .dockerignore
-├── docker-compose.yml               # Definisi stack backend E2E (memakai named volume postgres-data)
-├── init.sql                         # Inisialisasi DB keycloak & patrolli1 saat Postgres pertama kali dibuat
-├── setup.sh                         # Script utama: generate cert, secret ephemeral, dan render template
-├── ssl.sh                           # Generator Root CA + server certs (frontend & keycloak)
+├── docker-compose.yml               # E2E backend stack definition (uses named volume postgres-data)
+├── init.sql                         # Initializes keycloak & patrolli1 DBs on first Postgres creation
+├── setup.sh                         # Main script: generates certs, ephemeral secrets, and renders templates
+├── ssl.sh                           # Root CA + server certs generator (frontend & keycloak)
 ├── certs/
-│   ├── root.cnf                     # Konfigurasi Root CA
+│   ├── root.cnf                     # Root CA configuration
 │   ├── frontend.cnf                 # SAN: localhost, 127.0.0.1
 │   ├── keycloak.cnf                 # SAN: kc.localtest.me, localhost, 127.0.0.1
-│   ├── csr/                         # (Gitignored) CSR sementara
-│   └── ssl/                         # (Gitignored) *.crt, *.key, *.srl hasil generate
+│   ├── csr/                         # (Gitignored) Temporary CSRs
+│   └── ssl/                         # (Gitignored) Generated *.crt, *.key, *.srl files
 ├── config/
 │   ├── backend/
 │   │   ├── patrolli-0-config.template.yaml
@@ -41,85 +41,85 @@ src/web/dev/
 │   │   └── config-fe.template.yaml
 │   └── keycloak/
 │       └── realm-config.template.json
-├── .env                             # (Gitignored) Secret ephemeral untuk docker compose
-└── .generated/                      # (Gitignored) Hasil render config runtime
+├── .env                             # (Gitignored) Ephemeral secrets for docker compose
+└── .generated/                      # (Gitignored) Rendered runtime configs
 ```
 
 ---
 
-## 3. Mekanisme Setup & Keamanan Secret
+## 3. Setup Mechanism & Secret Security
 
-Tidak ada private key TLS maupun secret statis yang disimpan di Git:
+No TLS private keys or static secrets are stored in Git:
 
 1. **`./dev/ssl.sh`**:
-    - Membuat CA, `frontend.crt/.key`, dan `keycloak.crt/.key` menggunakan `openssl`.
-    - Menyetel `chmod 600` pada `ssl/ca.key` & `ssl/frontend.key`, serta `chmod 644` pada `ssl/*.crt` & `ssl/keycloak.key` agar container non-root (seperti Keycloak `uid 1000` di Linux runner) dapat membaca key yang di-mount `:ro`.
+    - Generates the CA, `frontend.crt/.key`, and `keycloak.crt/.key` using `openssl`.
+    - Sets `chmod 600` on `ssl/ca.key` & `ssl/frontend.key`, and `chmod 644` on `ssl/*.crt` & `ssl/keycloak.key` so non-root containers (such as Keycloak `uid 1000` on Linux runners) can read keys mounted `:ro`.
 2. **`./dev/setup.sh`**:
-    - Menjalankan `ssl.sh`.
-    - Menghasilkan secret acak ephemeral (`E2E_JWT_SECRET`, `E2E_OIDC_SECRET`, `E2E_SECRET_KEY`, `E2E_SECRET_KEY_1`, `E2E_POSTGRES_PASSWORD`, `E2E_KC_BOOTSTRAP_PASSWORD`, `E2E_ADMIN_PASSWORD`) dan menyimpannya ke `dev/.env` (`chmod 600`). Semua nilai dapat di-override lewat environment variable sebelum menjalankan script.
-    - Merender seluruh file `*.template.*` ke `dev/.generated/` (dengan `chmod 600` pada `config-fe.yaml`) dan menyalin `config-fe.yaml` ke `src/web/config-fe.yaml` (jika belum ada, atau selalu menimpa bila diberi flag `--force`).
-    - Jika `GITHUB_ENV` aktif (di GitHub Actions), mem-mask password (`::add-mask::`) dan mengekspor `E2E_USERNAME=admin` serta `E2E_PASSWORD=${E2E_ADMIN_PASSWORD}`.
+    - Runs `ssl.sh`.
+    - Generates random ephemeral secrets (`E2E_JWT_SECRET`, `E2E_OIDC_SECRET`, `E2E_SECRET_KEY`, `E2E_SECRET_KEY_1`, `E2E_POSTGRES_PASSWORD`, `E2E_KC_BOOTSTRAP_PASSWORD`, `E2E_ADMIN_PASSWORD`) and writes them to `dev/.env` (`chmod 600`). All values can be overridden via environment variables before running the script.
+    - Renders all `*.template.*` files into `dev/.generated/` (with `chmod 600` on `config-fe.yaml`) and copies `config-fe.yaml` to `src/web/config-fe.yaml` (if it does not exist yet, or always overwrites when passed the `--force` flag).
+    - If `GITHUB_ENV` is active (in GitHub Actions), masks passwords (`::add-mask::`) and exports `E2E_USERNAME=admin` and `E2E_PASSWORD=${E2E_ADMIN_PASSWORD}`.
 3. **`playwright.config.ts`**:
-    - Secara lokal, jika `E2E_PASSWORD` belum diset di shell, `playwright.config.ts` hanya membaca `E2E_ADMIN_PASSWORD` dari `dev/.env` (memakai `node:util` `parseEnv`) tanpa memuat secret backend lainnya ke environment Playwright.
-    - File frontend config dapat diarahkan lewat env `FRONTEND_CONFIG` (atau `CONFIG_PATH` / `CONFIG_FILE`), default fallback ke `src/web/config-fe.yaml`.
+    - Locally, if `E2E_PASSWORD` is not already set in the shell, `playwright.config.ts` reads only `E2E_ADMIN_PASSWORD` from `dev/.env` (using `node:util` `parseEnv`) without loading other backend secrets into the Playwright environment.
+    - The frontend config file can be pointed via the `FRONTEND_CONFIG` env var (or `CONFIG_PATH` / `CONFIG_FILE`), falling back to `src/web/config-fe.yaml` by default.
 
 ---
 
-## 4. Menjalankan E2E di Device Baru (Lokal)
+## 4. Running E2E on a New Machine (Local)
 
-Prasyarat: **Docker & Docker Compose**, **Node.js 24**, **OpenSSL**.
+Prerequisites: **Docker & Docker Compose**, **Node.js 24**, **OpenSSL**.
 
 ```bash
 cd src/web
 
-# 1. Install dependencies & browser Playwright
+# 1. Install dependencies & Playwright browsers
 npm ci
 npx playwright install chromium --with-deps
 
-# 2. Generate sertifikat TLS & config ephemeral
+# 2. Generate TLS certificates & ephemeral configs
 ./dev/setup.sh --force
 
-# 3. Nyalakan stack backend & tunggu healthy
+# 3. Start the backend stack & wait until healthy
 docker compose -f dev/docker-compose.yml up -d --wait
 
-# 4. Jalankan E2E tests
+# 4. Run E2E tests
 npm run test:e2e
 
-# 5. Cleanup setelah selesai (opsional: -v menghapus volume Postgres)
+# 5. Clean up when finished (optional: -v removes the Postgres volume)
 docker compose -f dev/docker-compose.yml down -v
 ```
 
 > [!NOTE]
-> Jika offline atau DNS publik tidak me-resolve `*.localtest.me`, tambahkan `127.0.0.1 kc.localtest.me` ke `/etc/hosts`.
+> If you are offline or public DNS does not resolve `*.localtest.me`, add `127.0.0.1 kc.localtest.me` to `/etc/hosts`.
 
 ---
 
-## 5. Panduan Integrasi GitHub Actions CI
+## 5. GitHub Actions CI Integration Guide
 
-### A. Strategi Image `patrolli-core` (Tanpa Compile Rust di PR Web)
+### A. `patrolli-core` Image Strategy (Without Compiling Rust on Web PRs)
 
-Di `dev/docker-compose.yml`, image backend menggunakan:
+In `dev/docker-compose.yml`, the backend image uses:
 
 ```yaml
 image: ${PATROLLI_CORE_IMAGE:-ghcr.io/bangunindo/patrolli-core:0.1.0-beta.3}
 pull_policy: ${PATROLLI_CORE_PULL_POLICY:-always}
 ```
 
-Rekomendasi alur untuk CI:
+Recommended CI workflow:
 
-1. **Publish tag `:edge` saat `push` ke `main`** (jika `src/core/**` berubah):
-    - Build image dari `src/core/Dockerfile` (`linux/amd64`) dan push ke `ghcr.io/bangunindo/patrolli-core:edge`.
-    - Wajib pertahankan kepatuhan **AGPL-3.0** seperti di `.github/workflows/build.yaml`:
-        - Label `org.opencontainers.image.licenses=AGPL-3.0-only` & `org.opencontainers.image.source=https://github.com/bangunindo/patrolli`.
-        - `provenance: mode=max`, `sbom: true`, dan `actions/attest-build-provenance`.
-        - Package GHCR harus **public read** agar PR dari fork eksternal tetap bisa `docker pull` tanpa secret.
-2. **Saat `pull_request` berjalan**:
-    - **Jika hanya `src/web/` berubah**: langsung pull `ghcr.io/bangunindo/patrolli-core:edge` (tanpa build Rust). `pull_policy: always` memastikan image tag terbaru selalu ditarik ulang.
-    - **Jika `src/core/` ikut berubah**: build image lokal dari `src/core` (`docker build -t patrolli-core:pr-local src/core`) lalu set `PATROLLI_CORE_IMAGE=patrolli-core:pr-local` dan `PATROLLI_CORE_PULL_POLICY=never`.
+1. **Publish the `:edge` tag on `push` to `main`** (when `src/core/**` changes):
+    - Build the image from `src/core/Dockerfile` (`linux/amd64`) and push it to `ghcr.io/bangunindo/patrolli-core:edge`.
+    - Must maintain **AGPL-3.0** compliance as in `.github/workflows/build.yaml`:
+        - Labels `org.opencontainers.image.licenses=AGPL-3.0-only` & `org.opencontainers.image.source=https://github.com/bangunindo/patrolli`.
+        - `provenance: mode=max`, `sbom: true`, and `actions/attest-build-provenance`.
+        - The GHCR package must have **public read** access so PRs from external forks can still `docker pull` without secrets.
+2. **When a `pull_request` runs**:
+    - **If only `src/web/` changed**: pull `ghcr.io/bangunindo/patrolli-core:edge` directly (no Rust build). `pull_policy: always` ensures the latest image tag is always pulled.
+    - **If `src/core/` also changed**: build a local image from `src/core` (`docker build -t patrolli-core:pr-local src/core`), then set `PATROLLI_CORE_IMAGE=patrolli-core:pr-local` and `PATROLLI_CORE_PULL_POLICY=never`.
 
-### B. Referensi Job `web-e2e` untuk `.github/workflows/test.yaml`
+### B. `web-e2e` Job Reference for `.github/workflows/test.yaml`
 
-Sesuai standar keamanan repo ini, **pin semua GitHub Actions ke commit SHA** dan set `persist-credentials: false`:
+Per this repository's security standards, **pin all GitHub Actions to a commit SHA** and set `persist-credentials: false`:
 
 ```yaml
 web-e2e:
@@ -204,24 +204,24 @@ web-e2e:
 
 ---
 
-## 6. Kepatuhan Lisensi, Lint, & Isolasi Docker Build
+## 6. License Compliance, Linting, & Docker Build Isolation
 
 - **AGPL-3.0 / REUSE (`fsfe/reuse-action`)**:
-    - Setiap file baru di `src/web/dev/` wajib memiliki header `SPDX-FileCopyrightText` & `SPDX-License-Identifier` (`AGPL-3.0-only`), atau tercakup di `/REUSE.toml` (seperti `**/*.json`, `**/*.md`, `src/web/dev/certs/*.cnf`, dan `src/web/dev/.dockerignore`).
+    - Every new file in `src/web/dev/` must have `SPDX-FileCopyrightText` & `SPDX-License-Identifier` (`AGPL-3.0-only`) headers, or be covered in `/REUSE.toml` (such as `**/*.json`, `**/*.md`, `src/web/dev/certs/*.cnf`, and `src/web/dev/.dockerignore`).
 - **Prettier & ESLint (`npm run lint`)**:
-    - `src/web/.prettierignore` mengabaikan `dev` agar file konfigurasi Compose/YAML/JSON tidak memicu error formatting saat `prettier --check .`.
+    - `src/web/.prettierignore` ignores `dev` so Compose/YAML/JSON config files do not trigger formatting errors when running `prettier --check .`.
 - **Docker Build Hygiene (`src/web/.dockerignore`)**:
-    - `.env`, `.env.*`, `config-fe.yaml`, `config-fe.yml`, dan `dev` sudah masuk `src/web/.dockerignore` sehingga artefak E2E lokal tidak ikut terbawa ke build image production `src/web/Dockerfile`.
+    - `.env`, `.env.*`, `config-fe.yaml`, `config-fe.yml`, and `dev` are included in `src/web/.dockerignore` so local E2E artifacts are not bundled into the production `src/web/Dockerfile` image build.
 
 ---
 
 ## 7. Troubleshooting
 
-- **Keycloak gagal membaca `/opt/keycloak/conf/keycloak.key` (`Permission denied`)**:
-    - Jalankan ulang `./dev/ssl.sh` atau pastikan permission key `644`.
-- **Setup Keycloak SSO timeout di halaman _"Update Account Information"_**:
-    - User di `realm-config.template.json` wajib memiliki `email`, `firstName`, `lastName`, dan `"requiredActions": []`. Jika mengubah template setelah DB terlanjur terinisialisasi, reset volume dulu dengan `docker compose -f dev/docker-compose.yml down -v`.
-- **Setup login gagal `401 Invalid credentials`**:
-    - Pastikan container dijalankan setelah `./dev/setup.sh` agar `E2E_ADMIN_PASSWORD` di `dev/.env` sinkron dengan yang dibaca `playwright.config.ts`.
-- **Pipeline test gagal dengan _"At least one host must be assigned"_**:
-    - Pastikan `pipeline-builder.spec.ts` dan `pipeline-management.spec.ts` menggunakan helper `apiHelper.createHost(...)` (sudah diimplementasikan untuk berjalan bersih di DB kosong).
+- **Keycloak fails to read `/opt/keycloak/conf/keycloak.key` (`Permission denied`)**:
+    - Re-run `./dev/ssl.sh` or ensure the key permission is `644`.
+- **Keycloak SSO setup times out on the _"Update Account Information"_ page**:
+    - Users in `realm-config.template.json` must have `email`, `firstName`, `lastName`, and `"requiredActions": []`. If you modify the template after the DB has already been initialized, reset the volume first with `docker compose -f dev/docker-compose.yml down -v`.
+- **Login setup fails with `401 Invalid credentials`**:
+    - Ensure the containers are started after running `./dev/setup.sh` so `E2E_ADMIN_PASSWORD` in `dev/.env` matches what `playwright.config.ts` reads.
+- **Pipeline test fails with _"At least one host must be assigned"_**:
+    - Ensure `pipeline-builder.spec.ts` and `pipeline-management.spec.ts` use the `apiHelper.createHost(...)` helper (already implemented to run cleanly on an empty DB).
