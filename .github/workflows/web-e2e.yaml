@@ -1,0 +1,124 @@
+# SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+name: Web E2E
+
+# Playwright e2e for src/web against a real stack (src/web/dev): Postgres,
+# Keycloak and two patrolli-core clusters. Called by ci.yaml on PRs that touch
+# web, and by build.yaml on release tags before the version tags are published.
+# It never runs for core-only changes: core is allowed to break web between
+# releases, and the release run is where the two must agree.
+on:
+  workflow_call:
+    inputs:
+      core-digest-artifact:
+        description: >-
+          Artifact of this run holding one empty file named after the
+          patrolli-core image digest (without "sha256:"), as uploaded by
+          build.yaml. Empty: use the core image of this checkout's src/core
+          tree, published by ci.yaml from main, or build it when missing.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CORE_IMAGE: ghcr.io/bangunindo/patrolli-core
+
+jobs:
+  web-e2e:
+    runs-on: ubuntu-24.04
+    # Normally a few minutes; the headroom is for building core from source.
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: src/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/web/package-lock.json
+      - name: Map kc.localtest.me to localhost
+        # The stack binds IPv4 only; don't depend on public DNS for the name.
+        run: echo "127.0.0.1 kc.localtest.me" | sudo tee -a /etc/hosts
+      - if: inputs.core-digest-artifact != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.core-digest-artifact }}
+          path: ${{ runner.temp }}/core-digest
+      - name: Resolve patrolli-core image
+        env:
+          DIGEST_DIR: ${{ inputs.core-digest-artifact != '' && format('{0}/core-digest', runner.temp) || '' }}
+        run: |
+          if [[ -n "$DIGEST_DIR" ]]; then
+            digest="$(ls "$DIGEST_DIR")"
+            if ! [[ "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::expected one digest file in the artifact, got: $digest"
+              exit 1
+            fi
+            image="$CORE_IMAGE@sha256:$digest"
+            policy=always
+          else
+            # The tree hash only changes when src/core does, so a PR that
+            # doesn't touch core finds the image ci.yaml pushed from main.
+            image="$CORE_IMAGE:tree-$(git rev-parse HEAD:src/core)"
+            policy=always
+            if ! docker manifest inspect "$image" >/dev/null 2>&1; then
+              echo "::notice::$image is not published; building src/core from source"
+              sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+              image=patrolli-core:local
+              policy=never
+              docker build -t "$image" ../core
+            fi
+          fi
+          echo "Using $image"
+          {
+            echo "PATROLLI_CORE_IMAGE=$image"
+            echo "PATROLLI_CORE_PULL_POLICY=$policy"
+          } >> "$GITHUB_ENV"
+      - run: npm ci
+      - name: Generate ephemeral certs, secrets and configs
+        # Also exports E2E_USERNAME and E2E_PASSWORD for Playwright.
+        run: ./dev/setup.sh --force
+      - name: Start backend stack
+        # Only Postgres has a healthcheck, so --wait returns before core and
+        # Keycloak answer.
+        run: |
+          docker compose -f dev/docker-compose.yml up -d --wait
+          for _ in $(seq 90); do
+            if curl -sf http://localhost:8080/health >/dev/null \
+              && curl -sf http://localhost:30001/health >/dev/null \
+              && curl -sf --cacert dev/certs/ssl/ca.crt https://kc.localtest.me:8443/realms/patrolli >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::backend stack did not become ready"
+          exit 1
+      - run: npx playwright install chromium --with-deps
+      - name: Run e2e
+        timeout-minutes: 20
+        env:
+          FRONTEND_CONFIG: dev/.generated/config-fe.yaml
+        run: npm run test:e2e
+      - name: Backend logs
+        if: failure()
+        run: docker compose -f dev/docker-compose.yml logs --no-color
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report
+          path: |
+            src/web/playwright-report
+            src/web/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Stop backend stack
+        if: always()
+        run: docker compose -f dev/docker-compose.yml down -v

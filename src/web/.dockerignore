@@ -6,3 +6,6 @@ volumes
 node_modules
 .nuxt
 .output
+config-fe.yaml
+config-fe.yml
+dev

@@ -2,7 +2,15 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import fs from 'node:fs'
+import { parseEnv } from 'node:util'
 import { defineConfig, devices } from '@playwright/test'
+
+const devEnvUrl = new URL('./dev/.env', import.meta.url)
+if (!process.env.E2E_PASSWORD && fs.existsSync(devEnvUrl)) {
+	const adminPassword = parseEnv(fs.readFileSync(devEnvUrl, 'utf-8')).E2E_ADMIN_PASSWORD
+	if (adminPassword) process.env.E2E_PASSWORD = adminPassword
+}
 
 const baseURL = process.env.E2E_BASE_URL || 'https://localhost:3000'
 

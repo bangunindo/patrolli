@@ -1,0 +1,130 @@
+{
+	"realm": "patrolli",
+	"enabled": true,
+	"eventsEnabled": true,
+	"eventsExpiration": 2592000,
+	"enabledEventTypes": ["LOGIN", "LOGIN_ERROR", "LOGOUT"],
+	"roles": {
+		"client": {
+			"patrolli-ssr": [
+				{
+					"name": "admin",
+					"composite": false
+				}
+			]
+		},
+		"realm": [
+			{
+				"name": "default-roles-patrolli",
+				"composite": true,
+				"composites": {
+					"client": {
+						"patrolli-ssr": ["admin"]
+					}
+				}
+			}
+		]
+	},
+	"clients": [
+		{
+			"clientId": "patrolli-ssr",
+			"enabled": true,
+			"publicClient": false,
+			"clientAuthenticatorType": "client-secret",
+			"secret": "__E2E_OIDC_SECRET__",
+			"authorizationServicesEnabled": false,
+			"standardFlowEnabled": true,
+			"directAccessGrantsEnabled": false,
+			"implicitFlowEnabled": false,
+			"serviceAccountsEnabled": true,
+			"rootUrl": "http://localhost:3000/",
+			"baseUrl": "",
+			"adminUrl": "",
+			"redirectUris": [
+				"https://localhost:3000/auth/oidc/callback",
+				"http://localhost:3000/auth/oidc/callback"
+			],
+			"webOrigins": [
+				"http://localhost:3000",
+				"https://localhost:3000"
+			],
+			"attributes": {
+				"oauth2.device.authorization.grant.enabled": "false",
+				"oidc.ciba.grant.enabled": "false",
+				"dpop.bound.access.tokens": "false",
+				"post.logout.redirect.uris": "+"
+			},
+			"protocolMappers": [
+				{
+					"name": "patrolli audience mapper",
+					"protocol": "openid-connect",
+					"protocolMapper": "oidc-audience-mapper",
+					"consentRequired": false,
+					"config": {
+						"included.custom.audience": "patrolli",
+						"included.client.audience": "",
+						"id.token.claim": "false",
+						"access.token.claim": "true",
+						"lightweight.claim": "false",
+						"introspection.token.claim": "true"
+					}
+				}
+			]
+		}
+	],
+	"users": [
+		{
+			"username": "service-account-patrolli-ssr",
+			"enabled": true,
+			"serviceAccountClientId": "patrolli-ssr",
+			"realmRoles": ["default-roles-patrolli"],
+			"clientRoles": {
+				"realm-management": [
+					"view-users",
+					"manage-realm",
+					"manage-users",
+					"query-clients",
+					"view-clients",
+					"query-users",
+					"manage-clients",
+					"view-events"
+				]
+			}
+		},
+		{
+			"username": "patrolli",
+			"enabled": true,
+			"email": "patrolli@patrolli.local",
+			"firstName": "Patrolli",
+			"lastName": "User",
+			"emailVerified": true,
+			"requiredActions": [],
+			"credentials": [
+				{
+					"type": "password",
+					"value": "__E2E_ADMIN_PASSWORD__",
+					"temporary": false
+				}
+			],
+			"realmRoles": ["default-roles-patrolli"]
+		},
+		{
+			"username": "admin",
+			"enabled": true,
+			"email": "admin@patrolli.local",
+			"firstName": "Admin",
+			"lastName": "Patrolli",
+			"emailVerified": true,
+			"requiredActions": [],
+			"credentials": [
+				{
+					"type": "password",
+					"value": "__E2E_ADMIN_PASSWORD__",
+					"temporary": false
+				}
+			],
+			"realmRoles": ["default-roles-patrolli"]
+		}
+	]
+}
+

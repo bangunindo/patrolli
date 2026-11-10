@@ -7,11 +7,14 @@ import { test, expect } from '../../fixtures/test-fixtures'
 test.describe('Pipeline Visual DAG Builder Canvas', () => {
 	const timestamp = Date.now()
 	const isolatedPipelineName = `e2e_builder_${timestamp}`
+	const seedHostName = `e2e-builder-host-${timestamp}`
 
 	test('creates isolated pipeline and manages complete visual DAG builder flow', async ({
 		pipelinePage,
-		pipelineBuilderPage
+		pipelineBuilderPage,
+		apiHelper
 	}) => {
+		await apiHelper.createHost(seedHostName)
 		await pipelinePage.gotoPipelineList()
 
 		try {
@@ -21,7 +24,8 @@ test.describe('Pipeline Visual DAG Builder Canvas', () => {
 
 			await pipelinePage.fillCreatePipeline({
 				name: isolatedPipelineName,
-				access: 'public'
+				access: 'public',
+				hostName: seedHostName
 			})
 
 			const createPromise = pipelinePage.page.waitForResponse(
@@ -100,7 +104,7 @@ test.describe('Pipeline Visual DAG Builder Canvas', () => {
 			await pipelineBuilderPage.page.waitForURL(/\/pipeline(?!\/)/)
 			expect(pipelineBuilderPage.page.url()).toMatch(/\/pipeline$/)
 		} finally {
-			// Cleanup isolated pipeline
+			// Cleanup isolated pipeline and seeded host
 			try {
 				await pipelinePage.gotoPipelineList()
 				await pipelinePage.searchPipeline(isolatedPipelineName)
@@ -109,11 +113,14 @@ test.describe('Pipeline Visual DAG Builder Canvas', () => {
 					await pipelinePage.openPipelineAction(isolatedPipelineName, 'Delete')
 					if (await pipelinePage.modalDelete.isVisible()) {
 						await pipelinePage.modalDeleteConfirmButton.click()
+						await expect(pipelinePage.modalDelete).not.toBeVisible({ timeout: 10000 })
 					}
 				}
 			} catch {
 				// Silent cleanup
 			}
+			await apiHelper.deletePipelineByName(isolatedPipelineName)
+			await apiHelper.deleteHostByName(seedHostName)
 		}
 	})
 })

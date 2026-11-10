@@ -8,6 +8,11 @@ name: CI
 # they don't touch them; pushes to main run everything, which also refreshes
 # the cargo cache that PRs and release tags restore from. Require only the
 # `ci-ok` check in branch protection: skipped jobs never report their own.
+#
+# PRs that touch web also run the web e2e (web-e2e.yaml) against the
+# patrolli-core image of their src/core tree, which pushes to main publish as
+# ghcr.io/bangunindo/patrolli-core:tree-<git tree hash of src/core>. Pushes to
+# main don't run the e2e: core is allowed to break web between releases.
 on:
   pull_request:
   push:
@@ -53,8 +58,68 @@ jobs:
       core: ${{ needs.changes.outputs.core == 'true' }}
       web: ${{ needs.changes.outputs.web == 'true' }}
 
+  web-e2e:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.web == 'true'
+    uses: ./.github/workflows/web-e2e.yaml
+
+  core-image:
+    # The core image web PRs test against. Tagged by the src/core tree hash, so
+    # a push that doesn't change core finds its tag and skips the build.
+    if: github.event_name == 'push' && github.repository == 'bangunindo/patrolli'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      GHCR_IMAGE: ghcr.io/bangunindo/patrolli-core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: tag
+        run: |
+          tag="tree-$(git rev-parse HEAD:src/core)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if docker manifest inspect "$GHCR_IMAGE:$tag" >/dev/null 2>&1; then
+            echo "$GHCR_IMAGE:$tag already published"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.tag.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - id: build
+        if: steps.tag.outputs.exists == 'false'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: src/core
+          platforms: linux/amd64
+          tags: ${{ env.GHCR_IMAGE }}:${{ steps.tag.outputs.tag }}
+          labels: |
+            org.opencontainers.image.title=patrolli-core
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
+          push: true
+          provenance: mode=max
+          sbom: true
+      - if: steps.tag.outputs.exists == 'false'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
   ci-ok:
-    needs: [changes, test]
+    needs: [changes, test, web-e2e]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

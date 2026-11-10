@@ -42,8 +42,8 @@ pnpm-lock.yaml
 
 volumes
 nginx/nginx.*
-config.yaml
-*-config.yaml
+/config.yaml
+/*-config.yaml
 
 .npmrc
 
@@ -56,17 +56,21 @@ openapi.json
 public/config*
 config/config.json
 
-docs
 .nuxt
 .output
 
-init.sql
+/init.sql
 
-config-fe.yaml
-*compose.yml
+/config-fe.yaml
+/*compose.yml
 Dockerfile.*
 
 **/**/*.crt
 **/**/*.key
+**/**/*.srl
+dev/.env
+dev/.generated
+dev/certs/csr
+dev/certs/ssl
 
 .agents

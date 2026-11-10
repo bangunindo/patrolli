@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+global:
+    logger:
+        level: info
+        output: stderr
+        format: text
+        print_trace: false
+        disable_color: false
+        disable_throttle: false
+        modules:
+            - name: async_snmp
+              level: warn
+            - name: tower
+              level: info
+    backend:
+        db_url: 'postgresql://patrolli:__E2E_POSTGRES_PASSWORD__@postgres:5432/patrolli1'
+        api:
+            addr: 0.0.0.0:8080
+            cors:
+                allow_origins:
+                    [
+                        'http://localhost:3000',
+                        'https://localhost:3000',
+                        'http://127.0.0.1:3000',
+                        'https://127.0.0.1:3000'
+                    ]
+            auth:
+                local:
+                    jwt_issuer: patrolli-cluster-1
+                    access_token_ttl: 900
+                    refresh_token_ttl: 604800
+                oidc:
+                    issuer: 'https://kc.localtest.me:8443/realms/patrolli'
+                    jwks_url: 'https://kc.localtest.me:8443/realms/patrolli/protocol/openid-connect/certs'
+                    audience: 'patrolli'
+                    username_claim_path: preferred_username
+                    tls:
+                        ca_cert_path: '/etc/patrolli/keycloak-ca.crt'
+                        insecure_skip_verify: false
+        cluster:
+            node_id: 92caf6d5-f92f-4982-a211-18a94e4fbe54
+            node_name: patrolli-node-01
+            metadata:
+                advertise_address: 0.0.0.0:8080
+
