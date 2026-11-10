@@ -27,7 +27,7 @@ changes are also released under the MIT license.
 
 ## akvorado BMP captures
 
-- **Files:** `src/core/src/listener/bgp/testdata/akvorado/` (test fixtures only)
+- **Files:** `src/core/crates/listener/src/bgp/testdata/akvorado/` (test fixtures only)
 - **Source:** https://github.com/akvorado/akvorado,
   `outlet/routing/provider/bmp/testdata/`
 - **License:** AGPL-3.0-only, the same as Patrolli

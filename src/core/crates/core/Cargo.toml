@@ -1,0 +1,118 @@
+# SPDX-FileCopyrightText: 2025 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+[package]
+name = "patrolli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ahash.workspace = true
+anyhow.workspace = true
+arc-swap.workspace = true
+arrayvec.workspace = true
+arrow.workspace = true
+arrow-ipc.workspace = true
+async-snmp.workspace = true
+async-trait.workspace = true
+aws-lc-rs = "1.19.0"
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+ciborium.workspace = true
+const-hex.workspace = true
+cron = "0.17.0"
+csv = "1.4.0"
+fjall.workspace = true
+flate2.workspace = true
+flume.workspace = true
+futures.workspace = true
+hashbrown = "0.17.1"
+http.workspace = true
+lz4_flex.workspace = true
+mib-rs = "0.10.0"
+netflow_parser.workspace = true
+nom.workspace = true
+otel-arrow-dfe-pdata.workspace = true
+otel-arrow-dfe-config.workspace = true
+otel-arrow-dfe-query-engine.workspace = true
+otel-arrow-dfe-query-engine-languages = "0.64.0"
+otel-arrow-contrib-data-engine-expressions = "0.1.1"
+otel-arrow-contrib-data-engine-parser-abstractions = "0.1.1"
+opentelemetry-proto.workspace = true
+papaya.workspace = true
+parking_lot.workspace = true
+petgraph.workspace = true
+priority-queue = "2.7.0"
+prometheus-scraper.workspace = true
+prometheus-client = "0.25.2"
+prefix-trie = { version = "0.10.2", features = ["ipnet"] }
+prost.workspace = true
+ipnet.workspace = true
+regex.workspace = true
+rustc-hash.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+smallvec.workspace = true
+smol_str.workspace = true
+string-interner = "0.20.0"
+strum.workspace = true
+strum_macros.workspace = true
+subtle = "2.6.1"
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tonic.workspace = true
+patrolli-proto.workspace = true
+tracing.workspace = true
+tracing-log = "0.2.0"
+tracing-subscriber.workspace = true
+uuid.workspace = true
+xxhash-rust.workspace = true
+zstd.workspace = true
+# API and Database dependencies
+axum.workspace = true
+axum-server.workspace = true
+deadpool-postgres.workspace = true
+pkcs8 = { version = "0.11.0", features = ["encryption", "pem"] }
+refinery = { version = "0.10.0", features = ["tokio-postgres"] }
+rustls.workspace = true
+rustls-pemfile = "2.2.0"
+sea-query.workspace = true
+sea-query-postgres.workspace = true
+utoipa.workspace = true
+webpki-roots = "1.0.11"
+http-serde.workspace = true
+serde_repr = "0.1.21"
+time = "0.3.55"
+derive_more = { version = "2.1.1", features = ["debug"] }
+rand.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+criterion = { version = "0.8.2", features = ["html_reports"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "bench_channels"
+harness = false
+
+[[bench]]
+name = "bench_builder"
+harness = false
+
+[[bench]]
+name = "bench_json"
+harness = false
+
+[[bench]]
+name = "bench_lookup_prefix"
+harness = false
