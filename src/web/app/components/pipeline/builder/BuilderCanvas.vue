@@ -28,6 +28,7 @@ const {
 	onNodeClick,
 	onPaneClick,
 	onEdgeClick,
+	onEdgesChange,
 	onNodeDragStop,
 	getSelectedNodes
 } = useVueFlow('pipeline-canvas')
@@ -39,6 +40,13 @@ onConnect((params) => {
 		params.sourceHandle || 'right',
 		params.targetHandle || 'left'
 	)
+})
+
+onEdgesChange((changes) => {
+	if (changes.some((c: any) => c.type === 'remove')) {
+		store.syncDownstreamItemCounts()
+		store.markDirty()
+	}
 })
 
 onNodeDragStop(() => {

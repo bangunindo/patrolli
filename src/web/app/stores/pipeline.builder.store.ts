@@ -501,14 +501,6 @@ export const usePipelineBuildStore = defineStore(
 						lineLabel = `${sourceItemCount} Items`
 					}
 
-					// Sync target processor node item count
-					const targetNode = nodes.value.find((n: any) => n.id === rel.to_node_id)
-					if (targetNode && targetNode.type === 'processor' && targetNode.data) {
-						targetNode.data.itemCount = isSourceToTarget
-							? sourceItemCount
-							: relItemIds.length
-					}
-
 					return createBuilderEdge({
 						id: `edge-${rel.from_node_id}-${rel.to_node_id}-${idx}`,
 						source: rel.from_node_id,
@@ -526,6 +518,7 @@ export const usePipelineBuildStore = defineStore(
 					})
 				})
 				edges.value = mappedEdges
+				syncDownstreamItemCounts()
 
 				return
 			}
@@ -665,6 +658,83 @@ export const usePipelineBuildStore = defineStore(
 			edgeItemModal.value = { isOpen: false }
 		}
 
+		function parseEdgeLabelCount(label?: string): number | null {
+			if (typeof label !== 'string') return null
+			const match = label.match(/^(\d+)\s+Items?$/i)
+			return match ? Number(match[1]) : null
+		}
+
+		function getSourceNodeItemCount(sourceNode: any): number {
+			if (!sourceNode?.data) return 0
+			if (typeof sourceNode.data.item_count === 'number') return sourceNode.data.item_count
+			if (Array.isArray(sourceNode.data.items) && sourceNode.data.items.length > 0) {
+				return sourceNode.data.items.length
+			}
+			return typeof sourceNode.data.itemCount === 'number' ? sourceNode.data.itemCount : 0
+		}
+
+		/** Propagate incoming item counts from Source nodes to all downstream processor nodes. */
+		function syncDownstreamItemCounts() {
+			const nodeById = new Map<string, any>()
+			const sourceNodes: any[] = []
+			const processorNodes: any[] = []
+
+			for (const node of nodes.value as any[]) {
+				nodeById.set(node.id, node)
+				if (node.type === 'source') sourceNodes.push(node)
+				else if (node.type === 'processor' && node.data) processorNodes.push(node)
+			}
+
+			const outgoingEdges = new Map<string, any[]>()
+			for (const edge of edges.value as any[]) {
+				const list = outgoingEdges.get(edge.source)
+				if (list) list.push(edge)
+				else outgoingEdges.set(edge.source, [edge])
+			}
+
+			const incomingCount = new Map<string, number>()
+			const queue: Array<{ nodeId: string; count: number }> = []
+
+			const enqueueTarget = (targetId: string, count: number) => {
+				const target = nodeById.get(targetId)
+				if (!target || target.type !== 'processor') return
+				const prev = incomingCount.get(target.id) ?? -1
+				if (count > prev) {
+					incomingCount.set(target.id, count)
+					queue.push({ nodeId: target.id, count })
+				}
+			}
+
+			for (const node of sourceNodes) {
+				const fallbackSourceCount = getSourceNodeItemCount(node)
+				for (const edge of outgoingEdges.get(node.id) || []) {
+					const selectedIds = edge.data?.selectedItemIds
+					const edgeCount =
+						Array.isArray(selectedIds) && selectedIds.length > 0
+							? selectedIds.length
+							: (parseEdgeLabelCount(edge.data?.label) ?? fallbackSourceCount)
+					enqueueTarget(edge.target, edgeCount)
+				}
+			}
+
+			let head = 0
+			while (head < queue.length) {
+				const current = queue[head++]!
+				if (current.count < (incomingCount.get(current.nodeId) ?? 0)) continue
+
+				for (const edge of outgoingEdges.get(current.nodeId) || []) {
+					enqueueTarget(edge.target, current.count)
+				}
+			}
+
+			for (const node of processorNodes) {
+				const nextCount = incomingCount.get(node.id) ?? 0
+				if (node.data.itemCount !== nextCount) {
+					node.data.itemCount = nextCount
+				}
+			}
+		}
+
 		function applyEdgeItems(edgeId: string, itemIds: string[]) {
 			const edge = edges.value.find((e: any) => e.id === edgeId)
 			if (edge) {
@@ -672,13 +742,6 @@ export const usePipelineBuildStore = defineStore(
 				edge.data.selectedItemIds = itemIds
 				edge.data.label = `${itemIds.length} Items`
 				edge.data.showAddButton = false
-
-				// Sync item count to target processor node
-				const targetNode = nodes.value.find((n: any) => n.id === edge.target)
-				if (targetNode && targetNode.type === 'processor') {
-					if (!targetNode.data) targetNode.data = {}
-					targetNode.data.itemCount = itemIds.length
-				}
 
 				// Sync source node items and all outgoing edges from source
 				const sourceNode = nodes.value.find((n: any) => n.id === edge.source)
@@ -696,9 +759,6 @@ export const usePipelineBuildStore = defineStore(
 								if (!e.data) e.data = {}
 								e.data.selectedItemIds = itemIds
 								e.data.label = `${itemIds.length} Items`
-								if (otherTarget.data) {
-									otherTarget.data.itemCount = itemIds.length
-								}
 							}
 						}
 					})
@@ -720,6 +780,7 @@ export const usePipelineBuildStore = defineStore(
 					}
 				}
 
+				syncDownstreamItemCounts()
 				markDirty()
 			}
 			closeEdgeItemSelector()
@@ -759,10 +820,6 @@ export const usePipelineBuildStore = defineStore(
 								: initialItemIds.length
 						initialLabel = `${sourceCount} Items`
 						shouldOpenModal = false
-
-						if (toNode && toNode.data) {
-							toNode.data.itemCount = sourceCount
-						}
 					} else {
 						// First connection line from source to processor group:
 						// start with 0 Items and open item selector modal
@@ -786,6 +843,7 @@ export const usePipelineBuildStore = defineStore(
 						}
 					})
 				)
+				syncDownstreamItemCounts()
 				markDirty()
 
 				if (shouldOpenModal) {
@@ -849,10 +907,6 @@ export const usePipelineBuildStore = defineStore(
 				})
 			)
 
-			if (isFromSource && newProc.data) {
-				newProc.data.itemCount = edgeItemIds.length
-			}
-
 			// 4. Connect newProc to target
 			edges.value.push(
 				createBuilderEdge({
@@ -863,6 +917,7 @@ export const usePipelineBuildStore = defineStore(
 				})
 			)
 
+			syncDownstreamItemCounts()
 			markDirty()
 			return newProc
 		}
@@ -873,6 +928,7 @@ export const usePipelineBuildStore = defineStore(
 			if (selectedNode.value && (selectedNode.value as any).id === id) {
 				selectedNode.value = undefined
 			}
+			syncDownstreamItemCounts()
 			markDirty()
 		}
 
@@ -1652,6 +1708,7 @@ export const usePipelineBuildStore = defineStore(
 			saveGraph,
 			saveNodeContent,
 			getSourceActiveItemIds,
+			syncDownstreamItemCounts,
 			buildGraphRepresentation
 		}
 	},
