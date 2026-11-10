@@ -207,7 +207,7 @@ web-e2e:
 ## 6. Kepatuhan Lisensi, Lint, & Isolasi Docker Build
 
 - **AGPL-3.0 / REUSE (`fsfe/reuse-action`)**:
-    - Setiap file baru di `src/web/dev/` wajib memiliki header `SPDX-FileCopyrightText` & `SPDX-License-Identifier: AGPL-3.0-only`, atau tercakup di `/REUSE.toml` (seperti `**/*.json`, `**/*.md`, `src/web/dev/certs/*.cnf`, dan `src/web/dev/.dockerignore`).
+    - Setiap file baru di `src/web/dev/` wajib memiliki header `SPDX-FileCopyrightText` & `SPDX-License-Identifier` (`AGPL-3.0-only`), atau tercakup di `/REUSE.toml` (seperti `**/*.json`, `**/*.md`, `src/web/dev/certs/*.cnf`, dan `src/web/dev/.dockerignore`).
 - **Prettier & ESLint (`npm run lint`)**:
     - `src/web/.prettierignore` mengabaikan `dev` agar file konfigurasi Compose/YAML/JSON tidak memicu error formatting saat `prettier --check .`.
 - **Docker Build Hygiene (`src/web/.dockerignore`)**:
