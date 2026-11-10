@@ -14,7 +14,7 @@ const appStore = useAppStore()
 <template>
 	<Sonner
 		:theme="appStore.isDarkMode ? 'dark' : 'light'"
-		class="toaster group"
+		class="toaster group pointer-events-auto"
 		v-bind="props"
 		:toast-options="{
 			classes: {

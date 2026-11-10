@@ -21,6 +21,17 @@ const delegatedProps = computed(() => {
 })
 
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
+
+function preventOutsideDismiss(event: any) {
+	const originalEvent = event.detail?.originalEvent
+	const rawTarget = originalEvent?.target || event.target
+	const target = rawTarget instanceof Element ? rawTarget : rawTarget?.parentElement
+	if (
+		target?.closest?.('.select-dropdown-teleported, [data-sonner-toaster], [data-sonner-toast]')
+	) {
+		event.preventDefault()
+	}
+}
 </script>
 
 <template>
@@ -36,24 +47,9 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
 					props.class
 				)
 			"
-			@pointer-down-outside="
-				(event: any) => {
-					const originalEvent = event.detail?.originalEvent
-					const target = (originalEvent?.target || event.target) as HTMLElement
-					if (target?.closest?.('.select-dropdown-teleported')) {
-						event.preventDefault()
-					}
-				}
-			"
-			@interact-outside="
-				(event: any) => {
-					const originalEvent = event.detail?.originalEvent
-					const target = (originalEvent?.target || event.target) as HTMLElement
-					if (target?.closest?.('.select-dropdown-teleported')) {
-						event.preventDefault()
-					}
-				}
-			"
+			@pointer-down-outside="preventOutsideDismiss"
+			@interact-outside="preventOutsideDismiss"
+			@focus-outside="preventOutsideDismiss"
 		>
 			<slot />
 
