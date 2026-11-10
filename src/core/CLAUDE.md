@@ -10,7 +10,7 @@ generates its API client from the `openapi.json` produced by `schema_gen`. All c
 `src/core` as the working directory.
 
 Two binaries: `patrolli` (`crates/app/src/main.rs`, the daemon) and `schema_gen` (`crates/app/src/schema_gen.rs`, writes
-`openapi.json`). `src/lib.rs` declares every core module (`pub`, so integration tests can drive
+`openapi.json`). `crates/core/src/lib.rs` declares every core module (`pub`, so integration tests can drive
 internals); the REST API is the `patrolli-api` crate (`crates/api`), the cluster machinery is
 `patrolli-cluster` (`crates/cluster`), the listeners are `patrolli-listener` (`crates/listener`), the
 monitors are `patrolli-monitor` (`crates/monitor`), the processors are `patrolli-processor`
@@ -245,7 +245,7 @@ handlers.
   cancelled. Classify an error as `Retry` only when sure it is transient.
 - **Types**: `SmolStr` for short strings, `FxHashMap`/`ahash` over std hashing, `parking_lot` locks
   in sync code, `papaya`/`ArcSwap` where readers must not block. IDs are UUIDv7 (`Uuid::now_v7`).
-- **Migrations**: refinery, embedded from `migrations/` as `V<n>__<name>.sql`; they run
+- **Migrations**: refinery, embedded from `crates/core/migrations/` as `V<n>__<name>.sql`; they run
   automatically on backend startup under an advisory lock. Add a new file, never edit an applied one,
   and mirror any schema change in `db::schema`.
 - **Logging**: see the dedicated section below — it is a convention, not a preference.

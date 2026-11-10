@@ -186,7 +186,7 @@ config:
     #[test]
     fn the_config_full_example_validates() {
         let config: serde_yaml_ng::Value =
-            serde_yaml_ng::from_str(include_str!("../../../config-full.yaml")).unwrap();
+            serde_yaml_ng::from_str(include_str!("../../../../../config-full.yaml")).unwrap();
         let examples: Vec<Processor> = config["processors"]
             .as_sequence()
             .unwrap()

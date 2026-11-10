@@ -781,7 +781,7 @@ mod tests {
 
     #[test]
     fn the_documented_config_deserializes_validates_and_loads_locally() {
-        let reference = include_str!("../../../config-full.yaml");
+        let reference = include_str!("../../../../../config-full.yaml");
         let example = reference
             .split_once("  # BEGIN attribute_lookup example\n")
             .unwrap()

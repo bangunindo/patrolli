@@ -3,11 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 *
-!src/
 !crates/
 !Cargo.toml
 !Cargo.lock
-!build.rs
-!migrations
-!benches
 !LICENSE
