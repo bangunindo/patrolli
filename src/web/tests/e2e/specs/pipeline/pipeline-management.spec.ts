@@ -55,12 +55,15 @@ test.describe('Pipeline Management Feature', () => {
 		})
 
 		test('manages complete pipeline lifecycle: create, search, edit metadata, toggle status, and delete', async ({
-			pipelinePage
+			pipelinePage,
+			apiHelper
 		}) => {
 			const timestamp = Date.now()
 			const pipelineName = `e2e_mgmt_${timestamp}`
 			const editedName = `${pipelineName}_edited`
+			const seedHostName = `e2e-mgmt-host-${timestamp}`
 
+			await apiHelper.createHost(seedHostName)
 			await pipelinePage.gotoPipelineList()
 
 			try {
@@ -70,7 +73,8 @@ test.describe('Pipeline Management Feature', () => {
 
 				await pipelinePage.fillCreatePipeline({
 					name: pipelineName,
-					access: 'public'
+					access: 'public',
+					hostName: seedHostName
 				})
 
 				const createPromise = pipelinePage.page.waitForResponse(
@@ -181,25 +185,9 @@ test.describe('Pipeline Management Feature', () => {
 				await expect(pipelinePage.getPipelineRow(editedName)).not.toBeVisible()
 			} finally {
 				// Fallback cleanup if test failed midway
-				try {
-					await pipelinePage.searchPipeline(pipelineName)
-					let row = pipelinePage.getPipelineRow(pipelineName)
-					if (!(await row.isVisible())) {
-						await pipelinePage.searchPipeline(editedName)
-						row = pipelinePage.getPipelineRow(editedName)
-					}
-					if (await row.isVisible()) {
-						await pipelinePage.openPipelineAction(
-							(await row.locator('.font-semibold').textContent()) || pipelineName,
-							'Delete'
-						)
-						if (await pipelinePage.modalDelete.isVisible()) {
-							await pipelinePage.modalDeleteConfirmButton.click()
-						}
-					}
-				} catch {
-					// Silent fallback cleanup
-				}
+				await apiHelper.deletePipelineByName(pipelineName)
+				await apiHelper.deletePipelineByName(editedName)
+				await apiHelper.deleteHostByName(seedHostName)
 			}
 		})
 

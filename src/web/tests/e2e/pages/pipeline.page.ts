@@ -167,7 +167,11 @@ export class PipelinePage extends BasePage {
 		await item.click()
 	}
 
-	async fillCreatePipeline(data: { name: string; access?: 'public' | 'private' }): Promise<void> {
+	async fillCreatePipeline(data: {
+		name: string
+		access?: 'public' | 'private'
+		hostName?: string
+	}): Promise<void> {
 		await this.formNameInput.fill(data.name)
 
 		if (data.access === 'private') {
@@ -184,8 +188,16 @@ export class PipelinePage extends BasePage {
 			.waitFor({ state: 'visible', timeout: 5000 })
 			.catch(() => null)
 
-		// Check if Select All or first host item is available
-		if (await this.buttonSelectAllHosts.isVisible()) {
+		if (data.hostName) {
+			const hostSearch = this.modalDialog.getByPlaceholder(/search host by name or ip/i)
+			await hostSearch.fill(data.hostName)
+			const targetHost = this.modalDialog
+				.locator('.max-h-\\[220px\\] > div')
+				.filter({ hasText: data.hostName })
+				.first()
+			await targetHost.waitFor({ state: 'visible', timeout: 5000 })
+			await targetHost.click()
+		} else if (await this.buttonSelectAllHosts.isVisible()) {
 			await this.buttonSelectAllHosts.click()
 		} else {
 			const hostItem = this.modalDialog.locator('.max-h-\\[220px\\] > div').first()
