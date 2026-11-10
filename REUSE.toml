@@ -21,7 +21,7 @@ path = [
     "**/corpus.txt",
     "**/requirements.txt",
     # refinery checksums applied migrations, so their content must not change.
-    "src/core/migrations/**",
+    "src/core/crates/core/migrations/**",
 ]
 SPDX-FileCopyrightText = "2024-2026 PT Bangunindo Teknusa Jaya"
 SPDX-License-Identifier = "AGPL-3.0-only"

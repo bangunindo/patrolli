@@ -1328,9 +1328,11 @@ mod config_full_yaml {
     use super::*;
 
     fn uncommented_lookup_block() -> String {
-        let text =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/config-full.yaml"))
-                .expect("config-full.yaml");
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../config-full.yaml"
+        ))
+        .expect("config-full.yaml");
         let start = text
             .find("# lookup_tables:")
             .expect("the lookup_tables example block");

@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 [workspace]
-members = ["crates/api", "crates/app", "crates/cluster", "crates/listener", "crates/monitor", "crates/processor", "crates/proto", "crates/sink"]
-default-members = [".", "crates/api", "crates/app", "crates/cluster", "crates/listener", "crates/monitor", "crates/processor", "crates/proto", "crates/sink"]
+resolver = "3"
+members = ["crates/api", "crates/app", "crates/cluster", "crates/core", "crates/listener", "crates/monitor", "crates/processor", "crates/proto", "crates/sink"]
 
 [workspace.package]
 version = "0.1.0-beta.3"
@@ -67,7 +67,7 @@ otel-arrow-dfe-pdata = "0.64.0"
 otel-arrow-dfe-query-engine = "0.64.0"
 papaya = "0.2.5"
 parking_lot = { version = "0.12.5" }
-patrolli = { path = "." }
+patrolli = { path = "crates/core" }
 patrolli-cluster = { path = "crates/cluster" }
 patrolli-listener = { path = "crates/listener" }
 patrolli-monitor = { path = "crates/monitor" }
@@ -124,105 +124,6 @@ uuid = { version = "1.29.0", features = ["serde", "v5", "v7"] }
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 zstd = "0.14.3"
 
-[package]
-name = "patrolli"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-ahash.workspace = true
-anyhow.workspace = true
-arc-swap.workspace = true
-arrayvec.workspace = true
-arrow.workspace = true
-arrow-ipc.workspace = true
-async-snmp.workspace = true
-async-trait.workspace = true
-aws-lc-rs = "1.19.0"
-base64.workspace = true
-bytes.workspace = true
-chrono.workspace = true
-chrono-tz.workspace = true
-ciborium.workspace = true
-const-hex.workspace = true
-cron = "0.17.0"
-csv = "1.4.0"
-fjall.workspace = true
-flate2.workspace = true
-flume.workspace = true
-futures.workspace = true
-hashbrown = "0.17.1"
-http.workspace = true
-lz4_flex.workspace = true
-mib-rs = "0.10.0"
-netflow_parser.workspace = true
-nom.workspace = true
-otel-arrow-dfe-pdata.workspace = true
-otel-arrow-dfe-config.workspace = true
-otel-arrow-dfe-query-engine.workspace = true
-otel-arrow-dfe-query-engine-languages = "0.64.0"
-otel-arrow-contrib-data-engine-expressions = "0.1.1"
-otel-arrow-contrib-data-engine-parser-abstractions = "0.1.1"
-opentelemetry-proto.workspace = true
-papaya.workspace = true
-parking_lot.workspace = true
-petgraph.workspace = true
-priority-queue = "2.7.0"
-prometheus-scraper.workspace = true
-prometheus-client = "0.25.2"
-prefix-trie = { version = "0.10.2", features = ["ipnet"] }
-prost.workspace = true
-ipnet.workspace = true
-regex.workspace = true
-rustc-hash.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-serde_yaml_ng.workspace = true
-smallvec.workspace = true
-smol_str.workspace = true
-string-interner = "0.20.0"
-strum.workspace = true
-strum_macros.workspace = true
-subtle = "2.6.1"
-thiserror.workspace = true
-tokio.workspace = true
-tokio-stream.workspace = true
-tokio-util.workspace = true
-tonic.workspace = true
-patrolli-proto.workspace = true
-tracing.workspace = true
-tracing-log = "0.2.0"
-tracing-subscriber.workspace = true
-uuid.workspace = true
-xxhash-rust.workspace = true
-zstd.workspace = true
-# API and Database dependencies
-axum.workspace = true
-axum-server.workspace = true
-deadpool-postgres.workspace = true
-pkcs8 = { version = "0.11.0", features = ["encryption", "pem"] }
-refinery = { version = "0.10.0", features = ["tokio-postgres"] }
-rustls.workspace = true
-rustls-pemfile = "2.2.0"
-sea-query.workspace = true
-sea-query-postgres.workspace = true
-utoipa.workspace = true
-webpki-roots = "1.0.11"
-http-serde.workspace = true
-serde_repr = "0.1.21"
-time = "0.3.55"
-derive_more = { version = "2.1.1", features = ["debug"] }
-rand.workspace = true
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
-criterion = { version = "0.8.2", features = ["html_reports"] }
-tempfile.workspace = true
-
-[lints]
-workspace = true
-
 [profile.dev]
 # Full debuginfo (debug = 2) bloats the binary and dominates link time on a
 # 700+ dep build. line-tables-only keeps file:line in panics/backtraces.
@@ -243,19 +144,3 @@ debug = false
 inherits = "release"
 debug = true
 strip = false
-
-[[bench]]
-name = "bench_channels"
-harness = false
-
-[[bench]]
-name = "bench_builder"
-harness = false
-
-[[bench]]
-name = "bench_json"
-harness = false
-
-[[bench]]
-name = "bench_lookup_prefix"
-harness = false
