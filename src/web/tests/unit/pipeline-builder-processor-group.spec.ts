@@ -33,6 +33,16 @@ describe('Pipeline Builder - Processor Group Feature', () => {
 			}
 		} as any)
 
+		vi.spyOn(pipelinesApi, 'updatePipelineGraph').mockResolvedValue({
+			success: true,
+			data: { last_updated: '2026-10-22T00:00:00Z' }
+		} as any)
+
+		vi.spyOn(processorsApi, 'get').mockResolvedValue({
+			success: true,
+			data: { processors: [], total: 0 }
+		} as any)
+
 		vi.spyOn(pipelinesApi, 'updatePipelineNode').mockResolvedValue({
 			success: true,
 			data: {}
@@ -466,9 +476,11 @@ describe('Pipeline Builder - Processor Group Feature', () => {
 		expect(processorStore.currentProcessor?.processor_id).toBe('proc-detail-1')
 	})
 
-	it('ProcessorGroupDrawer Add Processor opens modal form and adds processor in-memory via custom handler', async () => {
+	it('ProcessorGroupDrawer Add Processor opens modal form and saves processor via saveGraph', async () => {
 		const store = usePipelineBuildStore()
 		const processorStore = useProcessorStore()
+		store.pipelineId = 'pipe-1'
+		store.canvasId = 'canvas-1'
 
 		const procNode = store.addProcessorNode(100, 200, 'Test Group')
 		store.selectedNode = procNode
@@ -604,9 +616,11 @@ describe('Pipeline Builder - Processor Group Feature', () => {
 		expect(submittedPayload.input_processors).toEqual([])
 	})
 
-	it('BuilderProcessorNode + Processor button opens modal form and adds processor into processor group', async () => {
+	it('BuilderProcessorNode + Processor button opens modal form and saves processor into processor group', async () => {
 		const store = usePipelineBuildStore()
 		const processorStore = useProcessorStore()
+		store.pipelineId = 'pipe-1'
+		store.canvasId = 'canvas-1'
 
 		const procNode = store.addProcessorNode(100, 200, 'Test Node Group')
 
