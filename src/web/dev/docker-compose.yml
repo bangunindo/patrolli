@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+services:
+  patrolli:
+    image: ${PATROLLI_CORE_IMAGE:-ghcr.io/bangunindo/patrolli-core:0.1.0-beta.3}
+    pull_policy: ${PATROLLI_CORE_PULL_POLICY:-always}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      PATROLLI_ADMIN_USER: admin
+      PATROLLI_ADMIN_PASSWORD: ${E2E_ADMIN_PASSWORD:?Run ./dev/setup.sh first}
+      PATROLLI_JWT_SECRET: ${E2E_JWT_SECRET:?Run ./dev/setup.sh first}
+      PATROLLI_ADMIN_ALLOW_SSO: "true"
+      PATROLLI_SECRET_KEYS: ${E2E_SECRET_KEY:?Run ./dev/setup.sh first}
+      PATROLLI_SECRET_ACTIVE_KEY: v1
+    volumes:
+      - ./.generated/patrolli-0-config.yaml:/config.yaml:ro
+      - ./certs/ssl/ca.crt:/etc/patrolli/keycloak-ca.crt:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+
+  patrolli_1:
+    image: ${PATROLLI_CORE_IMAGE:-ghcr.io/bangunindo/patrolli-core:0.1.0-beta.3}
+    pull_policy: ${PATROLLI_CORE_PULL_POLICY:-always}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:30001:8080"
+    environment:
+      PATROLLI_ADMIN_USER: admin
+      PATROLLI_ADMIN_PASSWORD: ${E2E_ADMIN_PASSWORD:?Run ./dev/setup.sh first}
+      PATROLLI_JWT_SECRET: ${E2E_JWT_SECRET:?Run ./dev/setup.sh first}
+      PATROLLI_ADMIN_ALLOW_SSO: "true"
+      PATROLLI_SECRET_KEYS: ${E2E_SECRET_KEY_1:?Run ./dev/setup.sh first}
+      PATROLLI_SECRET_ACTIVE_KEY: v1
+    volumes:
+      - ./.generated/patrolli-1-config.yaml:/config.yaml:ro
+      - ./certs/ssl/ca.crt:/etc/patrolli/keycloak-ca.crt:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_DB: patrolli
+      POSTGRES_USER: patrolli
+      POSTGRES_PASSWORD: ${E2E_POSTGRES_PASSWORD:?Run ./dev/setup.sh first}
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U patrolli -d keycloak"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.1
+    container_name: keycloak
+    restart: unless-stopped
+    command: start --import-realm
+    ports:
+      - "127.0.0.1:8443:8443"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${E2E_KC_BOOTSTRAP_PASSWORD:?Run ./dev/setup.sh first}
+      KC_HOSTNAME: https://kc.localtest.me:8443
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/keycloak.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/keycloak.key
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: patrolli
+      KC_DB_PASSWORD: ${E2E_POSTGRES_PASSWORD:?Run ./dev/setup.sh first}
+    volumes:
+      - ./certs/ssl/keycloak.crt:/opt/keycloak/conf/keycloak.crt:ro
+      - ./certs/ssl/keycloak.key:/opt/keycloak/conf/keycloak.key:ro
+      - ./.generated/realm-config.json:/opt/keycloak/data/import/realm-export.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      default:
+        aliases:
+          - kc.localtest.me
+
+volumes:
+  postgres-data:

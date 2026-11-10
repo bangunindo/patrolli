@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+[req]
+default_bits       = 2048
+prompt             = no
+default_md         = sha256
+distinguished_name = req_distinguished_name
+x509_extensions    = v3_req
+
+[req_distinguished_name]
+C  = ID
+ST = Jakarta
+L  = Jakarta Selatan
+O  = Development
+OU = IT
+CN = localhost
+
+[v3_req]
+basicConstraints = CA:FALSE
+keyUsage         = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName   = @alt_names
+
+[alt_names]
+DNS.1 = localhost
+IP.1  = 127.0.0.1

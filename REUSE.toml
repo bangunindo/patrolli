@@ -20,6 +20,8 @@ path = [
     "**/*.dump",
     "**/corpus.txt",
     "**/requirements.txt",
+    "src/web/dev/certs/*.cnf",
+    "src/web/dev/.dockerignore",
     # refinery checksums applied migrations, so their content must not change.
     "src/core/crates/core/migrations/**",
 ]
