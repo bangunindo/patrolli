@@ -11,6 +11,21 @@ import { useTemplatesStore } from '@/stores/templates.store'
 import { FormMode } from '@@/shared/types/app.type'
 import DynamicZodForm from '@/components/app/dynamic-zod-form/DynamicZodForm.vue'
 
+vi.mock('@/app/api/templates.api', () => ({
+	default: {
+		getTemplates: vi.fn().mockResolvedValue({
+			success: true,
+			data: { templates: [], total: 0 }
+		}),
+		createTemplate: vi.fn(),
+		updateTemplate: vi.fn(),
+		deleteTemplate: vi.fn(),
+		getTemplateById: vi.fn(),
+		linkTemplate: vi.fn(),
+		unlinkTemplate: vi.fn()
+	}
+}))
+
 describe('Template ModalForm DynamicZodForm Integration', () => {
 	const commonStubs = {
 		'b-modal': {

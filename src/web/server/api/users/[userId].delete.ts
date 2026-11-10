@@ -42,7 +42,7 @@ export default defineEventHandler(async (event) => {
 			headers: reqHeaders
 		})
 
-		const status = res.status || 200
+		const status = res.status >= 200 && res.status < 300 ? 200 : res.status || 200
 		setResponseStatus(event, status)
 		return {
 			status_code: status,

@@ -13,7 +13,9 @@ const pipelineStore = usePipelineStore()
 
 <template>
 	<UiDialog v-model:open="pipelineStore.pipelineModalShow">
-		<UiDialogContent class="sm:max-w-4xl p-0 overflow-hidden border-none shadow-2xl">
+		<UiDialogContent
+			class="sm:max-w-4xl max-h-[90vh] overflow-y-auto p-0 border-none shadow-2xl"
+		>
 			<PipelineForm />
 		</UiDialogContent>
 	</UiDialog>

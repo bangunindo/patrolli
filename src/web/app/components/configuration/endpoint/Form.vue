@@ -163,7 +163,7 @@ watch(selectedCluster, (newVal, oldVal) => {
 				:loading="loading.form"
 				@submit="handleFormSubmit"
 			>
-				<template #field:host_id="{ error, updateModelValue }">
+				<template #field:host_id="{ updateModelValue }">
 					<div class="flex flex-col gap-2">
 						<AppInputCluster
 							v-model="selectedCluster"
@@ -179,7 +179,6 @@ watch(selectedCluster, (newVal, oldVal) => {
 							required
 							:cluster-url="selectedCluster"
 							:multiple="false"
-							:error="error"
 						/>
 					</div>
 				</template>

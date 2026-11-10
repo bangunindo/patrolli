@@ -2,7 +2,13 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { describe, expect, it } from 'vitest'
+import '@@/shared/types/array.type'
+import { describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import EndpointForm from '@/components/configuration/endpoint/Form.vue'
+import { useEndpointsStore } from '@/stores/endpoints.store'
+import { FormMode } from '@@/shared/types/app.type'
 import { CreateEndpointRequest } from '@@/shared/generated/patrolliAPI.schemas.type'
 import { introspectZodSchema } from '@/app/services/forms/zod-introspector'
 import { AutoFormAdapter } from '@/app/services/forms/auto-adapter'
@@ -457,6 +463,42 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 			if (result.success) {
 				expect((result.data.config.config as any).tls).toBeNull()
 			}
+		})
+	})
+
+	describe('Endpoint Form Component Validation Flow', () => {
+		it('should not pass error prop to AppInputHost on initial form mount in ADD mode', async () => {
+			const pinia = createPinia()
+			setActivePinia(pinia)
+			const store = useEndpointsStore()
+			store.endpointFormMode = FormMode.ADD
+			store.fetchHosts = vi.fn().mockResolvedValue({ success: true, data: { hosts: [] } })
+
+			const AppInputHostMock = {
+				name: 'AppInputHost',
+				props: ['modelValue', 'error', 'required', 'label'],
+				template: '<div class="app-input-host-mock" :data-error="error || \'\'"></div>'
+			}
+
+			const wrapper = mount(EndpointForm, {
+				global: {
+					plugins: [pinia],
+					stubs: {
+						AppInputCluster: true,
+						AppInputHost: AppInputHostMock,
+						UiIcon: true,
+						UiButton: true,
+						UiSwitch: true,
+						UiInput: true
+					}
+				}
+			})
+
+			await flushPromises()
+
+			const hostComp = wrapper.findComponent(AppInputHostMock)
+			expect(hostComp.exists()).toBe(true)
+			expect(hostComp.props('error')).toBeFalsy()
 		})
 	})
 })

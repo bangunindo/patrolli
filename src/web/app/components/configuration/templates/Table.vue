@@ -65,8 +65,13 @@ function parsedLabelsData(labels: any) {
 	}
 }
 
-function onChangePage(payload: { offset: number; limit: number }) {
-	if (templatesStore.filter.offset != payload.offset) {
+function onChangePage(payload: { offset: number; limit: number; page: number }) {
+	templatesStore.pagination.currentPage = payload.page
+	templatesStore.pagination.rows = payload.limit
+	if (
+		templatesStore.filter.offset !== payload.offset ||
+		templatesStore.filter.limit !== payload.limit
+	) {
 		templatesStore.filter.limit = payload.limit
 		templatesStore.filter.offset = payload.offset
 		templatesStore.fetchTemplates()
@@ -104,6 +109,7 @@ async function onDelete() {
 }
 
 onMounted(() => {
+	templatesStore.pagination.currentPage = 1
 	templatesStore.filter.offset = 0
 	templatesStore.fetchTemplates()
 })
@@ -111,6 +117,7 @@ onMounted(() => {
 watchDebounced(
 	() => templatesStore.filter.name,
 	async () => {
+		templatesStore.pagination.currentPage = 1
 		templatesStore.filter.offset = 0
 		templatesStore.fetchTemplates()
 	},

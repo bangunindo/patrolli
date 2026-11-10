@@ -101,8 +101,13 @@ const onApply = () => {
 }
 
 const syncSelectedItems = (currentData: any[]) => {
-	if (!modelValue.value || currentData.length === 0) {
-		selectedItem.value = props.multiple ? [] : null
+	if (!modelValue.value) {
+		if (!showModal.value) {
+			selectedItem.value = props.multiple ? [] : null
+		}
+		return
+	}
+	if (currentData.length === 0) {
 		return
 	}
 

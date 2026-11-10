@@ -51,8 +51,13 @@ const headerTable = [
 	}
 ]
 
-function onChangePage(payload) {
-	if (listenersStore.filter.offset != payload.offset) {
+function onChangePage(payload: { limit: number; offset: number; page: number }) {
+	listenersStore.pagination.currentPage = payload.page
+	listenersStore.pagination.rows = payload.limit
+	if (
+		listenersStore.filter.offset !== payload.offset ||
+		listenersStore.filter.limit !== payload.limit
+	) {
 		listenersStore.filter.limit = payload.limit
 		listenersStore.filter.offset = payload.offset
 		listenersStore.fetchListeners()
@@ -90,6 +95,7 @@ async function onDelete() {
 }
 
 onMounted(() => {
+	listenersStore.pagination.currentPage = 1
 	listenersStore.filter.offset = 0
 	listenersStore.fetchListeners()
 })
@@ -97,6 +103,7 @@ onMounted(() => {
 watchDebounced(
 	() => listenersStore.filter.name,
 	async () => {
+		listenersStore.pagination.currentPage = 1
 		listenersStore.filter.offset = 0
 		listenersStore.fetchListeners()
 	},

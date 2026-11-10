@@ -68,8 +68,10 @@ function parsedLabelsData(labels: string) {
 	}
 }
 
-function onChangePage(payload) {
-	if (hostsStore.filter.offset != payload.offset) {
+function onChangePage(payload: { limit: number; offset: number; page: number }) {
+	hostsStore.pagination.currentPage = payload.page
+	hostsStore.pagination.rows = payload.limit
+	if (hostsStore.filter.offset !== payload.offset || hostsStore.filter.limit !== payload.limit) {
 		hostsStore.filter.limit = payload.limit
 		hostsStore.filter.offset = payload.offset
 		hostsStore.fetchHosts()
@@ -99,16 +101,16 @@ async function onDelete() {
 }
 
 async function onFilter() {
+	hostsStore.pagination.currentPage = 1
 	hostsStore.filter.offset = 0
 	hostsStore.fetchHosts()
 }
 
 onMounted(() => {
+	hostsStore.pagination.currentPage = 1
+	hostsStore.filter.offset = 0
 	if (route.query.monitored_by) {
-		hostsStore.filter.offset = 0
 		hostsStore.filter.monitored_by = route.query.monitored_by as string
-	} else {
-		hostsStore.filter.offset = 0
 	}
 
 	hostsStore.fetchHosts()

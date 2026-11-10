@@ -69,16 +69,24 @@ const headerTable = [
 	}
 ]
 
-function onChangePage(payload: { offset: number; limit: number }) {
-	if (itemsStore.filter.offset != payload.offset) {
+function onChangePage(payload: { offset: number; limit: number; page: number }) {
+	itemsStore.pagination.currentPage = payload.page
+	itemsStore.pagination.rows = payload.limit
+	if (itemsStore.filter.offset !== payload.offset || itemsStore.filter.limit !== payload.limit) {
 		itemsStore.filter.limit = payload.limit
 		itemsStore.filter.offset = payload.offset
 		itemsStore.fetchItems()
 	}
 }
 
+let detailCloseTimer: ReturnType<typeof setTimeout> | null = null
+
 async function toggleModalDetail(item: IItem | null = null) {
 	if (item?.item_id && !showModalDetail.value) {
+		if (detailCloseTimer) {
+			clearTimeout(detailCloseTimer)
+			detailCloseTimer = null
+		}
 		showModalDetail.value = true
 		await itemsStore.fetchItemById(
 			item.item_id,
@@ -86,13 +94,19 @@ async function toggleModalDetail(item: IItem | null = null) {
 		)
 	} else {
 		showModalDetail.value = false
-		setTimeout(() => {
-			itemsStore.currentItem = null
+		detailCloseTimer = setTimeout(() => {
+			if (!showModalDetail.value) {
+				itemsStore.currentItem = null
+			}
 		}, 300)
 	}
 }
 
 async function toggleDrawer(item: IItem) {
+	if (detailCloseTimer) {
+		clearTimeout(detailCloseTimer)
+		detailCloseTimer = null
+	}
 	await itemsStore.fetchItemById(
 		item.item_id,
 		item.cluster_url ? [item.cluster_url] : getClusterUrls()
@@ -129,6 +143,7 @@ function getIconFromState(state?: string) {
 }
 
 onMounted(() => {
+	itemsStore.pagination.currentPage = 1
 	itemsStore.filter.offset = 0
 	itemsStore.fetchItems()
 	itemsStore.fetchEndpoints()
@@ -139,6 +154,7 @@ onMounted(() => {
 watchDebounced(
 	() => itemsStore.filter.name,
 	async () => {
+		itemsStore.pagination.currentPage = 1
 		itemsStore.filter.offset = 0
 		itemsStore.fetchItems()
 	},

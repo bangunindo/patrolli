@@ -44,8 +44,13 @@ const headerTable = [
 	}
 ]
 
-function onChangePage(payload) {
-	if (processorStore.filter.offset != payload.offset) {
+function onChangePage(payload: { limit: number; offset: number; page: number }) {
+	processorStore.pagination.currentPage = payload.page
+	processorStore.pagination.rows = payload.limit
+	if (
+		processorStore.filter.offset !== payload.offset ||
+		processorStore.filter.limit !== payload.limit
+	) {
 		processorStore.filter.limit = payload.limit
 		processorStore.filter.offset = payload.offset
 		processorStore.fetchProcessors()
@@ -75,6 +80,7 @@ async function onDelete() {
 }
 
 onMounted(() => {
+	processorStore.pagination.currentPage = 1
 	processorStore.filter.offset = 0
 	processorStore.fetchProcessors()
 })
@@ -83,6 +89,7 @@ onMounted(() => {
 watchDebounced(
 	() => processorStore.filter.name,
 	async () => {
+		processorStore.pagination.currentPage = 1
 		processorStore.filter.offset = 0
 		processorStore.fetchProcessors()
 	},

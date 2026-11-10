@@ -104,7 +104,14 @@ const headerTable = [
 ]
 
 function onChangePage(payload: { limit: number; offset: number; page?: number }) {
-	if (pipelineStore.filter.offset != payload.offset) {
+	if (payload.page !== undefined) {
+		pipelineStore.pagination.currentPage = payload.page
+	}
+	pipelineStore.pagination.rows = payload.limit
+	if (
+		pipelineStore.filter.offset !== payload.offset ||
+		pipelineStore.filter.limit !== payload.limit
+	) {
 		pipelineStore.filter.limit = payload.limit
 		pipelineStore.filter.offset = payload.offset
 		pipelineStore.fetchPipelines()
@@ -119,11 +126,13 @@ function onSort(payload: { key?: string; order?: 'asc' | 'desc' | null }) {
 }
 
 async function onFilter() {
+	pipelineStore.pagination.currentPage = 1
 	pipelineStore.filter.offset = 0
 	pipelineStore.fetchPipelines()
 }
 
 onMounted(() => {
+	pipelineStore.pagination.currentPage = 1
 	pipelineStore.filter.offset = 0
 	pipelineStore.fetchPipelines()
 })

@@ -50,6 +50,7 @@ config.yaml
 playwright
 playwright-report
 test-results
+tests/e2e/.auth
 
 openapi.json
 public/config*
