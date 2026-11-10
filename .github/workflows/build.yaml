@@ -7,6 +7,8 @@ name: Release
 # Pushing a `v<semver>` tag tests core and web (test.yaml), then builds and
 # publishes patrolli-core and patrolli-web for linux/amd64 and linux/arm64 to
 # Docker Hub and GHCR. Each arch builds natively on its own runner (no QEMU).
+# The version tags are only created once the web e2e (web-e2e.yaml) passes
+# against the core image built for this tag.
 # Every image carries BuildKit provenance and an SBOM, plus a signed GitHub
 # build provenance attestation on the multi-arch index.
 on:
@@ -133,9 +135,17 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  web-e2e:
+    # Web at this tag against the linux/amd64 core image just pushed by digest.
+    needs: build
+    uses: ./.github/workflows/web-e2e.yaml
+    with:
+      core-digest-artifact: digests-core-amd64
+
   merge:
-    # Waits for every build, so no tag is published unless all images built.
-    needs: [version, build]
+    # Waits for every build and the web e2e, so no tag is published unless all
+    # images built and web works against this tag's core.
+    needs: [version, build, web-e2e]
     strategy:
       fail-fast: false
       matrix:

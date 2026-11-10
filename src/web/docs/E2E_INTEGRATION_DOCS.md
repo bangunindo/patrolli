@@ -69,6 +69,8 @@ No TLS private keys or static secrets are stored in Git:
 
 Prerequisites: **Docker & Docker Compose**, **Node.js 24**, **OpenSSL**.
 
+Node.js 22 with npm 9 does not work: `npm ci` fails with `EBADPLATFORM` on an optional `@oxc-parser` binding. Ports `5432`, `8443`, `8080`, `30001` and `3000` must be free on localhost.
+
 ```bash
 cd src/web
 
@@ -92,115 +94,57 @@ docker compose -f dev/docker-compose.yml down -v
 > [!NOTE]
 > If you are offline or public DNS does not resolve `*.localtest.me`, add `127.0.0.1 kc.localtest.me` to `/etc/hosts`.
 
+To test against the core of your checkout instead of the released image:
+
+```bash
+docker build -t patrolli-core:local ../core
+PATROLLI_CORE_IMAGE=patrolli-core:local PATROLLI_CORE_PULL_POLICY=never \
+    docker compose -f dev/docker-compose.yml up -d --wait
+```
+
 ---
 
-## 5. GitHub Actions CI Integration Guide
+## 5. GitHub Actions CI Integration
 
-### A. `patrolli-core` Image Strategy (Without Compiling Rust on Web PRs)
+The suite runs from the reusable workflow `.github/workflows/web-e2e.yaml`. It has two callers:
 
-In `dev/docker-compose.yml`, the backend image uses:
+| Caller                 | When                                              | `patrolli-core` image under test                              | Effect of a failure                     |
+| ---------------------- | ------------------------------------------------- | ------------------------------------------------------------- | --------------------------------------- |
+| `ci.yaml`              | Pull requests that touch `src/web/` or `.github/` | Core of the PR's `src/core` tree (normally the one on `main`) | `ci-ok` fails, the PR cannot merge      |
+| `build.yaml` (release) | `v<semver>` tags                                  | The `linux/amd64` core image built for that tag               | No version or `latest` tag is published |
 
-```yaml
-image: ${PATROLLI_CORE_IMAGE:-ghcr.io/bangunindo/patrolli-core:0.1.0-beta.3}
-pull_policy: ${PATROLLI_CORE_PULL_POLICY:-always}
+It does **not** run for core-only pull requests or on pushes to `main`. Core and web have different owners and core is allowed to break web between releases; the release run is where both must agree.
+
+### A. Which core image a pull request uses
+
+Pushes to `main` run the `core-image` job in `ci.yaml`, which builds `src/core` (`linux/amd64`) and pushes it to GHCR only, tagged by the Git tree hash of `src/core`:
+
+```bash
+ghcr.io/bangunindo/patrolli-core:tree-$(git rev-parse HEAD:src/core)
 ```
 
-Recommended CI workflow:
+The tree hash only changes when something under `src/core` changes, so:
 
-1. **Publish the `:edge` tag on `push` to `main`** (when `src/core/**` changes):
-    - Build the image from `src/core/Dockerfile` (`linux/amd64`) and push it to `ghcr.io/bangunindo/patrolli-core:edge`.
-    - Must maintain **AGPL-3.0** compliance as in `.github/workflows/build.yaml`:
-        - Labels `org.opencontainers.image.licenses=AGPL-3.0-only` & `org.opencontainers.image.source=https://github.com/bangunindo/patrolli`.
-        - `provenance: mode=max`, `sbom: true`, and `actions/attest-build-provenance`.
-        - The GHCR package must have **public read** access so PRs from external forks can still `docker pull` without secrets.
-2. **When a `pull_request` runs**:
-    - **If only `src/web/` changed**: pull `ghcr.io/bangunindo/patrolli-core:edge` directly (no Rust build). `pull_policy: always` ensures the latest image tag is always pulled.
-    - **If `src/core/` also changed**: build a local image from `src/core` (`docker build -t patrolli-core:pr-local src/core`), then set `PATROLLI_CORE_IMAGE=patrolli-core:pr-local` and `PATROLLI_CORE_PULL_POLICY=never`.
+- A push to `main` that does not change core finds its tag already published and skips the build.
+- A web-only pull request has the same `src/core` tree as `main`, so `web-e2e.yaml` finds the tag and pulls it. No Rust build.
+- If the tag is missing (the pull request also changes core, the `main` build has not finished yet, or nothing was published yet), `web-e2e.yaml` builds `src/core` from source in the job and runs against that. This is slow but always correct, and needs no secrets, so it also works for pull requests from forks.
 
-### B. `web-e2e` Job Reference for `.github/workflows/test.yaml`
+The GHCR package must stay **public** so forks can pull without logging in. `tree-*` tags accumulate; clean them up with a retention rule on the package.
 
-Per this repository's security standards, **pin all GitHub Actions to a commit SHA** and set `persist-credentials: false`:
+### B. Release gate
 
-```yaml
-web-e2e:
-    if: inputs.web
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-        contents: read
-        packages: read
-    defaults:
-        run:
-            working-directory: src/web
-    steps:
-        - uses: actions/checkout@<COMMIT_SHA>
-          with:
-              persist-credentials: false
+In `build.yaml` the per-arch images are pushed by digest first, without tags. The `web-e2e` job then runs web at that tag against `ghcr.io/bangunindo/patrolli-core@sha256:<linux/amd64 digest>` (taken from the `digests-core-amd64` artifact). The `merge` job, which creates the version tags, depends on it.
 
-        - uses: actions/setup-node@<COMMIT_SHA>
-          with:
-              node-version: 24
-              cache: npm
-              cache-dependency-path: src/web/package-lock.json
+### C. What the job does
 
-        - name: Map kc.localtest.me to localhost
-          run: echo "127.0.0.1 kc.localtest.me" | sudo tee -a /etc/hosts
+1. Sets up Node 24 and maps `kc.localtest.me` to `127.0.0.1` in `/etc/hosts`.
+2. Resolves the core image as described above and exports `PATROLLI_CORE_IMAGE` and `PATROLLI_CORE_PULL_POLICY` for Compose.
+3. Runs `npm ci` and `./dev/setup.sh --force`.
+4. Starts the stack with `docker compose up -d --wait`, then polls the two core `/health` endpoints and the Keycloak realm. Only Postgres has a healthcheck, so `--wait` alone returns too early.
+5. Installs Chromium with `npx playwright install chromium --with-deps` and runs `npm run test:e2e` with `FRONTEND_CONFIG=dev/.generated/config-fe.yaml`. `CI=true` makes Playwright use one worker and two retries.
+6. On failure, prints the backend logs and uploads `test-results` (traces and screenshots) as the `playwright-report` artifact, kept for 7 days.
 
-        - name: Generate ephemeral certs and E2E configs
-          run: ./dev/setup.sh --force
-
-        - name: Start backend stack
-          env:
-              PATROLLI_CORE_IMAGE: ghcr.io/bangunindo/patrolli-core:edge
-          run: |
-              docker compose -f dev/docker-compose.yml up -d --wait
-              for _ in $(seq 1 45); do
-                if curl -sf http://localhost:8080/health >/dev/null && \
-                   curl -sf http://localhost:30001/health >/dev/null && \
-                   curl --cacert dev/certs/ssl/ca.crt -sf https://kc.localtest.me:8443/realms/patrolli >/dev/null; then
-                  exit 0
-                fi
-                sleep 2
-              done
-              docker compose -f dev/docker-compose.yml logs
-              exit 1
-
-        - run: npm ci
-
-        - name: Cache Playwright browsers
-          id: playwright-cache
-          uses: actions/cache@<COMMIT_SHA>
-          with:
-              path: ~/.cache/ms-playwright
-              key: playwright-${{ runner.os }}-${{ hashFiles('src/web/package-lock.json') }}
-
-        - name: Install Playwright Chromium
-          run: |
-              if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
-                npx playwright install chromium --with-deps
-              else
-                npx playwright install-deps chromium
-              fi
-
-        - name: Run Web E2E
-          env:
-              FRONTEND_CONFIG: dev/.generated/config-fe.yaml
-          run: npm run test:e2e
-
-        - name: Upload Playwright report on failure
-          if: failure()
-          uses: actions/upload-artifact@<COMMIT_SHA>
-          with:
-              name: playwright-report
-              path: |
-                  src/web/playwright-report
-                  src/web/test-results
-              retention-days: 7
-
-        - name: Stop backend stack
-          if: always()
-          run: docker compose -f dev/docker-compose.yml down -v
-```
+Reference timings on a 22-core machine with nothing cached: `npm ci` 45s, Chromium download 25s, stack start 45s, e2e run 3 minutes (including a 20s Nuxt build).
 
 ---
 
