@@ -181,9 +181,12 @@ export class PipelinePage extends BasePage {
 		}
 
 		// Select Hosts
+		const selectorItems = this.modalDialog.locator(
+			'.h-\\[220px\\] .divide-y > div, .max-h-\\[220px\\] > div'
+		)
 		await this.buttonSelectHosts.click()
 		await this.modalDialog
-			.locator('.max-h-\\[220px\\], button[role="checkbox"]')
+			.locator('.h-\\[220px\\], .max-h-\\[220px\\], button[role="checkbox"]')
 			.first()
 			.waitFor({ state: 'visible', timeout: 5000 })
 			.catch(() => null)
@@ -191,16 +194,13 @@ export class PipelinePage extends BasePage {
 		if (data.hostName) {
 			const hostSearch = this.modalDialog.getByPlaceholder(/search host by name or ip/i)
 			await hostSearch.fill(data.hostName)
-			const targetHost = this.modalDialog
-				.locator('.max-h-\\[220px\\] > div')
-				.filter({ hasText: data.hostName })
-				.first()
+			const targetHost = selectorItems.filter({ hasText: data.hostName }).first()
 			await targetHost.waitFor({ state: 'visible', timeout: 5000 })
 			await targetHost.click()
 		} else if (await this.buttonSelectAllHosts.isVisible()) {
 			await this.buttonSelectAllHosts.click()
 		} else {
-			const hostItem = this.modalDialog.locator('.max-h-\\[220px\\] > div').first()
+			const hostItem = selectorItems.first()
 			if (await hostItem.isVisible()) {
 				await hostItem.click()
 			}
@@ -210,7 +210,7 @@ export class PipelinePage extends BasePage {
 		// Optional: Select Sinks if available
 		try {
 			await this.buttonSelectSinks.click()
-			const sinkItem = this.modalDialog.locator('.max-h-\\[220px\\] > div').first()
+			const sinkItem = selectorItems.first()
 			await sinkItem.waitFor({ state: 'visible', timeout: 3000 })
 			await sinkItem.click()
 			await this.buttonApplySinks.click()

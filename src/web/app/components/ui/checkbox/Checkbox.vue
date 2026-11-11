@@ -4,7 +4,7 @@ import {
 	CheckboxRoot,
 	type CheckboxRootEmits,
 	type CheckboxRootProps,
-	useForwardPropsEmits
+	useForwardProps
 } from 'reka-ui'
 import { computed, type HTMLAttributes } from 'vue'
 import { cn } from '@/app/lib/utils'
@@ -39,7 +39,7 @@ const delegatedProps = computed(() => {
 	return delegated
 })
 
-const forwarded = useForwardPropsEmits(delegatedProps, emits)
+const forwarded = useForwardProps(delegatedProps)
 
 const handleModelValueUpdate = (val: boolean | 'indeterminate') => {
 	emits('update:checked', val)

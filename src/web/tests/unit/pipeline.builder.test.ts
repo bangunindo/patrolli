@@ -4,6 +4,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
+import { useAppStore } from '@/stores/app.store'
 import { usePipelineBuildStore } from '@/stores/pipeline.builder.store'
 import pipelinesApi from '@/app/api/pipelines.api'
 import hostsApi from '@/app/api/hosts.api'
@@ -410,5 +411,53 @@ describe('Pipeline Builder Store & Canvas Integration', () => {
 		expect(sink.node_id).toMatch(uuidV7Regex)
 		expect(sink.id).toBe(sink.node_id)
 		expect(sink.data.node_id).toBe(sink.node_id)
+	})
+
+	it('prevents adding more than one source node and blocks saving graphs with multiple sources', async () => {
+		const appStore = useAppStore()
+		const showErrorSpy = vi.spyOn(appStore, 'showError').mockImplementation(() => {})
+		const store = usePipelineBuildStore()
+
+		expect(store.hasSourceNode).toBe(false)
+
+		const firstSource = store.addSourceNode(100, 100)
+		expect(firstSource).not.toBeNull()
+		expect(store.hasSourceNode).toBe(true)
+		expect(store.nodes).toHaveLength(1)
+
+		const secondSource = store.addSourceNode(200, 200)
+		expect(secondSource).toBeNull()
+		expect(store.nodes).toHaveLength(1)
+		expect(showErrorSpy).toHaveBeenCalledWith(
+			'Source Node Limit',
+			'A pipeline can only have one Source node.'
+		)
+
+		store.removeNode(firstSource!.id)
+		expect(store.hasSourceNode).toBe(false)
+
+		const recreated = store.addSourceNode(120, 120)
+		expect(recreated).not.toBeNull()
+		expect(store.hasSourceNode).toBe(true)
+
+		// Force-inject a duplicate source node and verify saveGraph aborts before API call
+		store.pipelineId = 'pipe-1'
+		store.canvasId = 'canvas-1'
+		store.nodes.push({
+			id: 'duplicate-source',
+			node_id: 'duplicate-source',
+			type: 'source',
+			label: 'Source',
+			position: { x: 250, y: 120 },
+			data: {}
+		})
+		const updateGraphSpy = vi.spyOn(pipelinesApi, 'updatePipelineGraph')
+		const saved = await store.saveGraph()
+		expect(saved).toBe(false)
+		expect(updateGraphSpy).not.toHaveBeenCalled()
+		expect(showErrorSpy).toHaveBeenCalledWith(
+			'Failed to save pipeline',
+			'A pipeline can only have one Source node.'
+		)
 	})
 })

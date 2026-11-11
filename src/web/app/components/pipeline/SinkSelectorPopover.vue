@@ -6,6 +6,28 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { createReusableTemplate } from '@vueuse/core'
+import { Alert as UiAlert, AlertDescription as UiAlertDescription } from '@/components/ui/alert'
+import { Badge as UiBadge } from '@/components/ui/badge'
+import { Button as UiButton } from '@/components/ui/button'
+import {
+	Card as UiCard,
+	CardContent as UiCardContent,
+	CardFooter as UiCardFooter,
+	CardHeader as UiCardHeader
+} from '@/components/ui/card'
+import { Checkbox as UiCheckbox } from '@/components/ui/checkbox'
+import {
+	Dialog as UiDialog,
+	DialogContent as UiDialogContent,
+	DialogDescription as UiDialogDescription,
+	DialogFooter as UiDialogFooter,
+	DialogHeader as UiDialogHeader,
+	DialogTitle as UiDialogTitle
+} from '@/components/ui/dialog'
+import UiIcon from '@/components/ui/icon/Icon.vue'
+import { Input as UiInput } from '@/components/ui/input'
+import { ScrollArea as UiScrollArea } from '@/components/ui/scroll-area'
 import { usePipelineStore } from '@/stores/pipeline.store'
 import type { ISinkSelectorItem } from '@@/shared/types/pipeline.type'
 
@@ -13,16 +35,30 @@ const props = withDefaults(
 	defineProps<{
 		modelValue?: boolean
 		inline?: boolean
+		suspended?: boolean
+		sinks?: ISinkSelectorItem[]
+		selectedIds?: string[]
+		loading?: boolean
+		saving?: boolean
+		errorMessage?: string | null
 	}>(),
 	{
 		modelValue: true,
-		inline: false
+		inline: false,
+		suspended: false,
+		sinks: undefined,
+		selectedIds: undefined,
+		loading: false,
+		saving: false,
+		errorMessage: null
 	}
 )
 
 const emit = defineEmits<{
 	(e: 'update:modelValue', val: boolean): void
 	(e: 'close'): void
+	(e: 'apply', ids: string[]): void
+	(e: 'clearError'): void
 }>()
 
 const pipelineStore = usePipelineStore()
@@ -30,201 +66,278 @@ const pipelineStore = usePipelineStore()
 const search = ref('')
 const draftSelected = ref<string[]>([])
 
+const isControlled = computed(() => props.selectedIds !== undefined)
+const sinkList = computed(() => props.sinks ?? pipelineStore.availableSinks)
+const draftSelectedSet = computed(() => new Set(draftSelected.value))
+const sourceIds = computed(() => props.selectedIds ?? pipelineStore.form.assignedSinks)
+const sourceSignature = computed(() => sourceIds.value.join('\0'))
+
 watch(
-	() => props.modelValue,
-	(isOpen) => {
-		if (isOpen || props.inline) {
-			draftSelected.value = [...pipelineStore.form.assignedSinks]
-			search.value = ''
+	[() => props.modelValue, () => props.inline, sourceSignature] as const,
+	([isOpen, isInline], prev) => {
+		if (isOpen || isInline) {
+			draftSelected.value = [...sourceIds.value]
+			const wasActive = prev ? Boolean(prev[0] || prev[1]) : false
+			if (!wasActive) {
+				search.value = ''
+			}
 		}
 	},
 	{ immediate: true }
 )
 
 const filteredSinks = computed(() => {
-	return pipelineStore.availableSinks.filter((sink: ISinkSelectorItem) => {
-		const q = search.value.toLowerCase().trim()
+	const q = search.value.toLowerCase().trim()
+	if (q === '') return sinkList.value
+	return sinkList.value.filter((sink: ISinkSelectorItem) => {
 		return (
-			q === '' ||
 			sink.name.toLowerCase().includes(q) ||
-			(sink.type && sink.type.toLowerCase().includes(q))
+			Boolean(sink.type && sink.type.toLowerCase().includes(q))
 		)
 	})
 })
 
-function toggleSink(sinkId: string) {
+function setSinkChecked(sinkId: string, checked = !isSinkChecked(sinkId)) {
+	if (props.saving) return
+	emit('clearError')
 	const idx = draftSelected.value.indexOf(sinkId)
-	if (idx > -1) {
-		draftSelected.value.splice(idx, 1)
-	} else {
+	if (checked && idx === -1) {
 		draftSelected.value.push(sinkId)
+	} else if (!checked && idx > -1) {
+		draftSelected.value.splice(idx, 1)
 	}
 }
 
 function isSinkChecked(sinkId: string): boolean {
-	return draftSelected.value.includes(sinkId)
+	return draftSelectedSet.value.has(sinkId)
+}
+
+function selectAllFiltered() {
+	if (props.saving || props.loading) return
+	emit('clearError')
+	const currentFilteredIds = filteredSinks.value.map((s) => s.id)
+	if (currentFilteredIds.length === 0) return
+	const selectedSet = draftSelectedSet.value
+	const allInDraft = currentFilteredIds.every((id) => selectedSet.has(id))
+
+	if (allInDraft) {
+		const filteredSet = new Set(currentFilteredIds)
+		draftSelected.value = draftSelected.value.filter((id) => !filteredSet.has(id))
+	} else {
+		for (const id of currentFilteredIds) {
+			if (!selectedSet.has(id)) draftSelected.value.push(id)
+		}
+	}
 }
 
 function clearAll() {
+	if (props.saving) return
+	emit('clearError')
 	draftSelected.value = []
 }
 
 function applySelection() {
+	if (isControlled.value) {
+		emit('apply', [...draftSelected.value])
+		return
+	}
+
 	pipelineStore.form.assignedSinks = [...draftSelected.value]
 	close()
 }
 
+const [DefineSelectorBody, SelectorBody] = createReusableTemplate()
+const [DefineSelectorActions, SelectorActions] = createReusableTemplate()
+
 function close() {
+	if (props.saving) return
 	emit('update:modelValue', false)
 	emit('close')
+}
+
+function handleDialogOpenChange(open: boolean) {
+	if (!open) {
+		close()
+	}
 }
 </script>
 
 <template>
-	<div
-		v-if="inline || modelValue"
-		:class="
-			inline
-				? 'w-full'
-				: 'fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs'
-		"
-		@click.self="!inline && close()"
-	>
-		<div
-			:class="[
-				'w-full rounded-[10px] border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col overflow-hidden animate-in fade-in duration-150',
-				inline ? 'shadow-xl' : 'max-w-[490px] shadow-2xl zoom-in-95'
-			]"
-		>
-			<div
-				class="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-slate-800"
-			>
-				<div class="flex items-center gap-2">
-					<span class="text-xs font-semibold text-slate-800 dark:text-slate-100">
-						Select Sinks
-					</span>
-					<span
-						class="px-2 py-0.5 rounded text-[10px] font-medium bg-sky-100 dark:bg-sky-950 text-sky-600 dark:text-sky-400"
-					>
-						{{ draftSelected.length }} of
-						{{ pipelineStore.availableSinks.length }} Selected
-					</span>
-				</div>
-				<button
-					type="button"
-					class="w-6 h-6 flex items-center justify-center rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-sm"
-					@click="close"
-				>
-					✕
-				</button>
-			</div>
-
-			<div
-				class="p-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/40"
-			>
-				<div class="relative w-full">
+	<DefineSelectorBody>
+		<div class="p-3 border-b border-border flex flex-col gap-2 bg-muted/40">
+			<div class="flex items-center gap-2">
+				<div class="relative flex-1">
 					<UiIcon
 						name="magnify"
 						size="14px"
-						class="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+						class="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
 					/>
-					<input
+					<UiInput
 						v-model="search"
 						type="text"
 						placeholder="Search sink by name or type..."
-						class="w-full pl-8 pr-3 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md focus:outline-none focus:border-sky-500 text-slate-800 dark:text-slate-100 placeholder:text-slate-400"
+						class="h-8 pl-8 pr-3 text-xs"
+						:disabled="saving"
 					/>
 				</div>
+
+				<UiButton
+					variant="outline"
+					size="xs"
+					class="shrink-0"
+					:disabled="saving || loading || filteredSinks.length === 0"
+					@click="selectAllFiltered"
+				>
+					Select All
+				</UiButton>
 			</div>
 
-			<div
-				class="max-h-[220px] overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/80 p-1"
-			>
+			<UiAlert v-if="errorMessage" variant="destructive" class="py-2 px-3">
+				<UiAlertDescription class="text-[11px] font-medium">
+					{{ errorMessage }}
+				</UiAlertDescription>
+			</UiAlert>
+		</div>
+
+		<UiScrollArea class="h-[220px]">
+			<div class="divide-y divide-border p-1">
+				<div
+					v-if="loading && sinkList.length === 0"
+					class="py-8 text-center text-xs text-muted-foreground"
+				>
+					Loading sinks...
+				</div>
+
 				<div
 					v-for="sink in filteredSinks"
+					v-else
 					:key="sink.id"
-					class="flex items-center justify-between px-3 py-2 rounded transition-colors cursor-pointer"
+					class="flex items-center justify-between px-3 py-2 rounded-md transition-colors cursor-pointer"
 					:class="
 						isSinkChecked(sink.id)
 							? 'bg-sky-50/80 dark:bg-sky-950/40'
-							: 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
+							: 'hover:bg-accent/60'
 					"
-					@click="toggleSink(sink.id)"
+					@click="setSinkChecked(sink.id)"
 				>
 					<div class="flex items-center gap-2.5 min-w-0">
-						<div
-							class="w-4 h-4 rounded border flex items-center justify-center transition-colors"
-							:class="
-								isSinkChecked(sink.id)
-									? 'bg-sky-600 border-sky-600 text-white'
-									: 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900'
-							"
-						>
-							<svg
-								v-if="isSinkChecked(sink.id)"
-								class="w-2.5 h-2.5"
-								viewBox="0 0 12 12"
-								fill="none"
-							>
-								<path
-									d="M10 3L4.5 8.5L2 6"
-									stroke="currentColor"
-									stroke-width="2"
-									stroke-linecap="round"
-									stroke-linejoin="round"
-								/>
-							</svg>
-						</div>
+						<UiCheckbox
+							:model-value="isSinkChecked(sink.id)"
+							:disabled="saving"
+							aria-label="Select sink"
+							@click.stop
+							@update:model-value="(val) => setSinkChecked(sink.id, Boolean(val))"
+						/>
 						<span
 							class="text-xs truncate"
 							:class="
 								isSinkChecked(sink.id)
-									? 'font-semibold text-slate-900 dark:text-slate-100'
-									: 'font-normal text-slate-700 dark:text-slate-300'
+									? 'font-semibold text-foreground'
+									: 'font-normal text-foreground/80'
 							"
 						>
 							{{ sink.name }}
 						</span>
 					</div>
 
-					<span
-						class="px-2 py-0.5 rounded text-[10px] uppercase font-mono shrink-0"
+					<UiBadge
+						:variant="isSinkChecked(sink.id) ? 'outline' : 'secondary'"
+						class="px-2 py-0.5 text-[10px] uppercase font-mono font-normal shrink-0"
 						:class="
 							isSinkChecked(sink.id)
-								? 'bg-sky-100 dark:bg-sky-950 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-800'
-								: 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700'
+								? 'bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800'
+								: ''
 						"
 					>
 						{{ sink.type }}
-					</span>
+					</UiBadge>
 				</div>
 
 				<div
-					v-if="filteredSinks.length === 0"
-					class="py-8 text-center text-xs text-slate-400 dark:text-slate-500"
+					v-if="!loading && filteredSinks.length === 0"
+					class="py-8 text-center text-xs text-muted-foreground"
 				>
 					No sinks found matching filter
 				</div>
 			</div>
+		</UiScrollArea>
+	</DefineSelectorBody>
 
-			<div
-				class="flex items-center justify-between px-4 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/40"
-			>
-				<button
-					type="button"
-					class="px-3 py-1.5 text-xs rounded border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800"
-					@click="clearAll"
+	<DefineSelectorActions>
+		<UiButton variant="outline" size="xs" :disabled="saving" @click="clearAll">
+			Clear All
+		</UiButton>
+		<UiButton size="xs" :disabled="saving || loading" @click="applySelection">
+			{{ saving ? 'Saving...' : `Apply Selection (${draftSelected.length})` }}
+		</UiButton>
+	</DefineSelectorActions>
+
+	<UiCard v-if="inline" class="w-full overflow-hidden shadow-xl">
+		<UiCardHeader
+			class="flex flex-row items-center justify-between space-y-0 px-4 py-3 border-b border-border"
+		>
+			<div class="flex items-center gap-2">
+				<span class="text-xs font-semibold text-foreground"> Select Sinks </span>
+				<UiBadge
+					variant="secondary"
+					class="px-2 py-0.5 text-[10px] font-medium bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300"
 				>
-					Clear All
-				</button>
-				<button
-					type="button"
-					class="px-3 py-1.5 text-xs rounded bg-sky-600 hover:bg-sky-700 text-white font-medium shadow-xs"
-					@click="applySelection"
-				>
-					Apply Selection ({{ draftSelected.length }})
-				</button>
+					{{ draftSelected.length }} of {{ sinkList.length }} Selected
+				</UiBadge>
 			</div>
-		</div>
-	</div>
+			<UiButton
+				variant="ghost"
+				size="icon"
+				class="h-6 w-6 text-muted-foreground hover:text-foreground"
+				:disabled="saving"
+				@click="close"
+			>
+				<UiIcon name="close" size="14px" />
+			</UiButton>
+		</UiCardHeader>
+
+		<UiCardContent class="p-0">
+			<SelectorBody />
+		</UiCardContent>
+
+		<UiCardFooter
+			class="flex items-center justify-between px-4 py-3 border-t border-border bg-muted/40"
+		>
+			<SelectorActions />
+		</UiCardFooter>
+	</UiCard>
+
+	<UiDialog v-else :open="modelValue && !suspended" @update:open="handleDialogOpenChange">
+		<UiDialogContent
+			class="sm:max-w-[490px] p-0 gap-0 overflow-hidden"
+			@escape-key-down="(e) => saving && e.preventDefault()"
+			@pointer-down-outside="(e) => saving && e.preventDefault()"
+			@interact-outside="(e) => saving && e.preventDefault()"
+		>
+			<UiDialogHeader
+				class="px-4 py-3 border-b border-border flex-row items-center gap-2 space-y-0 pr-10"
+			>
+				<UiDialogTitle class="text-xs font-semibold text-foreground">
+					Select Sinks
+				</UiDialogTitle>
+				<UiBadge
+					variant="secondary"
+					class="px-2 py-0.5 text-[10px] font-medium bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300"
+				>
+					{{ draftSelected.length }} of {{ sinkList.length }} Selected
+				</UiBadge>
+				<UiDialogDescription class="sr-only">
+					Select sinks to attach to this pipeline
+				</UiDialogDescription>
+			</UiDialogHeader>
+
+			<SelectorBody />
+
+			<UiDialogFooter
+				class="flex-row items-center justify-between sm:justify-between px-4 py-3 border-t border-border bg-muted/40 gap-2"
+			>
+				<SelectorActions />
+			</UiDialogFooter>
+		</UiDialogContent>
+	</UiDialog>
 </template>
