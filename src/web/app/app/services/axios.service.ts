@@ -16,6 +16,17 @@ import { useDebounceFn } from '@vueuse/core'
 
 export type { AxiosInstance }
 
+declare module 'axios' {
+	export interface AxiosRequestConfig {
+		suppressErrorStatuses?: number[]
+	}
+}
+
+function shouldShowErrorToast(error: unknown, config?: AxiosRequestConfig): boolean {
+	const status = (error as ApiError | undefined)?.status
+	return typeof status !== 'number' || !config?.suppressErrorStatuses?.includes(status)
+}
+
 interface ApiResponse<T = any> {
 	data: T
 	status: number
@@ -162,7 +173,9 @@ export class AxiosService {
 			const response = await this.instance.get<T>(url, config)
 			return response
 		} catch (error) {
-			handleErrorMessage(error as any)
+			if (shouldShowErrorToast(error, config)) {
+				handleErrorMessage(error as any)
+			}
 		}
 	}
 
@@ -175,7 +188,7 @@ export class AxiosService {
 			const response = await this.instance.post<T>(url, data, config)
 			return response
 		} catch (error) {
-			if (!SILENT_AUTH_RE.test(url)) {
+			if (!SILENT_AUTH_RE.test(url) && shouldShowErrorToast(error, config)) {
 				handleErrorMessage(error as any)
 			}
 			throw error
@@ -191,7 +204,9 @@ export class AxiosService {
 			const response = await this.instance.put<T>(url, data, config)
 			return response
 		} catch (error: any) {
-			handleErrorMessage(error)
+			if (shouldShowErrorToast(error, config)) {
+				handleErrorMessage(error)
+			}
 			throw error
 		}
 	}
@@ -204,7 +219,9 @@ export class AxiosService {
 			const response = await this.instance.delete<T>(url, config)
 			return response
 		} catch (error: any) {
-			handleErrorMessage(error)
+			if (shouldShowErrorToast(error, config)) {
+				handleErrorMessage(error)
+			}
 		}
 	}
 

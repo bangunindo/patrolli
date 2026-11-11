@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import type { AxiosRequestConfig } from 'axios'
 import type {
 	CreatePipelineRequest,
 	ResponseDataGetPipelineGraphResponse,
@@ -49,9 +50,10 @@ const pipelinesApi = {
 	async updatePipeline(
 		id: string,
 		payload: UpdatePipelineRequest,
-		clusterURLs?: string[]
+		clusterURLs?: string[],
+		config?: AxiosRequestConfig
 	): Promise<ResponseDataPipelineDetail | undefined> {
-		return httpService.put(`${this.path}/${id}`, payload, undefined, clusterURLs)
+		return httpService.put(`${this.path}/${id}`, payload, config, clusterURLs)
 	},
 
 	async deletePipeline(

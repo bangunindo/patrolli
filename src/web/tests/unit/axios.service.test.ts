@@ -157,3 +157,60 @@ describe('httpService Multi-Cluster Routing Integration', () => {
 		expect(mockPost).toHaveBeenCalledWith('/api/users', { username: 'test' }, undefined)
 	})
 })
+
+describe('axios.service suppressErrorStatuses', () => {
+	beforeEach(() => {
+		vi.useFakeTimers()
+		setActivePinia(createPinia())
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+		vi.restoreAllMocks()
+	})
+
+	it('suppresses toast notifications for configured statuses in put()', async () => {
+		const { AxiosService } = await import('@/app/services/axios.service')
+		const appStore = useAppStore()
+		const service = new AxiosService()
+
+		vi.spyOn(service.instance, 'put').mockRejectedValue({
+			status: 409,
+			message: 'Conflict',
+			data: { error: { title: 'Subset in use', detail: 'Still in use' } }
+		})
+
+		await expect(
+			service.put(
+				'/api/pipelines/1',
+				{},
+				{
+					suppressErrorStatuses: [409]
+				}
+			)
+		).rejects.toMatchObject({ status: 409 })
+
+		await vi.advanceTimersByTimeAsync(500)
+		expect(appStore.notificationItems).toHaveLength(0)
+
+		vi.spyOn(service.instance, 'put').mockRejectedValueOnce({
+			status: 500,
+			message: 'Server Error',
+			data: { error: { title: 'Internal Error', detail: 'Boom' } }
+		})
+
+		await expect(
+			service.put(
+				'/api/pipelines/1',
+				{},
+				{
+					suppressErrorStatuses: [409]
+				}
+			)
+		).rejects.toMatchObject({ status: 500 })
+
+		await vi.advanceTimersByTimeAsync(500)
+		expect(appStore.notificationItems).toHaveLength(1)
+		expect(appStore.notificationItems[0].title).toBe('Internal Error')
+	})
+})
