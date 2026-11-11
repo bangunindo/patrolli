@@ -472,7 +472,9 @@ async fn capture_sends_a_sample_once_per_second_and_routes_every_record() {
     h.send(Some(p), logs(5));
     h.send(Some(p), logs(5));
 
-    let message = sub.recv().await.unwrap();
+    let Some(Sample::Otlp(message)) = sub.recv().await.unwrap().sample else {
+        panic!("an OTLP sample");
+    };
     assert!(message.message_out.is_some());
     assert!(
         tokio::time::timeout(Duration::from_millis(50), sub.recv())
@@ -498,7 +500,9 @@ async fn capture_when_processor_drops_batch_has_no_output() {
 
     h.send(Some(p), signals().remove(0));
 
-    let message = sub.recv().await.unwrap();
+    let Some(Sample::Otlp(message)) = sub.recv().await.unwrap().sample else {
+        panic!("an OTLP sample");
+    };
     assert!(message.message_out.is_none());
     assert!(h.received(s).is_empty());
     assert_eq!(h.node(p), (2, 0, 2));

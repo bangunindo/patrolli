@@ -43,10 +43,17 @@ message CaptureRequest {
   uint64 max_count = 2 ;
 }
 
-// message is already json-encoded
 message CaptureMessage {
+  oneof sample {
+    CaptureMessageOtlp otlp = 1;
+  }
+}
+
+// OTLP protobuf export requests of `signal`.
+message CaptureMessageOtlp {
   bytes message_in = 1;
   optional bytes message_out = 2;
+  SignalType signal = 3;
 }
 
 // ---------------------------------------------------------------------------
