@@ -23,7 +23,8 @@ import type {
 	GetPipelineGraphResponse,
 	PipelineDetail,
 	UpdatePipelineGraphRequest,
-	UpdatePipelineNodeRequest
+	UpdatePipelineNodeRequest,
+	UpdatePipelineRequest
 } from '@@/shared/generated/patrolliAPI.schemas.type'
 
 export function getProcessorModuleBadgeClass(moduleName: string, withBorder: boolean = true) {
@@ -122,6 +123,7 @@ export const usePipelineBuildStore = defineStore(
 		const edges = ref<any[]>([])
 		const selectedNode = ref<any>()
 		const isCanvasEmpty = computed(() => nodes.value.length === 0)
+		const hasSourceNode = computed(() => nodes.value.some((n: any) => n.type === 'source'))
 
 		const isDirty = ref(false)
 		const loading = reactive({
@@ -137,6 +139,47 @@ export const usePipelineBuildStore = defineStore(
 		const availableSinks = ref<any[]>([])
 		const pipelineItems = ref<any[]>([])
 		const loadingItems = ref(false)
+
+		const hostById = computed(() => {
+			const map = new Map<string, any>()
+			for (const h of availableHosts.value) {
+				if (h?.host_id) map.set(h.host_id, h)
+			}
+			return map
+		})
+
+		const sinkById = computed(() => {
+			const map = new Map<string, any>()
+			for (const s of availableSinks.value) {
+				if (s?.sink_id) map.set(s.sink_id, s)
+			}
+			return map
+		})
+
+		function resolveHostNames(hostIds: string[]): string[] {
+			const lookup = hostById.value
+			return hostIds.map((hid) => lookup.get(hid)?.name || hid)
+		}
+
+		const hostSelectorModalOpen = ref(false)
+		const sinkSelectorModalOpen = ref(false)
+		const selectorError = ref<string | null>(null)
+		const loadingResources = reactive({
+			hosts: false,
+			sinks: false,
+			updatingSubset: false
+		})
+		const subsetConfirmation = ref<{
+			isOpen: boolean
+			kind: 'hosts' | 'sinks'
+			nextIds: string[]
+			message: string
+		}>({
+			isOpen: false,
+			kind: 'hosts',
+			nextIds: [],
+			message: ''
+		})
 
 		const edgeItemModal = ref<{
 			isOpen: boolean
@@ -164,8 +207,18 @@ export const usePipelineBuildStore = defineStore(
 			loadingItems.value = true
 			const cUrls = clusterUrl.value ? [clusterUrl.value] : undefined
 			try {
-				const res = await itemsApi.getItems({ host_ids: hostIds, limit: 100 }, cUrls)
-				pipelineItems.value = res?.data?.items || []
+				pipelineItems.value = await fetchAllPages(async (limit, offset) => {
+					const res = await itemsApi.getItems(
+						offset > 0
+							? { host_ids: hostIds, limit, offset }
+							: { host_ids: hostIds, limit },
+						cUrls
+					)
+					return {
+						items: res?.data?.items || [],
+						total: res?.data?.total
+					}
+				})
 			} catch (err) {
 				console.error('Failed to fetch pipeline items:', err)
 			} finally {
@@ -177,6 +230,79 @@ export const usePipelineBuildStore = defineStore(
 			isDirty.value = true
 		}
 
+		const RESOURCE_PAGE_LIMIT = 100
+		const MAX_RESOURCE_PAGES = 50
+
+		async function fetchAllPages<T>(
+			fetchPage: (limit: number, offset: number) => Promise<{ items: T[]; total?: number }>
+		): Promise<T[]> {
+			const firstPage = await fetchPage(RESOURCE_PAGE_LIMIT, 0)
+			const collected: T[] = [...firstPage.items]
+			if (
+				firstPage.items.length === 0 ||
+				firstPage.items.length < RESOURCE_PAGE_LIMIT ||
+				(typeof firstPage.total === 'number' && collected.length >= firstPage.total)
+			) {
+				return collected
+			}
+
+			if (typeof firstPage.total === 'number' && firstPage.total > collected.length) {
+				const totalPages = Math.min(
+					MAX_RESOURCE_PAGES,
+					Math.ceil(firstPage.total / RESOURCE_PAGE_LIMIT)
+				)
+				const pagePromises: Promise<{ items: T[]; total?: number }>[] = []
+				for (let page = 1; page < totalPages; page++) {
+					pagePromises.push(fetchPage(RESOURCE_PAGE_LIMIT, page * RESOURCE_PAGE_LIMIT))
+				}
+				const remainingPages = await Promise.all(pagePromises)
+				for (const pageRes of remainingPages) {
+					collected.push(...pageRes.items)
+				}
+				return collected
+			}
+
+			for (let page = 1; page < MAX_RESOURCE_PAGES; page++) {
+				const offset = page * RESOURCE_PAGE_LIMIT
+				const { items, total } = await fetchPage(RESOURCE_PAGE_LIMIT, offset)
+				collected.push(...items)
+				if (
+					items.length === 0 ||
+					items.length < RESOURCE_PAGE_LIMIT ||
+					(typeof total === 'number' && collected.length >= total)
+				) {
+					break
+				}
+			}
+			return collected
+		}
+
+		async function fetchAllHosts(clusterURLs?: string[]): Promise<any[]> {
+			return fetchAllPages(async (limit, offset) => {
+				const res = await hostsApi.getHosts(
+					offset > 0 ? { limit, offset } : { limit },
+					clusterURLs
+				)
+				return {
+					items: res?.data?.hosts || [],
+					total: res?.data?.total
+				}
+			})
+		}
+
+		async function fetchAllSinks(clusterURLs?: string[]): Promise<any[]> {
+			return fetchAllPages(async (limit, offset) => {
+				const res = await sinksApi.getSinks(
+					offset > 0 ? { limit, offset } : { limit },
+					clusterURLs
+				)
+				return {
+					items: res?.data?.sinks || [],
+					total: res?.data?.total
+				}
+			})
+		}
+
 		async function loadBuilder(pId: string, cId: string, cluster?: string) {
 			pipelineId.value = pId
 			canvasId.value = cId
@@ -185,23 +311,27 @@ export const usePipelineBuildStore = defineStore(
 			error.value = null
 			isDirty.value = false
 			selectedNode.value = undefined
+			hostSelectorModalOpen.value = false
+			sinkSelectorModalOpen.value = false
+			selectorError.value = null
+			subsetConfirmation.value.isOpen = false
 
 			const cUrls = clusterUrl.value ? [clusterUrl.value] : undefined
 
 			try {
 				const shouldFetchGraph = Boolean(cId && cId !== 'default')
 
-				const [detailRes, hostsRes, sinksRes, graphRes] = await Promise.all([
+				const [detailRes, hostsList, sinksList, graphRes] = await Promise.all([
 					pipelinesApi.getPipelineById(pId, cUrls),
-					hostsApi.getHosts({ limit: 100 }, cUrls).catch(() => undefined),
-					sinksApi.getSinks({ limit: 100 }, cUrls).catch(() => undefined),
+					fetchAllHosts(cUrls).catch(() => [] as any[]),
+					fetchAllSinks(cUrls).catch(() => [] as any[]),
 					shouldFetchGraph
 						? pipelinesApi.getPipelineGraph({ pipeline_id: pId, canvas_id: cId }, cUrls)
 						: Promise.resolve(undefined)
 				])
 
-				availableHosts.value = hostsRes?.data?.hosts || []
-				availableSinks.value = sinksRes?.data?.sinks || []
+				availableHosts.value = hostsList
+				availableSinks.value = sinksList
 
 				const nodeTasks: Promise<unknown>[] = []
 
@@ -217,30 +347,14 @@ export const usePipelineBuildStore = defineStore(
 					const sourceNode = graphNodes.find((n: any) => n.kind === 'source')
 					if (sourceNode?.node_id) {
 						nodeTasks.push(
-							pipelinesApi
-								.getPipelineNode(
-									{
-										pipeline_id: pId,
-										canvas_id: cId,
-										node_id: sourceNode.node_id,
-										query: { limit: 100 }
-									},
-									cUrls
-								)
-								.then((sourceNodeRes) => {
-									const sourceItems =
-										(sourceNodeRes?.data as any)?.content?.data?.items ||
-										(sourceNodeRes?.data as any)?.data?.items ||
-										[]
+							fetchSourceNodeDetails(pId, cId, sourceNode.node_id, cUrls)
+								.then((sourceDetails) => {
+									if (!sourceDetails) return
+									const { items: sourceItems, total } = sourceDetails
 									if (!sourceNode.data) (sourceNode as any).data = {}
 									;(sourceNode.data as any).items = sourceItems
-									if (
-										typeof (sourceNodeRes?.data as any)?.content?.data
-											?.total === 'number'
-									) {
-										;(sourceNode.data as any).item_count = (
-											sourceNodeRes?.data as any
-										).content.data.total
+									if (typeof total === 'number') {
+										;(sourceNode.data as any).item_count = total
 									} else if (sourceItems.length > 0) {
 										;(sourceNode.data as any).item_count = sourceItems.length
 									}
@@ -365,10 +479,7 @@ export const usePipelineBuildStore = defineStore(
 					if (gn.kind === 'source') {
 						nType = 'source'
 						label = 'Source'
-						const hostNames = (pipelineDetail.value?.host_ids || []).map((hid) => {
-							const found = availableHosts.value.find((h) => h.host_id === hid)
-							return found?.name || hid
-						})
+						const hostNames = resolveHostNames(pipelineDetail.value?.host_ids || [])
 						const count =
 							typeof gn.data?.item_count === 'number'
 								? gn.data.item_count
@@ -393,7 +504,7 @@ export const usePipelineBuildStore = defineStore(
 					} else if (gn.kind === 'sink') {
 						nType = 'sink'
 						const sinkId = (gn.data as any)?.sink_id
-						const sinkMeta = availableSinks.value.find((s) => s.sink_id === sinkId)
+						const sinkMeta = sinkId ? sinkById.value.get(sinkId) : undefined
 						label = 'Sink Target'
 						nodeData = {
 							id: nodeId,
@@ -472,11 +583,12 @@ export const usePipelineBuildStore = defineStore(
 								? sourceNodeMeta.data.itemCount
 								: 0
 				const sourceItemIds = extractItemIds(sourceNodeMeta?.data?.items || [])
+				const existingNodeById = new Map<string, any>(
+					existingNodes.map((gn: any) => [gn.node_id, gn])
+				)
 
 				const mappedEdges: any[] = existingRelations.map((rel: any, idx) => {
-					const fromNodeMeta: any = existingNodes.find(
-						(gn: any) => gn.node_id === rel.from_node_id
-					)
+					const fromNodeMeta: any = existingNodeById.get(rel.from_node_id)
 					const isSourceToTarget =
 						(fromNodeMeta && fromNodeMeta.kind === 'source') ||
 						(sourceNodeMeta && rel.from_node_id === sourceNodeMeta.node_id) ||
@@ -586,17 +698,20 @@ export const usePipelineBuildStore = defineStore(
 			return newSink
 		}
 
-		function addSourceNode(x?: number, y?: number) {
+		function addSourceNode(x?: number, y?: number): INode | null {
+			if (hasSourceNode.value) {
+				const message = 'A pipeline can only have one Source node.'
+				error.value = message
+				notifyNonAxiosError('Source Node Limit', message)
+				return null
+			}
+
 			const nodeId = generateUuidV7()
-			const srcCount = nodes.value.filter((n: any) => n.type === 'source').length
-			const posX = x !== undefined ? x : 80 + srcCount * 60
-			const posY = y !== undefined ? y : 160 + (srcCount % 2) * 40
+			const posX = x ?? 80
+			const posY = y ?? 160
 
 			const hosts = pipelineDetail.value?.host_ids || []
-			const hostNames = hosts.map((hid) => {
-				const found = availableHosts.value.find((h) => h.host_id === hid)
-				return found?.name || hid
-			})
+			const hostNames = resolveHostNames(hosts)
 
 			const newSource: INode = {
 				id: nodeId,
@@ -626,7 +741,7 @@ export const usePipelineBuildStore = defineStore(
 		}
 
 		function selectSinkForNode(nodeId: string, sinkId: string) {
-			const targetSink = availableSinks.value.find((s: any) => s.sink_id === sinkId)
+			const targetSink = sinkById.value.get(sinkId)
 			const targetNode = nodes.value.find((n: any) => n.id === nodeId)
 			if (targetNode) {
 				targetNode.label = 'Sink Target'
@@ -709,10 +824,14 @@ export const usePipelineBuildStore = defineStore(
 				const fallbackSourceCount = getSourceNodeItemCount(node)
 				for (const edge of outgoingEdges.get(node.id) || []) {
 					const selectedIds = edge.data?.selectedItemIds
+					const labelCount = parseEdgeLabelCount(edge.data?.label)
 					const edgeCount =
 						Array.isArray(selectedIds) && selectedIds.length > 0
-							? selectedIds.length
-							: (parseEdgeLabelCount(edge.data?.label) ?? fallbackSourceCount)
+							? fallbackSourceCount > selectedIds.length &&
+								labelCount === fallbackSourceCount
+								? fallbackSourceCount
+								: selectedIds.length
+							: (labelCount ?? fallbackSourceCount)
 					enqueueTarget(edge.target, edgeCount)
 				}
 			}
@@ -1081,8 +1200,9 @@ export const usePipelineBuildStore = defineStore(
 		function bulkDisableProcessors(nodeId: string, processorIds: string[]) {
 			const node = nodes.value.find((n: any) => n.id === nodeId)
 			if (!node || !node.data?.processors) return
+			const targetIds = new Set(processorIds)
 			node.data.processors.forEach((p: IGroupProcessorItem) => {
-				if (processorIds.includes(p.processor_id)) {
+				if (targetIds.has(p.processor_id)) {
 					p.status = false
 				}
 			})
@@ -1093,8 +1213,9 @@ export const usePipelineBuildStore = defineStore(
 		function bulkDeleteProcessors(nodeId: string, processorIds: string[]) {
 			const node = nodes.value.find((n: any) => n.id === nodeId)
 			if (!node || !node.data?.processors) return
+			const targetIds = new Set(processorIds)
 			node.data.processors = node.data.processors.filter(
-				(p: IGroupProcessorItem) => !processorIds.includes(p.processor_id)
+				(p: IGroupProcessorItem) => !targetIds.has(p.processor_id)
 			)
 			syncProcessorCounts(node)
 			markDirty()
@@ -1178,8 +1299,8 @@ export const usePipelineBuildStore = defineStore(
 				} catch (err: any) {
 					rollbackTarget()
 					isDirty.value = wasDirty
-					error.value = err?.message || 'Failed to save processor node'
-					if (!axios.isAxiosError(err)) {
+					error.value = extractErrorMessage(err, 'Failed to save processor node')
+					if (!isHttpOrAxiosError(err)) {
 						notifyNonAxiosError('Failed to save processor', error.value ?? '')
 					}
 					return false
@@ -1279,11 +1400,20 @@ export const usePipelineBuildStore = defineStore(
 
 		async function fetchClusterProcessorIds(clusterURLs?: string[]): Promise<Set<string>> {
 			try {
-				const clusterProcRes = await processorsApi.get({ limit: 100 }, clusterURLs)
-				const clusterList =
-					(clusterProcRes?.data as any)?.processors ||
-					(clusterProcRes?.data as any)?.pipelines ||
-					[]
+				const clusterList = await fetchAllPages(async (limit, offset) => {
+					const clusterProcRes = await processorsApi.get(
+						offset > 0 ? { limit, offset } : { limit },
+						clusterURLs
+					)
+					const items =
+						(clusterProcRes?.data as any)?.processors ||
+						(clusterProcRes?.data as any)?.pipelines ||
+						[]
+					return {
+						items,
+						total: (clusterProcRes?.data as any)?.total
+					}
+				})
 				return new Set<string>(
 					clusterList.map((cp: any) => cp.processor_id || cp.pipeline_id)
 				)
@@ -1292,12 +1422,90 @@ export const usePipelineBuildStore = defineStore(
 			}
 		}
 
+		function parseSourceNodeContent(sourceNodeRes: any): { items: any[]; total?: number } {
+			const contentData =
+				sourceNodeRes?.data?.content?.data ??
+				sourceNodeRes?.data?.data ??
+				sourceNodeRes?.data
+			const items = Array.isArray(contentData?.items) ? contentData.items : []
+			const total = typeof contentData?.total === 'number' ? contentData.total : undefined
+			return { items, total }
+		}
+
+		async function fetchSourceNodeDetails(
+			pId: string,
+			cId: string,
+			nodeId: string,
+			clusterURLs?: string[]
+		): Promise<{ response: any; items: any[]; total?: number } | null> {
+			let firstRes: any = null
+			let firstTotal: number | undefined
+
+			const items = await fetchAllPages(async (limit, offset) => {
+				const res = await pipelinesApi.getPipelineNode(
+					{
+						pipeline_id: pId,
+						canvas_id: cId,
+						node_id: nodeId,
+						query: offset > 0 ? { limit, offset } : { limit }
+					},
+					clusterURLs
+				)
+				if (offset === 0) {
+					firstRes = res
+				}
+				if (!res?.success || !res.data) {
+					return { items: [], total: offset === 0 ? 0 : undefined }
+				}
+				const parsed = parseSourceNodeContent(res)
+				if (offset === 0) {
+					firstTotal = parsed.total
+				}
+				return parsed
+			})
+
+			if (!firstRes?.success || !firstRes.data) {
+				return null
+			}
+
+			return {
+				response: firstRes,
+				items,
+				total: firstTotal
+			}
+		}
+
+		function isHttpOrAxiosError(err: unknown): boolean {
+			if (axios.isAxiosError(err)) return true
+			if (!err || typeof err !== 'object') return false
+			return (
+				('status' in err && (err as { status?: unknown }).status !== undefined) ||
+				('data' in err && (err as { data?: unknown }).data !== undefined)
+			)
+		}
+
+		function extractErrorMessage(err: any, fallback: string): string {
+			return err?.data?.error?.detail || err?.data?.error?.title || err?.message || fallback
+		}
+
 		function notifyNonAxiosError(title: string, message: string) {
 			try {
 				useAppStore().showError(title, message)
 			} catch {
 				// Ignore when Pinia app store is unavailable
 			}
+		}
+
+		function extractRawItemId(item: any): string {
+			return String(typeof item === 'string' ? item : item?.item_id || item?.id || '').trim()
+		}
+
+		function normalizeItemId(item: any): string {
+			return extractRawItemId(item).toLowerCase()
+		}
+
+		function extractTrimmedItemIds(items: any[]): string[] {
+			return items.map(extractRawItemId).filter(Boolean)
 		}
 
 		async function saveNodeContent(
@@ -1310,15 +1518,21 @@ export const usePipelineBuildStore = defineStore(
 			const nodeId = (node as any).node_id || node.id
 
 			// Fetch fresh node state from backend to retrieve the current last_updated timestamp and existing items
-			const nodeRes = await pipelinesApi.getPipelineNode(
-				{
-					pipeline_id: pId,
-					canvas_id: cId,
-					node_id: nodeId,
-					query: { limit: 100 }
-				},
-				clusterURLs
-			)
+			const isSourceNode = node.type === 'source' && Boolean(pId && cId)
+			const sourceDetails = isSourceNode
+				? await fetchSourceNodeDetails(pId!, cId!, nodeId, clusterURLs)
+				: null
+			const nodeRes = isSourceNode
+				? sourceDetails?.response
+				: await pipelinesApi.getPipelineNode(
+						{
+							pipeline_id: pId,
+							canvas_id: cId,
+							node_id: nodeId,
+							query: { limit: RESOURCE_PAGE_LIMIT }
+						},
+						clusterURLs
+					)
 
 			if (!nodeRes?.success || !nodeRes.data) {
 				throw new Error(`Failed to read node before saving: ${node.label || nodeId}`)
@@ -1329,22 +1543,8 @@ export const usePipelineBuildStore = defineStore(
 			let updatePayload: UpdatePipelineNodeRequest
 
 			if (node.type === 'source') {
-				const backendItems: any[] =
-					(nodeRes.data as any)?.data?.items ||
-					(nodeRes.data as any)?.content?.data?.items ||
-					(nodeRes.data as any)?.items ||
-					[]
-				const existingBackendIds = backendItems
-					.map((i: any) =>
-						String(typeof i === 'string' ? i : i.item_id || i.id || '').trim()
-					)
-					.filter(Boolean)
-				const canvasItems: any[] = node.data?.items || []
-				const canvasItemIds = canvasItems
-					.map((i: any) =>
-						String(typeof i === 'string' ? i : i.item_id || i.id || '').trim()
-					)
-					.filter(Boolean)
+				const existingBackendIds = extractTrimmedItemIds(sourceDetails?.items || [])
+				const canvasItemIds = extractTrimmedItemIds(node.data?.items || [])
 				const targetIds = Array.isArray(node.data?.items)
 					? canvasItemIds
 					: getSourceActiveItemIds(nodeId)
@@ -1503,6 +1703,13 @@ export const usePipelineBuildStore = defineStore(
 				return { ok: false, stage1Ok: false, failedNodeIds: new Set() }
 			}
 
+			const sourceNodeCount = nodes.value.filter((n: any) => n.type === 'source').length
+			if (sourceNodeCount > 1) {
+				error.value = 'A pipeline can only have one Source node.'
+				notifyNonAxiosError('Failed to save pipeline', error.value)
+				return { ok: false, stage1Ok: false, failedNodeIds: new Set() }
+			}
+
 			loading.saving = true
 			error.value = null
 			successMessage.value = null
@@ -1552,24 +1759,20 @@ export const usePipelineBuildStore = defineStore(
 					}
 				})
 
-				const backendRelations = edges.value
-					.filter((e: any) => {
-						const fromNode = nodes.value.find((n: any) => n.id === e.source)
-						const toNode = nodes.value.find((n: any) => n.id === e.target)
-						return Boolean(fromNode && toNode)
-					})
-					.map((e: any) => {
-						const fromNode = nodes.value.find((n: any) => n.id === e.source)
-						const toNode = nodes.value.find((n: any) => n.id === e.target)
-						const rel: any = {
-							from_node_id: (fromNode as any)?.node_id || e.source,
-							to_node_id: (toNode as any)?.node_id || e.target
-						}
-						if (e.data?.label) {
-							rel.label = e.data.label
-						}
-						return rel
-					})
+				const nodeById = new Map<string, any>(nodes.value.map((n: any) => [n.id, n]))
+				const backendRelations = edges.value.flatMap((e: any) => {
+					const fromNode = nodeById.get(e.source)
+					const toNode = nodeById.get(e.target)
+					if (!fromNode || !toNode) return []
+					const rel: any = {
+						from_node_id: fromNode.node_id || e.source,
+						to_node_id: toNode.node_id || e.target
+					}
+					if (e.data?.label) {
+						rel.label = e.data.label
+					}
+					return [rel]
+				})
 
 				const payload: UpdatePipelineGraphRequest = {
 					graph: {
@@ -1622,11 +1825,13 @@ export const usePipelineBuildStore = defineStore(
 					if (outcome.status === 'rejected') {
 						const failedNode = activeNodes[idx]
 						failedNodeIds.add(failedNode.id)
-						if (!axios.isAxiosError(outcome.reason)) {
+						if (!isHttpOrAxiosError(outcome.reason)) {
 							hasNonAxiosFailure = true
 						}
 						const nodeName = failedNode.label || failedNode.id
-						failures.push(`${nodeName} (${outcome.reason?.message || 'unknown error'})`)
+						failures.push(
+							`${nodeName} (${extractErrorMessage(outcome.reason, 'unknown error')})`
+						)
 					}
 				})
 
@@ -1643,14 +1848,465 @@ export const usePipelineBuildStore = defineStore(
 				successMessage.value = 'Pipeline graph and all node contents saved successfully!'
 				return { ok: true, stage1Ok: true, failedNodeIds }
 			} catch (err: any) {
-				error.value = err.message || 'Failed to save pipeline graph'
-				if (!axios.isAxiosError(err)) {
+				error.value = extractErrorMessage(err, 'Failed to save pipeline graph')
+				if (!isHttpOrAxiosError(err)) {
 					notifyNonAxiosError('Failed to save pipeline', error.value ?? '')
 				}
 				return { ok: false, stage1Ok: false, failedNodeIds: new Set() }
 			} finally {
 				loading.saving = false
 			}
+		}
+
+		function clearSelectorError() {
+			selectorError.value = null
+		}
+
+		async function openHostSelectorModal() {
+			selectorError.value = null
+			hostSelectorModalOpen.value = true
+			if (loadingResources.hosts) return
+			loadingResources.hosts = true
+			const cUrls = clusterUrl.value ? [clusterUrl.value] : undefined
+			try {
+				availableHosts.value = await fetchAllHosts(cUrls)
+			} catch (err) {
+				console.error('Failed to refresh available hosts:', err)
+				selectorError.value = 'Failed to load available hosts.'
+			} finally {
+				loadingResources.hosts = false
+			}
+		}
+
+		function closeHostSelectorModal() {
+			if (loadingResources.updatingSubset) return
+			hostSelectorModalOpen.value = false
+			selectorError.value = null
+		}
+
+		async function openSinkSelectorModal() {
+			selectorError.value = null
+			sinkSelectorModalOpen.value = true
+			if (loadingResources.sinks) return
+			loadingResources.sinks = true
+			const cUrls = clusterUrl.value ? [clusterUrl.value] : undefined
+			try {
+				availableSinks.value = await fetchAllSinks(cUrls)
+			} catch (err) {
+				console.error('Failed to refresh available sinks:', err)
+				selectorError.value = 'Failed to load available sinks.'
+			} finally {
+				loadingResources.sinks = false
+			}
+		}
+
+		function closeSinkSelectorModal() {
+			if (loadingResources.updatingSubset) return
+			sinkSelectorModalOpen.value = false
+			selectorError.value = null
+		}
+
+		function cancelSubsetConfirmation() {
+			if (loadingResources.updatingSubset) return
+			subsetConfirmation.value.isOpen = false
+		}
+
+		function formatSubsetInUseMessage(itemCount: number, sinkNodeCount: number): string {
+			const parts: string[] = []
+			if (itemCount > 0) parts.push(`${itemCount} item(s)`)
+			if (sinkNodeCount > 0) parts.push(`${sinkNodeCount} sink node(s)`)
+			return `${parts.join(' and ')} on the canvas use hosts or sinks that would be removed. Removing them will also take them off the canvas. Continue?`
+		}
+
+		function forEachItemWithHost(cb: (id: string, hostId: string) => void) {
+			for (const item of pipelineItems.value as any[]) {
+				if (!item?.host_id) continue
+				const id = normalizeItemId(item)
+				if (id) cb(id, item.host_id)
+			}
+			for (const node of nodes.value as any[]) {
+				if (node.type !== 'source') continue
+				for (const item of (node.data?.items || []) as any[]) {
+					if (item && typeof item === 'object' && item.host_id) {
+						const id = normalizeItemId(item)
+						if (id) cb(id, item.host_id)
+					}
+				}
+			}
+		}
+
+		function findLocalSubsetUsage(kind: 'hosts' | 'sinks', droppedIds: string[]) {
+			const droppedSet = new Set(droppedIds)
+			if (droppedSet.size === 0) {
+				return { itemCount: 0, sinkNodeCount: 0 }
+			}
+
+			if (kind === 'sinks') {
+				const sinkNodeCount = nodes.value.filter(
+					(n: any) => n.type === 'sink' && n.data?.sinkId && droppedSet.has(n.data.sinkId)
+				).length
+				return { itemCount: 0, sinkNodeCount }
+			}
+
+			const itemHostById = new Map<string, string>()
+			forEachItemWithHost((id, hostId) => {
+				itemHostById.set(id, hostId)
+			})
+
+			const affectedItemIds = new Set<string>()
+			for (const node of nodes.value as any[]) {
+				if (node.type !== 'source') continue
+				const sourceIds = [
+					...extractItemIds(node.data?.items || []),
+					...getSourceActiveItemIds(node.id)
+				]
+				for (const itemId of sourceIds) {
+					const hostId = itemHostById.get(itemId.toLowerCase())
+					if (hostId && droppedSet.has(hostId)) {
+						affectedItemIds.add(itemId.toLowerCase())
+					}
+				}
+			}
+
+			return { itemCount: affectedItemIds.size, sinkNodeCount: 0 }
+		}
+
+		function collectRemovedItemIds(droppedHostIds: string[]): Set<string> {
+			const removedItemIds = new Set<string>()
+			if (droppedHostIds.length === 0) return removedItemIds
+
+			const droppedHostSet = new Set(droppedHostIds)
+			forEachItemWithHost((id, hostId) => {
+				if (droppedHostSet.has(hostId)) {
+					removedItemIds.add(id)
+				}
+			})
+			return removedItemIds
+		}
+
+		async function refreshSourceNodeFromBackend(node: any): Promise<number | null> {
+			const nodeId = (node as any).node_id || node.id
+			const existsInBackend = Boolean(
+				canvasGraph.value?.graph?.nodes?.some((gn: any) => gn.node_id === nodeId)
+			)
+			if (
+				!existsInBackend ||
+				!pipelineId.value ||
+				!canvasId.value ||
+				canvasId.value === 'default'
+			) {
+				return null
+			}
+
+			try {
+				const cUrls = clusterUrl.value ? [clusterUrl.value] : undefined
+				const sourceDetails = await fetchSourceNodeDetails(
+					pipelineId.value,
+					canvasId.value,
+					nodeId,
+					cUrls
+				)
+				if (!sourceDetails) return null
+
+				const totalCount = sourceDetails.total ?? sourceDetails.items.length
+				node.data.items = sourceDetails.items
+				node.data.itemCount = totalCount
+				node.data.item_count = totalCount
+				return totalCount
+			} catch (err) {
+				console.error('Failed to refresh source node after forced host removal:', err)
+				return null
+			}
+		}
+
+		function reconcileSourceNodeLocally(node: any, removedItemIds: Set<string>): number {
+			const prevCount = getSourceNodeItemCount(node)
+			const beforeLen = Array.isArray(node.data.items) ? node.data.items.length : 0
+			if (removedItemIds.size > 0 && Array.isArray(node.data.items)) {
+				node.data.items = node.data.items.filter(
+					(item: any) => !removedItemIds.has(normalizeItemId(item))
+				)
+			}
+			const afterLen = Array.isArray(node.data.items) ? node.data.items.length : 0
+			const removedLocally = Math.max(0, beforeLen - afterLen)
+			const totalCount = Math.max(0, prevCount - removedLocally)
+			node.data.itemCount = totalCount
+			node.data.item_count = totalCount
+			return totalCount
+		}
+
+		function syncSourceOutgoingEdges(
+			sourceNode: any,
+			totalCount: number,
+			refreshedFromBackend: boolean,
+			removedItemIds: Set<string>
+		) {
+			const nodeById = new Map<string, any>(nodes.value.map((n: any) => [n.id, n]))
+			const refreshedIds = refreshedFromBackend
+				? extractItemIds(sourceNode.data.items || [])
+				: []
+
+			edges.value.forEach((e: any) => {
+				if (e.source !== sourceNode.id) return
+				const targetNode = nodeById.get(e.target)
+				if (targetNode?.type !== 'processor') return
+				if (!e.data) e.data = {}
+
+				if (refreshedFromBackend) {
+					e.data.selectedItemIds = [...refreshedIds]
+					e.data.label = `${totalCount} Items`
+					return
+				}
+
+				const currentEdgeIds: string[] = Array.isArray(e.data.selectedItemIds)
+					? e.data.selectedItemIds
+					: []
+				const nextEdgeIds =
+					removedItemIds.size > 0
+						? currentEdgeIds.filter((id) => !removedItemIds.has(id.toLowerCase()))
+						: currentEdgeIds
+				e.data.selectedItemIds = nextEdgeIds
+				const displayCount =
+					totalCount > nextEdgeIds.length && currentEdgeIds.length === nextEdgeIds.length
+						? totalCount
+						: nextEdgeIds.length
+				e.data.label = `${displayCount} Items`
+			})
+		}
+
+		function clearDroppedSinkNodes(allowedSinkIds: Set<string>) {
+			for (const node of nodes.value as any[]) {
+				if (node.type !== 'sink') continue
+				if (!node.data?.sinkId || allowedSinkIds.has(node.data.sinkId)) continue
+
+				node.data.sinkId = undefined
+				node.data.sinkName = undefined
+				node.data.type = 'No sink selected'
+				if (selectedNode.value && selectedNode.value.id === node.id) {
+					selectedNode.value = { ...node }
+				}
+			}
+		}
+
+		function syncCanvasTimestampFromDetail(detail: PipelineDetail) {
+			if (canvasGraph.value && canvasId.value && Array.isArray(detail.canvases)) {
+				const matchedCanvas = detail.canvases.find((c) => c.canvas_id === canvasId.value)
+				if (matchedCanvas?.last_updated) {
+					canvasGraph.value.last_updated = matchedCanvas.last_updated
+				}
+			}
+		}
+
+		async function syncCanvasAfterResourceUpdate(
+			updatedDetail: PipelineDetail,
+			droppedHostIds: string[],
+			droppedSinkIds: string[],
+			forced: boolean
+		) {
+			const previousHostIds = new Set(pipelineDetail.value?.host_ids || [])
+			const removedItemIds = forced
+				? collectRemovedItemIds(droppedHostIds)
+				: new Set<string>()
+
+			pipelineDetail.value = updatedDetail
+			syncCanvasTimestampFromDetail(updatedDetail)
+
+			const nextHostIds = updatedDetail.host_ids || []
+			const hostsChanged =
+				nextHostIds.length !== previousHostIds.size ||
+				nextHostIds.some((id) => !previousHostIds.has(id))
+			if (hostsChanged) {
+				await fetchPipelineItems()
+			}
+
+			const hostNames = resolveHostNames(nextHostIds)
+
+			for (const node of nodes.value as any[]) {
+				if (node.type !== 'source') continue
+				if (!node.data) node.data = {}
+				node.data.hostCount = nextHostIds.length
+				node.data.hosts = hostNames
+				node.data.health = {
+					healthy: Math.max(0, nextHostIds.length),
+					warning: 0,
+					error: 0
+				}
+
+				if (!forced || droppedHostIds.length === 0) continue
+
+				const backendTotal = await refreshSourceNodeFromBackend(node)
+				const refreshedFromBackend = backendTotal !== null
+				const totalCount = refreshedFromBackend
+					? backendTotal
+					: reconcileSourceNodeLocally(node, removedItemIds)
+
+				syncSourceOutgoingEdges(node, totalCount, refreshedFromBackend, removedItemIds)
+			}
+
+			if (droppedSinkIds.length > 0) {
+				clearDroppedSinkNodes(new Set(updatedDetail.sink_ids || []))
+			}
+
+			syncDownstreamItemCounts()
+		}
+
+		async function updatePipelineSubset(
+			kind: 'hosts' | 'sinks',
+			nextIds: string[],
+			force: boolean = false
+		): Promise<boolean> {
+			if (loadingResources.updatingSubset) {
+				return false
+			}
+			if (!pipelineId.value || !pipelineDetail.value) {
+				selectorError.value = 'Pipeline details are not loaded yet.'
+				return false
+			}
+
+			const nextSet = new Set(nextIds)
+			const normalizedNextIds = Array.from(nextSet)
+			if (kind === 'hosts' && normalizedNextIds.length === 0) {
+				selectorError.value = 'At least one host must be selected.'
+				return false
+			}
+
+			const currentIds =
+				kind === 'hosts'
+					? pipelineDetail.value.host_ids || []
+					: pipelineDetail.value.sink_ids || []
+			const currentSet = new Set(currentIds)
+			const addedIds = normalizedNextIds.filter((id) => !currentSet.has(id))
+			const droppedIds = currentIds.filter((id) => !nextSet.has(id))
+
+			if (addedIds.length === 0 && droppedIds.length === 0) {
+				subsetConfirmation.value.isOpen = false
+				selectorError.value = null
+				if (kind === 'hosts') {
+					hostSelectorModalOpen.value = false
+				} else {
+					sinkSelectorModalOpen.value = false
+				}
+				return true
+			}
+
+			if (!force && droppedIds.length > 0) {
+				const localUsage = findLocalSubsetUsage(kind, droppedIds)
+				if (localUsage.itemCount > 0 || localUsage.sinkNodeCount > 0) {
+					subsetConfirmation.value = {
+						isOpen: true,
+						kind,
+						nextIds: normalizedNextIds,
+						message: formatSubsetInUseMessage(
+							localUsage.itemCount,
+							localUsage.sinkNodeCount
+						)
+					}
+					return false
+				}
+			}
+
+			loadingResources.updatingSubset = true
+			selectorError.value = null
+			const cUrls = clusterUrl.value ? [clusterUrl.value] : undefined
+
+			try {
+				const payload: UpdatePipelineRequest = {
+					name: pipelineDetail.value.name,
+					adm_status: pipelineDetail.value.adm_status,
+					visibility: pipelineDetail.value.visibility,
+					host_ids:
+						kind === 'hosts'
+							? normalizedNextIds
+							: [...(pipelineDetail.value.host_ids || [])],
+					sink_ids:
+						kind === 'sinks'
+							? normalizedNextIds
+							: [...(pipelineDetail.value.sink_ids || [])],
+					last_updated: pipelineDetail.value.last_updated,
+					force
+				}
+
+				const res = await pipelinesApi.updatePipeline(
+					pipelineId.value,
+					payload,
+					cUrls,
+					force ? undefined : { suppressErrorStatuses: [409] }
+				)
+				if (!res?.success || !res.data) {
+					selectorError.value = 'Failed to update pipeline resources.'
+					return false
+				}
+
+				await syncCanvasAfterResourceUpdate(
+					res.data,
+					kind === 'hosts' ? droppedIds : [],
+					kind === 'sinks' ? droppedIds : [],
+					force
+				)
+
+				subsetConfirmation.value.isOpen = false
+				if (kind === 'hosts') {
+					hostSelectorModalOpen.value = false
+				} else {
+					sinkSelectorModalOpen.value = false
+				}
+				return true
+			} catch (err: any) {
+				const errPayload = err?.data?.error
+				if (err?.status === 409 && errPayload?.data && !force) {
+					const itemCount = Number(errPayload.data.item_count || 0)
+					const nodeCount = Array.isArray(errPayload.data.node_ids)
+						? errPayload.data.node_ids.length
+						: 0
+					subsetConfirmation.value = {
+						isOpen: true,
+						kind,
+						nextIds: normalizedNextIds,
+						message: formatSubsetInUseMessage(
+							itemCount,
+							kind === 'sinks' ? nodeCount : 0
+						)
+					}
+					return false
+				}
+
+				if (err?.status === 409) {
+					try {
+						const refreshed = await pipelinesApi.getPipelineById(
+							pipelineId.value,
+							cUrls
+						)
+						if (refreshed?.success && refreshed.data) {
+							pipelineDetail.value = refreshed.data
+							syncCanvasTimestampFromDetail(refreshed.data)
+						}
+					} catch {
+						// Keep existing pipelineDetail if refresh fails
+					}
+				}
+
+				selectorError.value =
+					errPayload?.detail || err?.message || 'Failed to update pipeline resources.'
+				return false
+			} finally {
+				loadingResources.updatingSubset = false
+			}
+		}
+
+		async function applyPipelineHosts(hostIds: string[]): Promise<boolean> {
+			return updatePipelineSubset('hosts', hostIds, false)
+		}
+
+		async function applyPipelineSinks(sinkIds: string[]): Promise<boolean> {
+			return updatePipelineSubset('sinks', sinkIds, false)
+		}
+
+		async function confirmSubsetForceUpdate(): Promise<boolean> {
+			return updatePipelineSubset(
+				subsetConfirmation.value.kind,
+				subsetConfirmation.value.nextIds,
+				true
+			)
 		}
 
 		async function saveGraph(): Promise<boolean> {
@@ -1669,14 +2325,31 @@ export const usePipelineBuildStore = defineStore(
 			edges,
 			selectedNode,
 			isCanvasEmpty,
+			hasSourceNode,
 			isDirty,
 			loading,
 			error,
 			successMessage,
 			availableHosts,
 			availableSinks,
+			hostById,
+			sinkById,
 			pipelineItems,
 			loadingItems,
+			hostSelectorModalOpen,
+			sinkSelectorModalOpen,
+			selectorError,
+			loadingResources,
+			subsetConfirmation,
+			openHostSelectorModal,
+			closeHostSelectorModal,
+			openSinkSelectorModal,
+			closeSinkSelectorModal,
+			clearSelectorError,
+			cancelSubsetConfirmation,
+			applyPipelineHosts,
+			applyPipelineSinks,
+			confirmSubsetForceUpdate,
 			edgeItemModal,
 			previewDataModal,
 			openPreviewDataModal,

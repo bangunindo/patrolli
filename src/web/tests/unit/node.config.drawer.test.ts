@@ -18,30 +18,11 @@ describe('NodeConfigDrawer', () => {
 	})
 
 	const globalStubs = {
-		'b-input': {
-			props: ['readonly', 'disabled', 'modelValue'],
-			template:
-				'<input class="b-input-stub" :readonly="readonly" :disabled="disabled" :value="modelValue" />'
-		},
-		'b-icon': {
-			template: '<i class="b-icon-stub"></i>'
-		},
-		'b-heading': {
-			template: '<h6 class="b-heading-stub"><slot /></h6>'
-		},
-		'b-spinner': {
-			template: '<div class="b-spinner-stub"></div>'
-		},
-		'b-flex': {
-			template: '<div class="b-flex-stub"><slot /></div>'
-		},
-		'b-tag': {
-			template: '<span class="b-tag-stub"><slot /></span>'
-		},
 		AppInputText: {
 			props: ['readonly', 'disabled', 'modelValue', 'placeholder'],
+			emits: ['update:modelValue'],
 			template:
-				'<div class="app-input-text-stub"><input class="inner-input" :readonly="readonly" :disabled="disabled" :value="modelValue" /></div>'
+				'<div class="app-input-text-stub"><input class="inner-input" :readonly="readonly" :disabled="disabled" :placeholder="placeholder" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" /></div>'
 		},
 		AppInputSink: {
 			props: ['modelValue', 'sinkIds', 'multiple', 'clusterUrl'],
@@ -82,7 +63,7 @@ describe('NodeConfigDrawer', () => {
 		expect(wrapper.text()).not.toContain('Node Type')
 	})
 
-	it('renders empty state warning when pipeline has no registered sinks', () => {
+	it('renders empty state warning when pipeline has no registered sinks', async () => {
 		const store = usePipelineBuildStore()
 		store.pipelineDetail = {
 			pipeline_id: 'pipe-1',
@@ -106,8 +87,19 @@ describe('NodeConfigDrawer', () => {
 			}
 		})
 
-		expect(wrapper.text()).toContain('No sinks registered in this pipeline')
+		expect(wrapper.find('[role="alert"]').text()).toContain(
+			'No sinks registered in this pipeline'
+		)
 		expect(wrapper.find('.app-input-sink-stub').exists()).toBe(false)
+
+		const selectSinksBtn = wrapper
+			.findAll('button')
+			.find((btn) => btn.text().includes('Select Sinks'))
+		expect(selectSinksBtn).toBeDefined()
+
+		const openSinkSpy = vi.spyOn(store, 'openSinkSelectorModal').mockResolvedValue()
+		await selectSinksBtn!.trigger('click')
+		expect(openSinkSpy).toHaveBeenCalledTimes(1)
 	})
 
 	it('renders AppInputSink constrained to pipeline registered sinks when sink node is selected', async () => {
@@ -138,6 +130,37 @@ describe('NodeConfigDrawer', () => {
 		expect(sinkInput.exists()).toBe(true)
 		expect(sinkInput.attributes('data-sink-ids')).toBe(JSON.stringify(['sink-1', 'sink-2']))
 		expect(sinkInput.attributes('data-multiple')).toBe('false')
+	})
+
+	it('renders Manage Sinks shortcut button when pipeline has registered sinks and opens sink selector modal', async () => {
+		const store = usePipelineBuildStore()
+		const openSinkModalSpy = vi.spyOn(store, 'openSinkSelectorModal').mockResolvedValue()
+		store.pipelineDetail = {
+			pipeline_id: 'pipe-1',
+			sink_ids: ['sink-1']
+		} as any
+		store.selectedNode = {
+			id: 'sink-node-1',
+			node_id: 'sink-node-1',
+			type: 'sink',
+			label: 'Sink Node',
+			data: {
+				id: 'sink-node-1',
+				name: 'Sink Node'
+			}
+		} as any
+
+		const wrapper = mount(NodeConfigDrawer, {
+			global: {
+				stubs: globalStubs
+			}
+		})
+
+		const manageBtn = wrapper.findAll('button').find((b) => b.text().includes('Manage Sinks'))
+		expect(manageBtn).toBeDefined()
+
+		await manageBtn!.trigger('click')
+		expect(openSinkModalSpy).toHaveBeenCalledTimes(1)
 	})
 
 	it('fetches sink details and renders full details matching ModalDetail when a sink is selected', async () => {
@@ -210,5 +233,104 @@ describe('NodeConfigDrawer', () => {
 		expect(wrapper.text()).toContain('audit-logs')
 		expect(wrapper.text()).toContain('environment : production')
 		expect(wrapper.text()).toContain('team : security')
+	})
+
+	it('retries getSinkById after a failed fetch when sink node is re-selected', async () => {
+		const store = usePipelineBuildStore()
+		store.pipelineDetail = {
+			pipeline_id: 'pipe-1',
+			sink_ids: ['sink-1']
+		} as any
+		store.availableSinks = [{ sink_id: 'sink-1', name: 'Fallback Sink', type: 'kafka' }]
+
+		const getSinkByIdSpy = vi
+			.spyOn(sinksApi, 'getSinkById')
+			.mockRejectedValueOnce(new Error('Temporary network error'))
+			.mockResolvedValueOnce({
+				success: true,
+				data: {
+					sink_id: 'sink-1',
+					name: 'Recovered Kafka Sink',
+					adm_status: 1,
+					worker_count: 2,
+					input_count: 5,
+					last_updated: '2026-11-11T00:00:00Z'
+				}
+			} as any)
+
+		store.selectedNode = {
+			id: 'sink-node-1',
+			node_id: 'sink-node-1',
+			type: 'sink',
+			label: 'Sink Node',
+			data: { id: 'sink-node-1', name: 'Sink Node', sinkId: 'sink-1' }
+		} as any
+
+		const wrapper = mount(NodeConfigDrawer, {
+			global: {
+				stubs: globalStubs
+			}
+		})
+
+		await wrapper.vm.$nextTick()
+		await new Promise((resolve) => setTimeout(resolve, 10))
+		expect(getSinkByIdSpy).toHaveBeenCalledTimes(1)
+		expect(wrapper.text()).toContain('Fallback Sink')
+
+		// Re-selecting the same sink node should retry getSinkById because the first call failed
+		store.selectedNode = { ...store.selectedNode }
+		await wrapper.vm.$nextTick()
+		await new Promise((resolve) => setTimeout(resolve, 10))
+
+		expect(getSinkByIdSpy).toHaveBeenCalledTimes(2)
+		expect(wrapper.text()).toContain('Recovered Kafka Sink')
+	})
+
+	it('trims leading and trailing whitespace when filtering associated items on a source node and resolves host names from store.hostById', async () => {
+		const store = usePipelineBuildStore()
+		store.pipelineDetail = {
+			pipeline_id: 'pipe-1',
+			host_ids: ['host-1', 'host-unresolved']
+		} as any
+		store.availableHosts = [{ host_id: 'host-1', name: 'Core Switch 01' }] as any
+		store.pipelineItems = [
+			{ item_id: 'item-1', host_id: 'host-1', name: 'CPU Load', type: 'snmp' },
+			{ item_id: 'item-2', host_id: 'host-unresolved', name: 'Disk Usage', type: 'agent' }
+		] as any
+		store.selectedNode = {
+			id: 'source-1',
+			node_id: 'source-1',
+			type: 'source',
+			label: 'Source',
+			position: { x: 80, y: 160 },
+			data: {
+				id: 'source-1',
+				name: 'Source',
+				type: 'source',
+				items: ['item-1', 'item-2'],
+				item_count: 2
+			}
+		} as any
+
+		const wrapper = mount(NodeConfigDrawer, {
+			global: {
+				stubs: globalStubs
+			}
+		})
+
+		expect(wrapper.text()).toContain('Selected Hosts (2)')
+		expect(wrapper.text()).toContain('Core Switch 01')
+		expect(wrapper.text()).toContain('host-unresolved')
+
+		const searchInput = wrapper.find('input[placeholder="Search items by name..."]')
+		expect(searchInput.exists()).toBe(true)
+		await searchInput.setValue('  CPU  ')
+
+		expect(wrapper.text()).toContain('CPU Load')
+		expect(wrapper.text()).not.toContain('Disk Usage')
+
+		await searchInput.setValue('  core switch  ')
+		expect(wrapper.text()).toContain('CPU Load')
+		expect(wrapper.text()).not.toContain('Disk Usage')
 	})
 })

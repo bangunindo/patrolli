@@ -860,4 +860,71 @@ describe('Pipeline Builder: Node Content Save Integration (updatePipelineNode)',
 		expect(store.isDirty).toBe(true)
 		expect(appStore.notificationItems.some((n: any) => n.type === 'error')).toBe(true)
 	})
+
+	it('does not emit duplicate toast when AxiosService ApiError rejects in commitProcessorChange or saveGraph', async () => {
+		const existingProc = {
+			processor_id: 'proc-existing-1',
+			name: 'Existing Transform',
+			module: 'transform',
+			status: true,
+			config: {
+				type: 'transform',
+				module: 'transform',
+				config: { opl: 'logs | where severity_number >= 10' }
+			}
+		}
+
+		mockBackendGraphNodes(['proc-group-existing'])
+		store.nodes = [
+			makeProcessorNode('proc-group-existing', 'Existing Group', [existingProc])
+		] as any
+
+		vi.spyOn(pipelinesApi, 'getPipelineNode').mockResolvedValue({
+			success: true,
+			data: {
+				node_id: 'proc-group-existing',
+				last_updated: '2026-10-22T10:10:00Z',
+				content: { kind: 'processor_group', data: { processors: [existingProc] } }
+			}
+		} as any)
+
+		const apiError = {
+			message: 'Request failed with status code 400',
+			status: 400,
+			code: 'ERR_BAD_REQUEST',
+			data: {
+				error: {
+					title: 'Validation error',
+					detail: 'invalid OPL syntax'
+				}
+			}
+		}
+		vi.spyOn(pipelinesApi, 'updatePipelineNode').mockRejectedValue(apiError)
+
+		const appStore = useAppStore()
+		appStore.notificationItems = []
+
+		await store.openEditProcessorFormModal('proc-group-existing', existingProc as any)
+		const processorStore = useProcessorStore()
+		const perNodeResult = await processorStore.customSubmitHandler!({
+			name: 'Broken Edit',
+			adm_status: 1,
+			config: {
+				type: 'transform',
+				module: 'transform',
+				config: { opl: 'logs | where' }
+			}
+		})
+
+		expect(perNodeResult).toBe(false)
+		expect(store.error).toBe('invalid OPL syntax')
+		expect(appStore.notificationItems).toHaveLength(0)
+
+		// Also verify saveGraph() Stage 1 & Stage 2 do not duplicate AxiosService ApiError toasts
+		vi.spyOn(pipelinesApi, 'updatePipelineGraph').mockRejectedValueOnce(apiError)
+		const stage1Ok = await store.saveGraph()
+		expect(stage1Ok).toBe(false)
+		expect(store.error).toBe('invalid OPL syntax')
+		expect(appStore.notificationItems).toHaveLength(0)
+	})
 })

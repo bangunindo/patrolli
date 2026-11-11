@@ -5,6 +5,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
+import { Button as UiButton } from '@/components/ui/button'
+import { Separator as UiSeparator } from '@/components/ui/separator'
 import { usePipelineBuildStore } from '@/stores/pipeline.builder.store'
 
 const store = usePipelineBuildStore()
@@ -16,16 +18,8 @@ function onDragStart(event: DragEvent, nodeType: string) {
 	}
 }
 
-function handleAddSource() {
-	store.addSourceNode()
-}
-
 function handleAddProcessor() {
 	store.addProcessorNode(undefined, undefined, 'Processor Group')
-}
-
-function handleAddSink() {
-	store.addSinkNode()
 }
 </script>
 
@@ -33,44 +27,46 @@ function handleAddSink() {
 	<div
 		class="absolute left-1/2 -translate-x-1/2 bottom-6 z-20 flex items-center gap-1.5 p-1.5 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border border-slate-200/90 dark:border-slate-800/90 rounded-full shadow-[0_8px_30px_rgba(15,23,42,0.12)] select-none"
 	>
-		<!-- Source Button -->
-		<button
-			type="button"
-			draggable="true"
-			class="group flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium text-slate-700 dark:text-slate-200 hover:text-sky-600 dark:hover:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/60 border border-transparent hover:border-sky-200 dark:hover:border-sky-900 transition-all cursor-grab active:cursor-grabbing"
-			title="Click to add or drag onto canvas"
-			@dragstart="onDragStart($event, 'source')"
-			@click="handleAddSource"
-		>
-			<span
-				class="w-5 h-5 rounded-full bg-sky-100 dark:bg-sky-950/80 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform"
+		<template v-if="!store.hasSourceNode">
+			<UiButton
+				variant="ghost"
+				size="xs"
+				draggable="true"
+				class="group h-auto px-3 py-1.5 rounded-full text-xs font-medium text-slate-700 dark:text-slate-200 hover:text-sky-600 dark:hover:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/60 border border-transparent hover:border-sky-200 dark:hover:border-sky-900 transition-all cursor-grab active:cursor-grabbing"
+				title="Click to add or drag onto canvas"
+				@dragstart="onDragStart($event, 'source')"
+				@click="store.addSourceNode()"
 			>
-				<svg
-					width="12"
-					height="12"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2.2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
+				<span
+					class="w-5 h-5 rounded-full bg-sky-100 dark:bg-sky-950/80 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform"
 				>
-					<rect x="2" y="2" width="20" height="8" rx="2" ry="2" />
-					<rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
-					<line x1="6" y1="6" x2="6.01" y2="6" />
-					<line x1="6" y1="18" x2="6.01" y2="18" />
-				</svg>
-			</span>
-			<span class="font-semibold text-slate-800 dark:text-slate-200">Source</span>
-		</button>
+					<svg
+						width="12"
+						height="12"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2.2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+					>
+						<rect x="2" y="2" width="20" height="8" rx="2" ry="2" />
+						<rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
+						<line x1="6" y1="6" x2="6.01" y2="6" />
+						<line x1="6" y1="18" x2="6.01" y2="18" />
+					</svg>
+				</span>
+				<span class="font-semibold text-slate-800 dark:text-slate-200">Source</span>
+			</UiButton>
 
-		<div class="w-[1px] h-5 bg-slate-200 dark:bg-slate-800" />
+			<UiSeparator orientation="vertical" class="h-5" />
+		</template>
 
-		<!-- Processor Group Button -->
-		<button
-			type="button"
+		<UiButton
+			variant="ghost"
+			size="xs"
 			draggable="true"
-			class="group flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium text-slate-700 dark:text-slate-200 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/60 border border-transparent hover:border-amber-200 dark:hover:border-amber-900 transition-all cursor-grab active:cursor-grabbing"
+			class="group h-auto px-3 py-1.5 rounded-full text-xs font-medium text-slate-700 dark:text-slate-200 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/60 border border-transparent hover:border-amber-200 dark:hover:border-amber-900 transition-all cursor-grab active:cursor-grabbing"
 			title="Click to add or drag onto canvas"
 			@dragstart="onDragStart($event, 'processor')"
 			@click="handleAddProcessor"
@@ -100,18 +96,18 @@ function handleAddSink() {
 				</svg>
 			</span>
 			<span class="font-semibold text-slate-800 dark:text-slate-200">Processor Group</span>
-		</button>
+		</UiButton>
 
-		<div class="w-[1px] h-5 bg-slate-200 dark:bg-slate-800" />
+		<UiSeparator orientation="vertical" class="h-5" />
 
-		<!-- Sink Button -->
-		<button
-			type="button"
+		<UiButton
+			variant="ghost"
+			size="xs"
 			draggable="true"
-			class="group flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium text-slate-700 dark:text-slate-200 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/60 border border-transparent hover:border-rose-200 dark:hover:border-rose-900 transition-all cursor-grab active:cursor-grabbing"
+			class="group h-auto px-3 py-1.5 rounded-full text-xs font-medium text-slate-700 dark:text-slate-200 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/60 border border-transparent hover:border-rose-200 dark:hover:border-rose-900 transition-all cursor-grab active:cursor-grabbing"
 			title="Click to add or drag onto canvas"
 			@dragstart="onDragStart($event, 'sink')"
-			@click="handleAddSink"
+			@click="store.addSinkNode()"
 		>
 			<span
 				class="w-5 h-5 rounded-full bg-rose-100 dark:bg-rose-950/80 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform"
@@ -132,6 +128,6 @@ function handleAddSink() {
 				</svg>
 			</span>
 			<span class="font-semibold text-slate-800 dark:text-slate-200">Sink</span>
-		</button>
+		</UiButton>
 	</div>
 </template>
