@@ -186,28 +186,25 @@ describe('Processor DynamicZodForm Integration', () => {
 		expect(trueResult.data?.overwrite).toBe(true)
 	})
 
-	it('should render ProcessorForm with transform (OPL) module in UPDATE mode and submit successfully', async () => {
+	async function mountTransformForm(
+		opl: string,
+		updateImpl?: (id: any, payload: any, clusters: any) => Promise<any>
+	) {
 		const pinia = createPinia()
 		setActivePinia(pinia)
 		const store = useProcessorStore()
 		store.processorFormMode = FormMode.UPDATE
 		store.currentProcessor = {
 			processor_id: 'proc-test-opl',
-			name: 'Transform Metrics OPL',
+			name: 'Transform OPL',
 			adm_status: 1,
 			config: {
 				module: 'transform',
-				config: {
-					opl: 'metrics | where name == "http_requests_total" | set attributes["environment"] = "production"'
-				}
+				config: { opl }
 			}
 		} as any
 
-		let submittedPayload: any = null
-		store.updateProcessor = vi.fn().mockImplementation((id, payload, clusters) => {
-			submittedPayload = { id, payload, clusters }
-			return Promise.resolve({ success: true })
-		})
+		store.updateProcessor = updateImpl ? vi.fn().mockImplementation(updateImpl) : vi.fn()
 
 		const wrapper = mount(ProcessorForm, {
 			global: {
@@ -224,8 +221,19 @@ describe('Processor DynamicZodForm Integration', () => {
 		})
 
 		await flushPromises()
+		return { wrapper, store, vm: wrapper.vm as any }
+	}
 
-		const vm = wrapper.vm as any
+	it('should render ProcessorForm with transform (OPL) module in UPDATE mode and submit successfully', async () => {
+		let submittedPayload: any = null
+		const { store, vm } = await mountTransformForm(
+			'metrics | where name == "http_requests_total" | set attributes["environment"] = "production"',
+			(id, payload, clusters) => {
+				submittedPayload = { id, payload, clusters }
+				return Promise.resolve({ success: true })
+			}
+		)
+
 		expect(vm.form.config.module).toBe('transform')
 		expect(vm.form.config.config.opl).toContain('http_requests_total')
 
@@ -238,49 +246,30 @@ describe('Processor DynamicZodForm Integration', () => {
 		)
 	})
 
-	it('should block transform processor submit if OPL syntax is invalid', async () => {
-		const pinia = createPinia()
-		setActivePinia(pinia)
-		const store = useProcessorStore()
+	it('should block transform processor submit if OPL code is empty or whitespace-only', async () => {
+		const { store, vm } = await mountTransformForm('   \n\t  ')
 
-		store.processorFormMode = FormMode.UPDATE
-		store.currentProcessor = {
-			processor_id: 'proc-test-opl-invalid',
-			name: 'Transform Invalid OPL',
-			adm_status: 1,
-			config: {
-				module: 'transform',
-				config: {
-					opl: 'logs | where'
-				}
-			}
-		} as any
-
-		store.updateProcessor = vi.fn()
-
-		const wrapper = mount(ProcessorForm, {
-			global: {
-				plugins: [pinia],
-				stubs: {
-					...commonStubs,
-					AppInputCode: {
-						props: ['modelValue', 'language', 'label', 'required', 'error'],
-						template: '<div class="stub-input-code">{{ modelValue }}</div>'
-					}
-				}
-			}
-		})
-
-		await flushPromises()
-
-		const vm = wrapper.vm as any
 		await vm.handleFormSubmit(vm.form)
 		await flushPromises()
 
 		expect(store.updateProcessor).not.toHaveBeenCalled()
-		expect(vm.dynamicFormRef.issues['config.config.opl']).toBeDefined()
-		expect(vm.dynamicFormRef.issues['config.config.opl']).toContain(
-			"Operator 'where' requires a condition expression"
-		)
+		expect(vm.dynamicFormRef.issues['config.config.opl']).toBe('OPL Program is required')
+
+		const zodCheck = vm.dynamicFormRef.validate()
+		expect(zodCheck.success).toBe(false)
+	})
+
+	it('should allow non-empty transform OPL submit without client-side syntax validation', async () => {
+		let submittedPayload: any = null
+		const { store, vm } = await mountTransformForm('logs | where', (id, payload, clusters) => {
+			submittedPayload = { id, payload, clusters }
+			return Promise.resolve({ success: true })
+		})
+
+		await vm.handleFormSubmit(vm.form)
+		await flushPromises()
+
+		expect(store.updateProcessor).toHaveBeenCalled()
+		expect(submittedPayload.payload.config.config.opl).toBe('logs | where')
 	})
 })

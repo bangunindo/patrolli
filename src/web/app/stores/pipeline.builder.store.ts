@@ -4,6 +4,7 @@
 
 import { defineStore } from 'pinia'
 import { computed, reactive, ref } from 'vue'
+import axios from 'axios'
 import pipelinesApi from '@/app/api/pipelines.api'
 import hostsApi from '@/app/api/hosts.api'
 import sinksApi from '@/app/api/sinks.api'
@@ -11,6 +12,7 @@ import itemsApi from '@/app/api/items.api'
 import processorsApi from '@/app/api/processors.api'
 import appHelper from '@/app/helpers/app.helper'
 import { generateUuidV7 } from '@/app/helpers/uuid.helper'
+import { useAppStore } from '@/stores/app.store'
 import { useProcessorStore } from '@/stores/processor.store'
 import { FormMode } from '@@/shared/types/app.type'
 import type { IProcessor } from '@@/shared/types/processor.type'
@@ -499,14 +501,6 @@ export const usePipelineBuildStore = defineStore(
 						lineLabel = `${sourceItemCount} Items`
 					}
 
-					// Sync target processor node item count
-					const targetNode = nodes.value.find((n: any) => n.id === rel.to_node_id)
-					if (targetNode && targetNode.type === 'processor' && targetNode.data) {
-						targetNode.data.itemCount = isSourceToTarget
-							? sourceItemCount
-							: relItemIds.length
-					}
-
 					return createBuilderEdge({
 						id: `edge-${rel.from_node_id}-${rel.to_node_id}-${idx}`,
 						source: rel.from_node_id,
@@ -524,6 +518,7 @@ export const usePipelineBuildStore = defineStore(
 					})
 				})
 				edges.value = mappedEdges
+				syncDownstreamItemCounts()
 
 				return
 			}
@@ -663,6 +658,83 @@ export const usePipelineBuildStore = defineStore(
 			edgeItemModal.value = { isOpen: false }
 		}
 
+		function parseEdgeLabelCount(label?: string): number | null {
+			if (typeof label !== 'string') return null
+			const match = label.match(/^(\d+)\s+Items?$/i)
+			return match ? Number(match[1]) : null
+		}
+
+		function getSourceNodeItemCount(sourceNode: any): number {
+			if (!sourceNode?.data) return 0
+			if (typeof sourceNode.data.item_count === 'number') return sourceNode.data.item_count
+			if (Array.isArray(sourceNode.data.items) && sourceNode.data.items.length > 0) {
+				return sourceNode.data.items.length
+			}
+			return typeof sourceNode.data.itemCount === 'number' ? sourceNode.data.itemCount : 0
+		}
+
+		/** Propagate incoming item counts from Source nodes to all downstream processor nodes. */
+		function syncDownstreamItemCounts() {
+			const nodeById = new Map<string, any>()
+			const sourceNodes: any[] = []
+			const processorNodes: any[] = []
+
+			for (const node of nodes.value as any[]) {
+				nodeById.set(node.id, node)
+				if (node.type === 'source') sourceNodes.push(node)
+				else if (node.type === 'processor' && node.data) processorNodes.push(node)
+			}
+
+			const outgoingEdges = new Map<string, any[]>()
+			for (const edge of edges.value as any[]) {
+				const list = outgoingEdges.get(edge.source)
+				if (list) list.push(edge)
+				else outgoingEdges.set(edge.source, [edge])
+			}
+
+			const incomingCount = new Map<string, number>()
+			const queue: Array<{ nodeId: string; count: number }> = []
+
+			const enqueueTarget = (targetId: string, count: number) => {
+				const target = nodeById.get(targetId)
+				if (!target || target.type !== 'processor') return
+				const prev = incomingCount.get(target.id) ?? -1
+				if (count > prev) {
+					incomingCount.set(target.id, count)
+					queue.push({ nodeId: target.id, count })
+				}
+			}
+
+			for (const node of sourceNodes) {
+				const fallbackSourceCount = getSourceNodeItemCount(node)
+				for (const edge of outgoingEdges.get(node.id) || []) {
+					const selectedIds = edge.data?.selectedItemIds
+					const edgeCount =
+						Array.isArray(selectedIds) && selectedIds.length > 0
+							? selectedIds.length
+							: (parseEdgeLabelCount(edge.data?.label) ?? fallbackSourceCount)
+					enqueueTarget(edge.target, edgeCount)
+				}
+			}
+
+			let head = 0
+			while (head < queue.length) {
+				const current = queue[head++]!
+				if (current.count < (incomingCount.get(current.nodeId) ?? 0)) continue
+
+				for (const edge of outgoingEdges.get(current.nodeId) || []) {
+					enqueueTarget(edge.target, current.count)
+				}
+			}
+
+			for (const node of processorNodes) {
+				const nextCount = incomingCount.get(node.id) ?? 0
+				if (node.data.itemCount !== nextCount) {
+					node.data.itemCount = nextCount
+				}
+			}
+		}
+
 		function applyEdgeItems(edgeId: string, itemIds: string[]) {
 			const edge = edges.value.find((e: any) => e.id === edgeId)
 			if (edge) {
@@ -670,13 +742,6 @@ export const usePipelineBuildStore = defineStore(
 				edge.data.selectedItemIds = itemIds
 				edge.data.label = `${itemIds.length} Items`
 				edge.data.showAddButton = false
-
-				// Sync item count to target processor node
-				const targetNode = nodes.value.find((n: any) => n.id === edge.target)
-				if (targetNode && targetNode.type === 'processor') {
-					if (!targetNode.data) targetNode.data = {}
-					targetNode.data.itemCount = itemIds.length
-				}
 
 				// Sync source node items and all outgoing edges from source
 				const sourceNode = nodes.value.find((n: any) => n.id === edge.source)
@@ -694,9 +759,6 @@ export const usePipelineBuildStore = defineStore(
 								if (!e.data) e.data = {}
 								e.data.selectedItemIds = itemIds
 								e.data.label = `${itemIds.length} Items`
-								if (otherTarget.data) {
-									otherTarget.data.itemCount = itemIds.length
-								}
 							}
 						}
 					})
@@ -718,6 +780,7 @@ export const usePipelineBuildStore = defineStore(
 					}
 				}
 
+				syncDownstreamItemCounts()
 				markDirty()
 			}
 			closeEdgeItemSelector()
@@ -757,10 +820,6 @@ export const usePipelineBuildStore = defineStore(
 								: initialItemIds.length
 						initialLabel = `${sourceCount} Items`
 						shouldOpenModal = false
-
-						if (toNode && toNode.data) {
-							toNode.data.itemCount = sourceCount
-						}
 					} else {
 						// First connection line from source to processor group:
 						// start with 0 Items and open item selector modal
@@ -784,6 +843,7 @@ export const usePipelineBuildStore = defineStore(
 						}
 					})
 				)
+				syncDownstreamItemCounts()
 				markDirty()
 
 				if (shouldOpenModal) {
@@ -847,10 +907,6 @@ export const usePipelineBuildStore = defineStore(
 				})
 			)
 
-			if (isFromSource && newProc.data) {
-				newProc.data.itemCount = edgeItemIds.length
-			}
-
 			// 4. Connect newProc to target
 			edges.value.push(
 				createBuilderEdge({
@@ -861,6 +917,7 @@ export const usePipelineBuildStore = defineStore(
 				})
 			)
 
+			syncDownstreamItemCounts()
 			markDirty()
 			return newProc
 		}
@@ -871,6 +928,7 @@ export const usePipelineBuildStore = defineStore(
 			if (selectedNode.value && (selectedNode.value as any).id === id) {
 				selectedNode.value = undefined
 			}
+			syncDownstreamItemCounts()
 			markDirty()
 		}
 
@@ -1059,6 +1117,92 @@ export const usePipelineBuildStore = defineStore(
 			return null
 		}
 
+		function buildProcessorPayloadConfig(formData: any) {
+			const procType = formData.config?.type ?? formData.config?.module ?? 'null'
+			return {
+				procType,
+				config: {
+					type: procType,
+					module: procType,
+					...(procType !== 'null' && formData.config?.config !== undefined
+						? { config: formData.config.config }
+						: {})
+				}
+			}
+		}
+
+		/** Mutate a processor group and persist per-node via saveNodeContent() (or executeSaveGraph() for unsaved nodes), rolling back on failure. */
+		async function commitProcessorChange(
+			targetNodeId: string,
+			mutate: () => void
+		): Promise<boolean> {
+			if (loading.saving) return false
+
+			const node = nodes.value.find((n: any) => n.id === targetNodeId)
+			if (!node) return false
+
+			const previousProcessors = node.data?.processors
+				? JSON.parse(JSON.stringify(node.data.processors))
+				: []
+			const wasDirty = isDirty.value
+
+			const rollbackTarget = () => {
+				if (node.data) {
+					node.data.processors = previousProcessors
+					syncProcessorCounts(node)
+				}
+			}
+
+			const existsInBackend = Boolean(
+				canvasGraph.value?.graph?.nodes?.some(
+					(gn: any) => gn.node_id === ((node as any).node_id || node.id)
+				)
+			)
+
+			if (
+				existsInBackend &&
+				pipelineId.value &&
+				canvasId.value &&
+				canvasId.value !== 'default'
+			) {
+				mutate()
+				loading.saving = true
+				error.value = null
+				try {
+					const cUrls = clusterUrl.value ? [clusterUrl.value] : undefined
+					await saveNodeContent(node, cUrls)
+					if (!wasDirty) {
+						isDirty.value = false
+					}
+					return true
+				} catch (err: any) {
+					rollbackTarget()
+					isDirty.value = wasDirty
+					error.value = err?.message || 'Failed to save processor node'
+					if (!axios.isAxiosError(err)) {
+						notifyNonAxiosError('Failed to save processor', error.value ?? '')
+					}
+					return false
+				} finally {
+					loading.saving = false
+				}
+			}
+
+			mutate()
+			const result = await executeSaveGraph()
+			const targetFailed = !result.stage1Ok || result.failedNodeIds.has(targetNodeId)
+
+			if (targetFailed) {
+				rollbackTarget()
+				if (!wasDirty && (!result.stage1Ok || result.failedNodeIds.size <= 1)) {
+					isDirty.value = false
+				}
+				return false
+			}
+
+			return true
+		}
+
 		function openCreateProcessorFormModal(targetNodeId: string) {
 			if (!targetNodeId) return
 			const processorStore = useProcessorStore()
@@ -1069,7 +1213,7 @@ export const usePipelineBuildStore = defineStore(
 				null,
 				async (formData: any) => {
 					const newId = generateUuidV7()
-					const procType = formData.config?.type ?? formData.config?.module ?? 'null'
+					const { procType, config } = buildProcessorPayloadConfig(formData)
 					const newItem: IGroupProcessorItem = {
 						processor_id: newId,
 						name: formData.name || 'Processor',
@@ -1077,16 +1221,11 @@ export const usePipelineBuildStore = defineStore(
 						status:
 							formData.adm_status !== undefined ? formData.adm_status === 1 : true,
 						type: 'Transform',
-						config: {
-							type: procType,
-							module: procType,
-							...(procType !== 'null' && formData.config?.config !== undefined
-								? { config: formData.config.config }
-								: {})
-						}
+						config
 					}
-					addProcessorToGroup(targetNodeId, newItem)
-					return true
+					return commitProcessorChange(targetNodeId, () => {
+						addProcessorToGroup(targetNodeId, newItem)
+					})
 				},
 				{
 					lockedCluster: currentCluster,
@@ -1118,21 +1257,18 @@ export const usePipelineBuildStore = defineStore(
 				FormMode.UPDATE,
 				targetProcessor,
 				async (formData: any) => {
-					const procType = formData.config?.type ?? formData.config?.module ?? 'null'
-					updateProcessorInGroup(targetNodeId, item.processor_id, {
-						name: formData.name,
-						module: procType,
-						status:
-							formData.adm_status !== undefined ? formData.adm_status === 1 : true,
-						config: {
-							type: procType,
+					const { procType, config } = buildProcessorPayloadConfig(formData)
+					return commitProcessorChange(targetNodeId, () => {
+						updateProcessorInGroup(targetNodeId, item.processor_id, {
+							name: formData.name,
 							module: procType,
-							...(procType !== 'null' && formData.config?.config !== undefined
-								? { config: formData.config.config }
-								: {})
-						}
+							status:
+								formData.adm_status !== undefined
+									? formData.adm_status === 1
+									: true,
+							config
+						})
 					})
-					return true
 				},
 				{
 					lockedCluster: currentCluster,
@@ -1141,7 +1277,34 @@ export const usePipelineBuildStore = defineStore(
 			)
 		}
 
-		async function saveNodeContent(node: INode, clusterURLs?: string[]): Promise<void> {
+		async function fetchClusterProcessorIds(clusterURLs?: string[]): Promise<Set<string>> {
+			try {
+				const clusterProcRes = await processorsApi.get({ limit: 100 }, clusterURLs)
+				const clusterList =
+					(clusterProcRes?.data as any)?.processors ||
+					(clusterProcRes?.data as any)?.pipelines ||
+					[]
+				return new Set<string>(
+					clusterList.map((cp: any) => cp.processor_id || cp.pipeline_id)
+				)
+			} catch {
+				return new Set<string>()
+			}
+		}
+
+		function notifyNonAxiosError(title: string, message: string) {
+			try {
+				useAppStore().showError(title, message)
+			} catch {
+				// Ignore when Pinia app store is unavailable
+			}
+		}
+
+		async function saveNodeContent(
+			node: INode,
+			clusterURLs?: string[],
+			getClusterProcIds?: () => Promise<Set<string>>
+		): Promise<void> {
 			const pId = pipelineId.value
 			const cId = canvasId.value
 			const nodeId = (node as any).node_id || node.id
@@ -1217,21 +1380,19 @@ export const usePipelineBuildStore = defineStore(
 					[]
 				const currentBackendIds = new Set(backendProcessors.map((p: any) => p.processor_id))
 
-				let clusterProcIds = new Set<string>()
-				try {
-					const clusterProcRes = await processorsApi.get({ limit: 100 }, clusterURLs)
-					const clusterList =
-						(clusterProcRes?.data as any)?.processors ||
-						(clusterProcRes?.data as any)?.pipelines ||
-						[]
-					clusterProcIds = new Set(
-						clusterList.map((cp: any) => cp.processor_id || cp.pipeline_id)
-					)
-				} catch {
-					// Ignore if processorsApi fails
-				}
-
 				const rawProcessors = node.data?.processors || []
+				const needsClusterProcLookup = rawProcessors.some(
+					(p: any) =>
+						p.processor_id &&
+						!currentBackendIds.has(p.processor_id) &&
+						!p.source_processor_id
+				)
+				const clusterProcIds = needsClusterProcLookup
+					? await (getClusterProcIds
+							? getClusterProcIds()
+							: fetchClusterProcessorIds(clusterURLs))
+					: new Set<string>()
+
 				const mappedProcessors = rawProcessors.map((p: any) => {
 					let cfg = p.config
 					if (!cfg || !cfg.type) {
@@ -1325,10 +1486,21 @@ export const usePipelineBuildStore = defineStore(
 			}
 		}
 
-		async function saveGraph(): Promise<boolean> {
+		interface SaveGraphOutcome {
+			ok: boolean
+			stage1Ok: boolean
+			failedNodeIds: Set<string>
+		}
+
+		async function executeSaveGraph(): Promise<SaveGraphOutcome> {
+			if (loading.saving) {
+				return { ok: false, stage1Ok: false, failedNodeIds: new Set() }
+			}
+
 			if (!pipelineId.value || !canvasId.value || canvasId.value === 'default') {
 				error.value = 'Canvas ID is invalid.'
-				return false
+				notifyNonAxiosError('Failed to save pipeline', error.value)
+				return { ok: false, stage1Ok: false, failedNodeIds: new Set() }
 			}
 
 			loading.saving = true
@@ -1418,22 +1590,42 @@ export const usePipelineBuildStore = defineStore(
 				)
 
 				if (!res?.success || !res.data) {
-					return false
+					const msg =
+						(res as any)?.error?.detail ||
+						(res as any)?.error?.title ||
+						'Failed to save pipeline graph'
+					error.value = msg
+					notifyNonAxiosError('Failed to save pipeline', msg)
+					return { ok: false, stage1Ok: false, failedNodeIds: new Set() }
 				}
 
 				canvasGraph.value = res.data
 
 				// Stage 2: Save content for each active node in parallel using Promise.allSettled
 				const activeNodes = [...nodes.value]
+				let clusterProcIdsPromise: Promise<Set<string>> | null = null
+				const getClusterProcIds = () => {
+					if (!clusterProcIdsPromise) {
+						clusterProcIdsPromise = fetchClusterProcessorIds(cUrls)
+					}
+					return clusterProcIdsPromise
+				}
 
 				const nodeResults = await Promise.allSettled(
-					activeNodes.map((n) => saveNodeContent(n, cUrls))
+					activeNodes.map((n) => saveNodeContent(n, cUrls, getClusterProcIds))
 				)
 
 				const failures: string[] = []
+				const failedNodeIds = new Set<string>()
+				let hasNonAxiosFailure = false
 				nodeResults.forEach((outcome, idx) => {
 					if (outcome.status === 'rejected') {
-						const nodeName = activeNodes[idx].label || activeNodes[idx].id
+						const failedNode = activeNodes[idx]
+						failedNodeIds.add(failedNode.id)
+						if (!axios.isAxiosError(outcome.reason)) {
+							hasNonAxiosFailure = true
+						}
+						const nodeName = failedNode.label || failedNode.id
 						failures.push(`${nodeName} (${outcome.reason?.message || 'unknown error'})`)
 					}
 				})
@@ -1441,18 +1633,29 @@ export const usePipelineBuildStore = defineStore(
 				if (failures.length > 0) {
 					isDirty.value = true
 					error.value = `Graph saved, but failed to update content for node(s): ${failures.join('; ')}`
-					return false
+					if (hasNonAxiosFailure) {
+						notifyNonAxiosError('Failed to save pipeline', error.value)
+					}
+					return { ok: false, stage1Ok: true, failedNodeIds }
 				}
 
 				isDirty.value = false
 				successMessage.value = 'Pipeline graph and all node contents saved successfully!'
-				return true
+				return { ok: true, stage1Ok: true, failedNodeIds }
 			} catch (err: any) {
 				error.value = err.message || 'Failed to save pipeline graph'
-				return false
+				if (!axios.isAxiosError(err)) {
+					notifyNonAxiosError('Failed to save pipeline', error.value ?? '')
+				}
+				return { ok: false, stage1Ok: false, failedNodeIds: new Set() }
 			} finally {
 				loading.saving = false
 			}
+		}
+
+		async function saveGraph(): Promise<boolean> {
+			const outcome = await executeSaveGraph()
+			return outcome.ok
 		}
 
 		return {
@@ -1505,6 +1708,7 @@ export const usePipelineBuildStore = defineStore(
 			saveGraph,
 			saveNodeContent,
 			getSourceActiveItemIds,
+			syncDownstreamItemCounts,
 			buildGraphRepresentation
 		}
 	},

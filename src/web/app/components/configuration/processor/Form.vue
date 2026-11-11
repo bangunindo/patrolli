@@ -14,7 +14,6 @@ import { FormMode } from '@@/shared/types/app.type'
 import { type IProcessorForm } from '@@/shared/types/processor.type'
 import { CreateProcessorRequest } from '@@/shared/generated/patrolliAPI.schemas.type'
 import { processorHints } from '@/app/services/forms/ui-hints/processor.hints'
-import { validateOplSyntax } from '@/app/helpers/opl.language'
 
 import appHelper from '@/app/helpers/app.helper'
 import AppInputCluster from '@/components/app/input/AppInputCluster.vue'
@@ -106,11 +105,10 @@ const handleFormSubmit = async (validFormData: any) => {
 
 		if (procType === 'transform') {
 			const oplCode = validFormData.config?.config?.opl ?? ''
-			const validation = validateOplSyntax(oplCode)
-			if (!validation.isValid) {
+			if (typeof oplCode !== 'string' || !oplCode.trim()) {
 				if (dynamicFormRef.value) {
 					dynamicFormRef.value.issues = {
-						'config.config.opl': validation.error || 'Invalid OPL syntax'
+						'config.config.opl': 'OPL Program is required'
 					}
 				}
 				loading.value.form = false
@@ -145,6 +143,16 @@ const handleFormSubmit = async (validFormData: any) => {
 	} catch {
 		loading.value.form = false
 	}
+}
+
+const transformFormData = (rawData: Record<string, any>) => {
+	const procType = rawData?.config?.type ?? rawData?.config?.module
+	if (procType === 'transform' && typeof rawData?.config?.config?.opl === 'string') {
+		if (!rawData.config.config.opl.trim()) {
+			rawData.config.config.opl = ''
+		}
+	}
+	return rawData
 }
 
 const triggerSubmit = () => {
@@ -281,6 +289,7 @@ watch(selectedCluster, (newVal, oldVal) => {
 				:initial-data="processorFormMode === FormMode.UPDATE ? currentProcessor : null"
 				:schema="CreateProcessorRequest"
 				:hints="formHints"
+				:transform="transformFormData"
 				:disabled="loading.form"
 				:loading="loading.form"
 				@submit="handleFormSubmit"
