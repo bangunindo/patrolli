@@ -6,6 +6,28 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { createReusableTemplate } from '@vueuse/core'
+import { Alert as UiAlert, AlertDescription as UiAlertDescription } from '@/components/ui/alert'
+import { Badge as UiBadge } from '@/components/ui/badge'
+import { Button as UiButton } from '@/components/ui/button'
+import {
+	Card as UiCard,
+	CardContent as UiCardContent,
+	CardFooter as UiCardFooter,
+	CardHeader as UiCardHeader
+} from '@/components/ui/card'
+import { Checkbox as UiCheckbox } from '@/components/ui/checkbox'
+import {
+	Dialog as UiDialog,
+	DialogContent as UiDialogContent,
+	DialogDescription as UiDialogDescription,
+	DialogFooter as UiDialogFooter,
+	DialogHeader as UiDialogHeader,
+	DialogTitle as UiDialogTitle
+} from '@/components/ui/dialog'
+import UiIcon from '@/components/ui/icon/Icon.vue'
+import { Input as UiInput } from '@/components/ui/input'
+import { ScrollArea as UiScrollArea } from '@/components/ui/scroll-area'
 import { usePipelineStore } from '@/stores/pipeline.store'
 import type { IHostSelectorItem } from '@@/shared/types/pipeline.type'
 
@@ -13,30 +35,57 @@ const props = withDefaults(
 	defineProps<{
 		modelValue?: boolean
 		inline?: boolean
+		suspended?: boolean
+		hosts?: IHostSelectorItem[]
+		selectedIds?: string[]
+		loading?: boolean
+		saving?: boolean
+		minSelection?: number
+		errorMessage?: string | null
 	}>(),
 	{
 		modelValue: true,
-		inline: false
+		inline: false,
+		suspended: false,
+		hosts: undefined,
+		selectedIds: undefined,
+		loading: false,
+		saving: false,
+		minSelection: 0,
+		errorMessage: null
 	}
 )
 
 const emit = defineEmits<{
 	(e: 'update:modelValue', val: boolean): void
 	(e: 'close'): void
+	(e: 'apply', ids: string[]): void
+	(e: 'clearError'): void
 }>()
 
 const pipelineStore = usePipelineStore()
 
 const search = ref('')
 const draftSelected = ref<string[]>([])
+const localError = ref<string | null>(null)
 
-// Initialize draft from store
+const isControlled = computed(() => props.selectedIds !== undefined)
+const hostList = computed(() => props.hosts ?? pipelineStore.availableHosts)
+const displayError = computed(() => localError.value || props.errorMessage || null)
+const draftSelectedSet = computed(() => new Set(draftSelected.value))
+const sourceIds = computed(() => props.selectedIds ?? pipelineStore.form.assignedHosts)
+const sourceSignature = computed(() => sourceIds.value.join('\0'))
+
 watch(
-	() => props.modelValue,
-	(isOpen) => {
-		if (isOpen || props.inline) {
-			draftSelected.value = [...pipelineStore.form.assignedHosts]
-			search.value = ''
+	[() => props.modelValue, () => props.inline, sourceSignature] as const,
+	([isOpen, isInline], prev) => {
+		if (isOpen || isInline) {
+			draftSelected.value = [...sourceIds.value]
+			const wasActive = prev ? Boolean(prev[0] || prev[1]) : false
+			if (!wasActive) {
+				search.value = ''
+				localError.value = null
+			}
 		}
 	},
 	{ immediate: true }
@@ -44,208 +93,264 @@ watch(
 
 const filteredHosts = computed(() => {
 	const q = search.value.toLowerCase().trim()
-	return pipelineStore.availableHosts.filter((host: IHostSelectorItem) => {
-		if (q === '') return true
+	if (q === '') return hostList.value
+	return hostList.value.filter((host: IHostSelectorItem) => {
 		return host.name.toLowerCase().includes(q) || host.ip.toLowerCase().includes(q)
 	})
 })
 
-function toggleHost(hostId: string) {
+function setHostChecked(hostId: string, checked = !isHostChecked(hostId)) {
+	if (props.saving) return
+	localError.value = null
+	emit('clearError')
 	const idx = draftSelected.value.indexOf(hostId)
-	if (idx > -1) {
-		draftSelected.value.splice(idx, 1)
-	} else {
+	if (checked && idx === -1) {
 		draftSelected.value.push(hostId)
+	} else if (!checked && idx > -1) {
+		draftSelected.value.splice(idx, 1)
 	}
 }
 
 function isHostChecked(hostId: string): boolean {
-	return draftSelected.value.includes(hostId)
+	return draftSelectedSet.value.has(hostId)
 }
 
 function selectAllFiltered() {
+	if (props.saving || props.loading) return
+	localError.value = null
+	emit('clearError')
 	const currentFilteredIds = filteredHosts.value.map((h) => h.id)
-	const allInDraft = currentFilteredIds.every((id) => draftSelected.value.includes(id))
+	if (currentFilteredIds.length === 0) return
+	const selectedSet = draftSelectedSet.value
+	const allInDraft = currentFilteredIds.every((id) => selectedSet.has(id))
 
 	if (allInDraft) {
-		draftSelected.value = draftSelected.value.filter((id) => !currentFilteredIds.includes(id))
+		const filteredSet = new Set(currentFilteredIds)
+		draftSelected.value = draftSelected.value.filter((id) => !filteredSet.has(id))
 	} else {
-		currentFilteredIds.forEach((id) => {
-			if (!draftSelected.value.includes(id)) draftSelected.value.push(id)
-		})
+		for (const id of currentFilteredIds) {
+			if (!selectedSet.has(id)) draftSelected.value.push(id)
+		}
 	}
 }
 
 function clearAll() {
+	if (props.saving) return
+	localError.value = null
+	emit('clearError')
 	draftSelected.value = []
 }
 
 function applySelection() {
+	if (props.minSelection > 0 && draftSelected.value.length < props.minSelection) {
+		localError.value =
+			props.minSelection === 1
+				? 'At least one host must be selected.'
+				: `At least ${props.minSelection} hosts must be selected.`
+		return
+	}
+
+	if (isControlled.value) {
+		emit('apply', [...draftSelected.value])
+		return
+	}
+
 	pipelineStore.form.assignedHosts = [...draftSelected.value]
 	close()
 }
 
+const [DefineSelectorBody, SelectorBody] = createReusableTemplate()
+const [DefineSelectorActions, SelectorActions] = createReusableTemplate()
+
 function close() {
+	if (props.saving) return
 	emit('update:modelValue', false)
 	emit('close')
+}
+
+function handleDialogOpenChange(open: boolean) {
+	if (!open) {
+		close()
+	}
 }
 </script>
 
 <template>
-	<div
-		v-if="inline || modelValue"
-		:class="
-			inline
-				? 'w-full'
-				: 'fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs'
-		"
-		@click.self="!inline && close()"
-	>
-		<div
-			:class="[
-				'w-full rounded-[10px] border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col overflow-hidden animate-in fade-in duration-150',
-				inline ? 'shadow-xl' : 'max-w-[490px] shadow-2xl zoom-in-95'
-			]"
-		>
-			<div
-				class="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-slate-800"
-			>
-				<div class="flex items-center gap-2">
-					<span class="text-xs font-semibold text-slate-800 dark:text-slate-100">
-						Select Hosts
-					</span>
-					<span
-						class="px-2 py-0.5 rounded text-[10px] font-medium bg-sky-100 dark:bg-sky-950 text-sky-600 dark:text-sky-400"
-					>
-						{{ draftSelected.length }} of
-						{{ pipelineStore.availableHosts.length }} Selected
-					</span>
+	<DefineSelectorBody>
+		<div class="p-3 border-b border-border flex flex-col gap-2.5 bg-muted/40">
+			<div class="flex items-center gap-2">
+				<div class="relative flex-1">
+					<UiIcon
+						name="magnify"
+						size="14px"
+						class="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+					/>
+					<UiInput
+						v-model="search"
+						type="text"
+						placeholder="Search host by name or IP..."
+						class="h-8 pl-8 pr-3 text-xs"
+						:disabled="saving"
+					/>
 				</div>
-				<button
-					type="button"
-					class="w-6 h-6 flex items-center justify-center rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-sm"
-					@click="close"
+
+				<UiButton
+					variant="outline"
+					size="xs"
+					class="shrink-0"
+					:disabled="saving || loading || filteredHosts.length === 0"
+					@click="selectAllFiltered"
 				>
-					✕
-				</button>
+					Select All
+				</UiButton>
 			</div>
 
-			<div
-				class="p-3 border-b border-slate-200 dark:border-slate-800 flex flex-col gap-2.5 bg-slate-50/50 dark:bg-slate-950/40"
-			>
-				<div class="flex items-center gap-2">
-					<div class="relative flex-1">
-						<UiIcon
-							name="magnify"
-							size="14px"
-							class="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
-						/>
-						<input
-							v-model="search"
-							type="text"
-							placeholder="Search host by name or IP..."
-							class="w-full pl-8 pr-3 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md focus:outline-none focus:border-sky-500 text-slate-800 dark:text-slate-100 placeholder:text-slate-400"
-						/>
-					</div>
+			<UiAlert v-if="displayError" variant="destructive" class="py-2 px-3">
+				<UiAlertDescription class="text-[11px] font-medium">
+					{{ displayError }}
+				</UiAlertDescription>
+			</UiAlert>
+		</div>
 
-					<button
-						type="button"
-						class="px-2.5 py-1.5 text-xs rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 shrink-0 font-medium"
-						@click="selectAllFiltered"
-					>
-						Select All
-					</button>
+		<UiScrollArea class="h-[220px]">
+			<div class="divide-y divide-border p-1">
+				<div
+					v-if="loading && hostList.length === 0"
+					class="py-8 text-center text-xs text-muted-foreground"
+				>
+					Loading hosts...
 				</div>
-			</div>
 
-			<div
-				class="max-h-[220px] overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/80 p-1"
-			>
 				<div
 					v-for="host in filteredHosts"
+					v-else
 					:key="host.id"
-					class="flex items-center justify-between px-3 py-2 rounded transition-colors cursor-pointer"
+					class="flex items-center justify-between px-3 py-2 rounded-md transition-colors cursor-pointer"
 					:class="
 						isHostChecked(host.id)
 							? 'bg-sky-50/80 dark:bg-sky-950/40'
-							: 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
+							: 'hover:bg-accent/60'
 					"
-					@click="toggleHost(host.id)"
+					@click="setHostChecked(host.id)"
 				>
 					<div class="flex items-center gap-2.5 min-w-0">
-						<div
-							class="w-4 h-4 rounded border flex items-center justify-center transition-colors"
-							:class="
-								isHostChecked(host.id)
-									? 'bg-sky-600 border-sky-600 text-white'
-									: 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900'
-							"
-						>
-							<svg
-								v-if="isHostChecked(host.id)"
-								class="w-2.5 h-2.5"
-								viewBox="0 0 12 12"
-								fill="none"
-							>
-								<path
-									d="M10 3L4.5 8.5L2 6"
-									stroke="currentColor"
-									stroke-width="2"
-									stroke-linecap="round"
-									stroke-linejoin="round"
-								/>
-							</svg>
-						</div>
+						<UiCheckbox
+							:model-value="isHostChecked(host.id)"
+							:disabled="saving"
+							aria-label="Select host"
+							@click.stop
+							@update:model-value="(val) => setHostChecked(host.id, Boolean(val))"
+						/>
 						<span
 							class="text-xs truncate"
 							:class="
 								isHostChecked(host.id)
-									? 'font-semibold text-slate-900 dark:text-slate-100'
-									: 'font-normal text-slate-700 dark:text-slate-300'
+									? 'font-semibold text-foreground'
+									: 'font-normal text-foreground/80'
 							"
 						>
 							{{ host.name }}
 						</span>
 					</div>
 
-					<span
-						class="px-2 py-0.5 rounded text-[10px] font-mono shrink-0"
+					<UiBadge
+						:variant="isHostChecked(host.id) ? 'outline' : 'secondary'"
+						class="px-2 py-0.5 text-[10px] font-mono font-normal shrink-0"
 						:class="
 							isHostChecked(host.id)
-								? 'bg-sky-100 dark:bg-sky-950 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-800'
-								: 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700'
+								? 'bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800'
+								: ''
 						"
 					>
 						{{ host.ip }}
-					</span>
+					</UiBadge>
 				</div>
 
 				<div
-					v-if="filteredHosts.length === 0"
-					class="py-8 text-center text-xs text-slate-400 dark:text-slate-500"
+					v-if="!loading && filteredHosts.length === 0"
+					class="py-8 text-center text-xs text-muted-foreground"
 				>
 					No hosts found matching filter
 				</div>
 			</div>
+		</UiScrollArea>
+	</DefineSelectorBody>
 
-			<div
-				class="flex items-center justify-between px-4 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/40"
-			>
-				<button
-					type="button"
-					class="px-3 py-1.5 text-xs rounded border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800"
-					@click="clearAll"
+	<DefineSelectorActions>
+		<UiButton variant="outline" size="xs" :disabled="saving" @click="clearAll">
+			Clear All
+		</UiButton>
+		<UiButton size="xs" :disabled="saving || loading" @click="applySelection">
+			{{ saving ? 'Saving...' : `Apply Selection (${draftSelected.length})` }}
+		</UiButton>
+	</DefineSelectorActions>
+
+	<UiCard v-if="inline" class="w-full overflow-hidden shadow-xl">
+		<UiCardHeader
+			class="flex flex-row items-center justify-between space-y-0 px-4 py-3 border-b border-border"
+		>
+			<div class="flex items-center gap-2">
+				<span class="text-xs font-semibold text-foreground"> Select Hosts </span>
+				<UiBadge
+					variant="secondary"
+					class="px-2 py-0.5 text-[10px] font-medium bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300"
 				>
-					Clear All
-				</button>
-				<button
-					type="button"
-					class="px-3 py-1.5 text-xs rounded bg-sky-600 hover:bg-sky-700 text-white font-medium shadow-xs"
-					@click="applySelection"
-				>
-					Apply Selection ({{ draftSelected.length }})
-				</button>
+					{{ draftSelected.length }} of {{ hostList.length }} Selected
+				</UiBadge>
 			</div>
-		</div>
-	</div>
+			<UiButton
+				variant="ghost"
+				size="icon"
+				class="h-6 w-6 text-muted-foreground hover:text-foreground"
+				:disabled="saving"
+				@click="close"
+			>
+				<UiIcon name="close" size="14px" />
+			</UiButton>
+		</UiCardHeader>
+
+		<UiCardContent class="p-0">
+			<SelectorBody />
+		</UiCardContent>
+
+		<UiCardFooter
+			class="flex items-center justify-between px-4 py-3 border-t border-border bg-muted/40"
+		>
+			<SelectorActions />
+		</UiCardFooter>
+	</UiCard>
+
+	<UiDialog v-else :open="modelValue && !suspended" @update:open="handleDialogOpenChange">
+		<UiDialogContent
+			class="sm:max-w-[490px] p-0 gap-0 overflow-hidden"
+			@escape-key-down="(e) => saving && e.preventDefault()"
+			@pointer-down-outside="(e) => saving && e.preventDefault()"
+			@interact-outside="(e) => saving && e.preventDefault()"
+		>
+			<UiDialogHeader
+				class="px-4 py-3 border-b border-border flex-row items-center gap-2 space-y-0 pr-10"
+			>
+				<UiDialogTitle class="text-xs font-semibold text-foreground">
+					Select Hosts
+				</UiDialogTitle>
+				<UiBadge
+					variant="secondary"
+					class="px-2 py-0.5 text-[10px] font-medium bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300"
+				>
+					{{ draftSelected.length }} of {{ hostList.length }} Selected
+				</UiBadge>
+				<UiDialogDescription class="sr-only">
+					Select hosts to attach to this pipeline
+				</UiDialogDescription>
+			</UiDialogHeader>
+
+			<SelectorBody />
+
+			<UiDialogFooter
+				class="flex-row items-center justify-between sm:justify-between px-4 py-3 border-t border-border bg-muted/40 gap-2"
+			>
+				<SelectorActions />
+			</UiDialogFooter>
+		</UiDialogContent>
+	</UiDialog>
 </template>
