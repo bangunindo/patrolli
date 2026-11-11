@@ -313,10 +313,33 @@ pub enum RuntimeNode {
         source: Uuid,
         gate: Uuid,
     },
-    /// Processor ids in execution order.
-    ProcessorGroup(Vec<Uuid>),
+    ProcessorGroup {
+        input: Uuid,
+        /// In execution order.
+        processors: Vec<Uuid>,
+        output: Uuid,
+    },
     /// None while the node is empty.
     Sink(Option<Uuid>),
+}
+
+impl RuntimeNode {
+    /// The processors of the node in the order data runs through them.
+    fn processor_chain(&self) -> Vec<Uuid> {
+        match self {
+            RuntimeNode::Source { source, gate } => vec![*source, *gate],
+            RuntimeNode::ProcessorGroup {
+                input,
+                processors,
+                output,
+            } => [*input]
+                .into_iter()
+                .chain(processors.iter().copied())
+                .chain([*output])
+                .collect(),
+            RuntimeNode::Sink(_) => vec![],
+        }
+    }
 }
 
 impl CanvasRuntime {
@@ -324,11 +347,7 @@ impl CanvasRuntime {
     pub fn processor_ids(&self) -> Vec<Uuid> {
         self.nodes
             .values()
-            .flat_map(|node| match node {
-                RuntimeNode::Source { source, gate } => vec![*source, *gate],
-                RuntimeNode::ProcessorGroup(processors) => processors.clone(),
-                RuntimeNode::Sink(_) => vec![],
-            })
+            .flat_map(RuntimeNode::processor_chain)
             .collect()
     }
 }
@@ -343,45 +362,34 @@ pub struct RuntimeEdges {
     pub sink_inputs: BTreeSet<(Uuid, Uuid)>,
 }
 
-/// Wires a canvas: source -> gate only while the pipeline is enabled, the
-/// processors of a group one after another, and each relation from the last
-/// processor before it to the first processor or sink after it. An empty
-/// group hands on whatever reaches it.
+/// Wires a canvas: source -> gate only while the pipeline is enabled, a
+/// group's input -> its processors -> its output, and each relation from the
+/// gate or output before it to the input or sink after it.
 pub fn compile(canvas: &CanvasRuntime, enabled: bool) -> RuntimeEdges {
     let mut edges = RuntimeEdges::default();
-    let mut inputs: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
-    for (from, to) in &canvas.relations {
-        inputs.entry(*to).or_default().push(*from);
-    }
     for node in canvas.nodes.values() {
-        match node {
-            RuntimeNode::Source { source, gate } if enabled => {
-                edges.processor_inputs.insert((*gate, *source));
-            }
-            RuntimeNode::ProcessorGroup(processors) => {
-                for pair in processors.windows(2) {
-                    edges.processor_inputs.insert((pair[1], pair[0]));
-                }
-            }
-            _ => {}
+        if matches!(node, RuntimeNode::Source { .. }) && !enabled {
+            continue;
+        }
+        for pair in node.processor_chain().windows(2) {
+            edges.processor_inputs.insert((pair[1], pair[0]));
         }
     }
 
-    let mut outputs = HashMap::new();
     for (from, to) in &canvas.relations {
-        let from_outputs = node_outputs(canvas, &inputs, &mut outputs, *from);
+        let output = match canvas.nodes.get(from) {
+            Some(RuntimeNode::Source { gate, .. }) => *gate,
+            Some(RuntimeNode::ProcessorGroup { output, .. }) => *output,
+            Some(RuntimeNode::Sink(_)) | None => continue,
+        };
         match canvas.nodes.get(to) {
-            Some(RuntimeNode::ProcessorGroup(processors)) if !processors.is_empty() => {
-                for output in from_outputs {
-                    edges.processor_inputs.insert((processors[0], output));
-                }
+            Some(RuntimeNode::ProcessorGroup { input, .. }) => {
+                edges.processor_inputs.insert((*input, output));
             }
             Some(RuntimeNode::Sink(Some(sink_id))) => {
-                for output in from_outputs {
-                    edges.sink_inputs.insert((*sink_id, output));
-                }
+                edges.sink_inputs.insert((*sink_id, output));
             }
-            // an empty group: its successors take its outputs; an empty sink takes nothing
+            // an empty sink takes nothing
             _ => {}
         }
     }
@@ -398,35 +406,6 @@ pub fn find_cycle(edges: &RuntimeEdges) -> Option<Uuid> {
     Acyclic::try_from_graph(&graph)
         .err()
         .map(|cycle| cycle.node_id())
-}
-
-/// The processors whose output leaves `node_id`.
-fn node_outputs(
-    canvas: &CanvasRuntime,
-    inputs: &HashMap<Uuid, Vec<Uuid>>,
-    memo: &mut HashMap<Uuid, BTreeSet<Uuid>>,
-    node_id: Uuid,
-) -> BTreeSet<Uuid> {
-    if let Some(outputs) = memo.get(&node_id) {
-        return outputs.clone();
-    }
-    // stops a cycle in hand-edited rows; saved graphs have none
-    memo.insert(node_id, BTreeSet::new());
-    let outputs = match canvas.nodes.get(&node_id) {
-        Some(RuntimeNode::Source { gate, .. }) => BTreeSet::from([*gate]),
-        Some(RuntimeNode::ProcessorGroup(processors)) => match processors.last() {
-            Some(last) => BTreeSet::from([*last]),
-            None => inputs
-                .get(&node_id)
-                .into_iter()
-                .flatten()
-                .flat_map(|input| node_outputs(canvas, inputs, memo, *input))
-                .collect(),
-        },
-        Some(RuntimeNode::Sink(_)) | None => BTreeSet::new(),
-    };
-    memo.insert(node_id, outputs.clone());
-    outputs
 }
 
 #[cfg(test)]
@@ -715,14 +694,23 @@ mod tests {
     fn compile_wires_chains_passthroughs_and_fan_in() {
         let [s, g1, g2, g3, e1, e2, k, empty_k] = std::array::from_fn(|_| Uuid::now_v7());
         let [src, gate, a, b, c, d, sink_id] = std::array::from_fn(|_| Uuid::now_v7());
+        let [i1, o1, i2, o2, i3, o3, ie1, oe1, ie2, oe2] = std::array::from_fn(|_| Uuid::now_v7());
         let canvas = |nodes: Vec<(Uuid, RuntimeNode)>, relations: &[(Uuid, Uuid)]| CanvasRuntime {
             nodes: nodes.into_iter().collect(),
             relations: relations.iter().copied().collect(),
         };
         let source = (s, RuntimeNode::Source { source: src, gate });
         let sink = (k, RuntimeNode::Sink(Some(sink_id)));
-        let group =
-            |id, processors: &[Uuid]| (id, RuntimeNode::ProcessorGroup(processors.to_vec()));
+        let group = |id, input, processors: &[Uuid], output| {
+            (
+                id,
+                RuntimeNode::ProcessorGroup {
+                    input,
+                    processors: processors.to_vec(),
+                    output,
+                },
+            )
+        };
         let edges =
             |processor_inputs: &[(Uuid, Uuid)], sink_inputs: &[(Uuid, Uuid)]| RuntimeEdges {
                 processor_inputs: processor_inputs.iter().copied().collect(),
@@ -731,42 +719,57 @@ mod tests {
 
         // a chain, then the same chain disabled
         let chain = canvas(
-            vec![source.clone(), group(g1, &[a, b]), sink.clone()],
+            vec![source.clone(), group(g1, i1, &[a, b], o1), sink.clone()],
             &[(s, g1), (g1, k)],
         );
         assert_eq!(
             compile(&chain, true),
-            edges(&[(gate, src), (a, gate), (b, a)], &[(sink_id, b)])
+            edges(
+                &[(gate, src), (i1, gate), (a, i1), (b, a), (o1, b)],
+                &[(sink_id, o1)]
+            )
         );
         assert_eq!(
             compile(&chain, false),
-            edges(&[(a, gate), (b, a)], &[(sink_id, b)])
+            edges(&[(i1, gate), (a, i1), (b, a), (o1, b)], &[(sink_id, o1)])
         );
 
-        // empty groups hand on what reaches them, and a second path to the
-        // same sink gives the same row once
+        // an empty group wires its input straight to its output, and a second
+        // path to the same sink gives its own row
         let passthrough = canvas(
             vec![
                 source.clone(),
-                group(e1, &[]),
-                group(e2, &[]),
-                group(g1, &[a]),
+                group(e1, ie1, &[], oe1),
+                group(e2, ie2, &[], oe2),
+                group(g1, i1, &[a], o1),
                 sink.clone(),
             ],
             &[(s, e1), (e1, e2), (e2, g1), (e1, k), (s, k), (g1, k)],
         );
         assert_eq!(
             compile(&passthrough, true),
-            edges(&[(gate, src), (a, gate)], &[(sink_id, gate), (sink_id, a)])
+            edges(
+                &[
+                    (gate, src),
+                    (oe1, ie1),
+                    (oe2, ie2),
+                    (a, i1),
+                    (o1, a),
+                    (ie1, gate),
+                    (ie2, oe1),
+                    (i1, oe2),
+                ],
+                &[(sink_id, oe1), (sink_id, gate), (sink_id, o1)]
+            )
         );
 
         // fan out and back in
         let diamond = canvas(
             vec![
                 source.clone(),
-                group(g1, &[a]),
-                group(g2, &[b]),
-                group(g3, &[c, d]),
+                group(g1, i1, &[a], o1),
+                group(g2, i2, &[b], o2),
+                group(g3, i3, &[c, d], o3),
                 sink.clone(),
             ],
             &[(s, g1), (s, g2), (g1, g3), (g2, g3), (g3, k)],
@@ -774,31 +777,50 @@ mod tests {
         assert_eq!(
             compile(&diamond, true),
             edges(
-                &[(gate, src), (a, gate), (b, gate), (c, a), (c, b), (d, c)],
-                &[(sink_id, d)]
+                &[
+                    (gate, src),
+                    (a, i1),
+                    (o1, a),
+                    (b, i2),
+                    (o2, b),
+                    (c, i3),
+                    (d, c),
+                    (o3, d),
+                    (i1, gate),
+                    (i2, gate),
+                    (i3, o1),
+                    (i3, o2),
+                ],
+                &[(sink_id, o3)]
             )
         );
 
-        // nothing reaches a sink behind an empty group with no input, and a
-        // group with no input is still chained
+        // groups with no input are still chained and wired on
         let detached = canvas(
-            vec![group(e1, &[]), group(g1, &[a, b]), sink.clone()],
+            vec![
+                group(e1, ie1, &[], oe1),
+                group(g1, i1, &[a, b], o1),
+                sink.clone(),
+            ],
             &[(e1, k)],
         );
-        assert_eq!(compile(&detached, true), edges(&[(b, a)], &[]));
+        assert_eq!(
+            compile(&detached, true),
+            edges(&[(oe1, ie1), (a, i1), (b, a), (o1, b)], &[(sink_id, oe1)])
+        );
 
         // an empty sink node takes nothing
         let into_empty_sink = canvas(
             vec![
                 source.clone(),
-                group(g1, &[a]),
+                group(g1, i1, &[a], o1),
                 (empty_k, RuntimeNode::Sink(None)),
             ],
             &[(s, g1), (g1, empty_k)],
         );
         assert_eq!(
             compile(&into_empty_sink, true),
-            edges(&[(gate, src), (a, gate)], &[])
+            edges(&[(gate, src), (i1, gate), (a, i1), (o1, a)], &[])
         );
     }
 
@@ -825,9 +847,11 @@ mod tests {
                         gate: Uuid::now_v7(),
                     },
                     0 => RuntimeNode::Sink((next(3) != 0).then(Uuid::now_v7)),
-                    _ => {
-                        RuntimeNode::ProcessorGroup((0..next(4)).map(|_| Uuid::now_v7()).collect())
-                    }
+                    _ => RuntimeNode::ProcessorGroup {
+                        input: Uuid::now_v7(),
+                        processors: (0..next(4)).map(|_| Uuid::now_v7()).collect(),
+                        output: Uuid::now_v7(),
+                    },
                 };
                 nodes.push((Uuid::now_v7(), node));
             }

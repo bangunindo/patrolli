@@ -1091,9 +1091,12 @@ CREATE INDEX idx_pipeline_node_source_items_1 ON pipeline_node_source_items (ite
 
 CREATE TABLE pipeline_node_processor_groups
 (
-    node_id UUID PRIMARY KEY,
-    kind    TEXT GENERATED ALWAYS AS ('processor_group') STORED,
-    FOREIGN KEY (node_id, kind) REFERENCES pipeline_nodes (node_id, kind) ON DELETE CASCADE
+    node_id             UUID PRIMARY KEY,
+    kind                TEXT GENERATED ALWAYS AS ('processor_group') STORED,
+    FOREIGN KEY (node_id, kind) REFERENCES pipeline_nodes (node_id, kind) ON DELETE CASCADE,
+
+    input_processor_id  UUID NOT NULL UNIQUE REFERENCES processors (processor_id),
+    output_processor_id UUID NOT NULL UNIQUE REFERENCES processors (processor_id)
 );
 
 CREATE TABLE pipeline_node_processors
