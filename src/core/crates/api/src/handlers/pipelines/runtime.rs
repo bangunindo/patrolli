@@ -15,14 +15,15 @@ use patrolli::config::processor::{Config, ProcessorKind};
 use patrolli::db::query::{ProcessorColumn, ProcessorParams, processors};
 use patrolli::db::schema::{
     AdmStatus, HostTemplates, Hosts, ItemProcessors, Items, PipelineCanvases,
-    PipelineNodeProcessors, PipelineNodeRelations, PipelineNodeSinks, PipelineNodeSourceItems,
-    PipelineNodeSources, PipelineNodes, ProcessorInputs, Processors, SinkInputs, Sinks,
+    PipelineNodeProcessorGroups, PipelineNodeProcessors, PipelineNodeRelations, PipelineNodeSinks,
+    PipelineNodeSourceItems, PipelineNodeSources, PipelineNodes, ProcessorInputs, Processors,
+    SinkInputs, Sinks,
 };
 use sea_query::extension::postgres::PgExpr;
 use sea_query::{
-    Asterisk, CommonTableExpression, Cond, Cycle, Expr, ExprTrait, Func, OnConflict, Order,
-    PostgresQueryBuilder, Query as DbQuery, QueryStatementBuilder, UnionType, WindowStatement,
-    WithClause,
+    Asterisk, CommonTableExpression, Cond, Cycle, Expr, ExprTrait, Func, IntoIden, OnConflict,
+    Order, PostgresQueryBuilder, Query as DbQuery, QueryStatementBuilder, UnionType,
+    WindowStatement, WithClause,
 };
 use sea_query_postgres::PostgresBinder;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -195,12 +196,12 @@ pub(super) async fn load_graph(
     Ok(PipelineGraph { nodes, relations })
 }
 
-/// Creates the two hidden null processors of a new source node.
+/// Creates the two hidden null processors of a new node: source and gate of a
+/// source node, input and output of a processor group, as `(id, role)`.
 pub(super) async fn insert_hidden_processors(
     client: &impl GenericClient,
     pipeline_name: &str,
-    source_processor_id: Uuid,
-    gate_processor_id: Uuid,
+    hidden: [(Uuid, &str); 2],
     now: DateTime<Utc>,
 ) -> anyhow::Result<()> {
     let mut query = DbQuery::insert();
@@ -212,10 +213,10 @@ pub(super) async fn insert_hidden_processors(
         Processors::LastUpdated,
         Processors::Config,
     ]);
-    for (id, suffix) in [(source_processor_id, "source"), (gate_processor_id, "gate")] {
+    for (id, role) in hidden {
         query.values([
             id.into(),
-            hidden_processor_name(pipeline_name, suffix).into(),
+            hidden_processor_name(pipeline_name, role).into(),
             ProcessorKind::Null.to_string().into(),
             (AdmStatus::Enabled as i16).into(),
             now.into(),
@@ -537,7 +538,7 @@ async fn load_canvas_runtime(
             .push(row.try_get(1)?);
     }
 
-    // load nodes, with the hidden processors of a source and the sink of a sink node
+    // load nodes, with the hidden processors of a source or group and the sink of a sink node
     let (sql, values) = DbQuery::select()
         .columns([
             (PipelineNodes::Table, PipelineNodes::NodeId),
@@ -554,6 +555,16 @@ async fn load_canvas_runtime(
             ),
         ])
         .column((PipelineNodeSinks::Table, PipelineNodeSinks::SinkId))
+        .columns([
+            (
+                PipelineNodeProcessorGroups::Table,
+                PipelineNodeProcessorGroups::InputProcessorId,
+            ),
+            (
+                PipelineNodeProcessorGroups::Table,
+                PipelineNodeProcessorGroups::OutputProcessorId,
+            ),
+        ])
         .from(PipelineNodes::Table)
         .left_join(
             PipelineNodeSources::Table,
@@ -564,6 +575,14 @@ async fn load_canvas_runtime(
             PipelineNodeSinks::Table,
             Expr::col((PipelineNodeSinks::Table, PipelineNodeSinks::NodeId))
                 .equals((PipelineNodes::Table, PipelineNodes::NodeId)),
+        )
+        .left_join(
+            PipelineNodeProcessorGroups::Table,
+            Expr::col((
+                PipelineNodeProcessorGroups::Table,
+                PipelineNodeProcessorGroups::NodeId,
+            ))
+            .equals((PipelineNodes::Table, PipelineNodes::NodeId)),
         )
         .and_where(Expr::col((PipelineNodes::Table, PipelineNodes::CanvasId)).eq(canvas_id))
         .build_postgres(PostgresQueryBuilder);
@@ -580,9 +599,15 @@ async fn load_canvas_runtime(
                     .try_get::<_, Option<Uuid>>(3)?
                     .context("source node without gate processor")?,
             },
-            GraphNodeKind::ProcessorGroup => {
-                RuntimeNode::ProcessorGroup(processors.remove(&node_id).unwrap_or_default())
-            }
+            GraphNodeKind::ProcessorGroup => RuntimeNode::ProcessorGroup {
+                input: row
+                    .try_get::<_, Option<Uuid>>(5)?
+                    .context("processor group without input processor")?,
+                processors: processors.remove(&node_id).unwrap_or_default(),
+                output: row
+                    .try_get::<_, Option<Uuid>>(6)?
+                    .context("processor group without output processor")?,
+            },
             GraphNodeKind::Sink => RuntimeNode::Sink(row.try_get(4)?),
         };
         canvas.nodes.insert(node_id, node);
@@ -772,24 +797,46 @@ fn hidden_processor_name(pipeline_name: &str, role: &str) -> String {
     format!("{pipeline_name} ({role})")
 }
 
-/// Renames the hidden processors of every source node of a pipeline.
+/// Renames the hidden processors of every source node and processor group of
+/// a pipeline.
 pub(super) async fn rename_hidden_processors(
     client: &impl GenericClient,
     pipeline_id: Uuid,
     pipeline_name: &str,
     now: DateTime<Utc>,
 ) -> Result<(), tokio_postgres::Error> {
-    for (role, column) in [
-        ("source", PipelineNodeSources::SourceProcessorId),
-        ("gate", PipelineNodeSources::GateProcessorId),
+    for (role, table, node_id, column) in [
+        (
+            "source",
+            PipelineNodeSources::Table.into_iden(),
+            PipelineNodeSources::NodeId.into_iden(),
+            PipelineNodeSources::SourceProcessorId.into_iden(),
+        ),
+        (
+            "gate",
+            PipelineNodeSources::Table.into_iden(),
+            PipelineNodeSources::NodeId.into_iden(),
+            PipelineNodeSources::GateProcessorId.into_iden(),
+        ),
+        (
+            "input",
+            PipelineNodeProcessorGroups::Table.into_iden(),
+            PipelineNodeProcessorGroups::NodeId.into_iden(),
+            PipelineNodeProcessorGroups::InputProcessorId.into_iden(),
+        ),
+        (
+            "output",
+            PipelineNodeProcessorGroups::Table.into_iden(),
+            PipelineNodeProcessorGroups::NodeId.into_iden(),
+            PipelineNodeProcessorGroups::OutputProcessorId.into_iden(),
+        ),
     ] {
         let processors = DbQuery::select()
-            .column((PipelineNodeSources::Table, column))
-            .from(PipelineNodeSources::Table)
+            .column((table.clone(), column))
+            .from(table.clone())
             .inner_join(
                 PipelineNodes::Table,
-                Expr::col((PipelineNodes::Table, PipelineNodes::NodeId))
-                    .equals((PipelineNodeSources::Table, PipelineNodeSources::NodeId)),
+                Expr::col((PipelineNodes::Table, PipelineNodes::NodeId)).equals((table, node_id)),
             )
             .inner_join(
                 PipelineCanvases::Table,
@@ -817,41 +864,47 @@ pub(super) async fn rename_hidden_processors(
 }
 
 /// Every processor a pipeline created: the hidden source and gate of each
-/// source node, and the members of each processor group.
+/// source node, the hidden input and output of each processor group, and the
+/// members of each processor group.
 pub(super) async fn owned_processor_ids(
     client: &impl GenericClient,
     pipeline_id: Uuid,
 ) -> Result<Vec<Uuid>, tokio_postgres::Error> {
-    let (sql, values) = DbQuery::select()
-        .columns([
-            (
-                PipelineNodeSources::Table,
-                PipelineNodeSources::SourceProcessorId,
-            ),
-            (
-                PipelineNodeSources::Table,
-                PipelineNodeSources::GateProcessorId,
-            ),
-        ])
-        .from(PipelineNodeSources::Table)
-        .inner_join(
-            PipelineNodes::Table,
-            Expr::col((PipelineNodes::Table, PipelineNodes::NodeId))
-                .equals((PipelineNodeSources::Table, PipelineNodeSources::NodeId)),
-        )
-        .inner_join(
-            PipelineCanvases::Table,
-            Expr::col((PipelineCanvases::Table, PipelineCanvases::CanvasId))
-                .equals((PipelineNodes::Table, PipelineNodes::CanvasId)),
-        )
-        .and_where(
-            Expr::col((PipelineCanvases::Table, PipelineCanvases::PipelineId)).eq(pipeline_id),
-        )
-        .build_postgres(PostgresQueryBuilder);
     let mut ids = Vec::new();
-    for row in client.query(sql.as_str(), &values.as_params()).await? {
-        ids.push(row.get(0));
-        ids.push(row.get(1));
+    for (table, node_id, first, second) in [
+        (
+            PipelineNodeSources::Table.into_iden(),
+            PipelineNodeSources::NodeId.into_iden(),
+            PipelineNodeSources::SourceProcessorId.into_iden(),
+            PipelineNodeSources::GateProcessorId.into_iden(),
+        ),
+        (
+            PipelineNodeProcessorGroups::Table.into_iden(),
+            PipelineNodeProcessorGroups::NodeId.into_iden(),
+            PipelineNodeProcessorGroups::InputProcessorId.into_iden(),
+            PipelineNodeProcessorGroups::OutputProcessorId.into_iden(),
+        ),
+    ] {
+        let (sql, values) = DbQuery::select()
+            .columns([(table.clone(), first), (table.clone(), second)])
+            .from(table.clone())
+            .inner_join(
+                PipelineNodes::Table,
+                Expr::col((PipelineNodes::Table, PipelineNodes::NodeId)).equals((table, node_id)),
+            )
+            .inner_join(
+                PipelineCanvases::Table,
+                Expr::col((PipelineCanvases::Table, PipelineCanvases::CanvasId))
+                    .equals((PipelineNodes::Table, PipelineNodes::CanvasId)),
+            )
+            .and_where(
+                Expr::col((PipelineCanvases::Table, PipelineCanvases::PipelineId)).eq(pipeline_id),
+            )
+            .build_postgres(PostgresQueryBuilder);
+        for row in client.query(sql.as_str(), &values.as_params()).await? {
+            ids.push(row.get(0));
+            ids.push(row.get(1));
+        }
     }
 
     let (sql, values) = DbQuery::select()

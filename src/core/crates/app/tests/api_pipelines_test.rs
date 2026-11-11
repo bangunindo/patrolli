@@ -377,6 +377,7 @@ async fn delete_removes_owned_processors_and_their_runtime_rows() {
     let (ht, item) = (Uuid::now_v7(), Uuid::now_v7());
     let (source_node, group_node, sink_node) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
     let (src, gate, member) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    let (group_input, group_output) = (Uuid::now_v7(), Uuid::now_v7());
     let (foreign, foreign_downstream) = (Uuid::now_v7(), Uuid::now_v7());
     sql(&h, &format!("
         INSERT INTO host_templates (host_template_id, host_id) VALUES ('{ht}', '{host}');
@@ -386,6 +387,8 @@ async fn delete_removes_owned_processors_and_their_runtime_rows() {
             ('{src}', 'mine (source)', 'null', 1, now(), 'null'),
             ('{gate}', 'mine (gate)', 'null', 1, now(), 'null'),
             ('{member}', 'member', 'null', 1, now(), 'null'),
+            ('{group_input}', 'mine (input)', 'null', 1, now(), 'null'),
+            ('{group_output}', 'mine (output)', 'null', 1, now(), 'null'),
             ('{foreign}', 'foreign', 'null', 1, now(), 'null'),
             ('{foreign_downstream}', 'foreign downstream', 'null', 1, now(), 'null');
         INSERT INTO pipeline_nodes (node_id, canvas_id, kind, position_x, position_y, last_updated) VALUES
@@ -396,38 +399,45 @@ async fn delete_removes_owned_processors_and_their_runtime_rows() {
             VALUES ('{source_node}', '{src}', '{gate}');
         INSERT INTO pipeline_node_sinks (node_id, sink_id) VALUES ('{sink_node}', '{sink}');
         INSERT INTO pipeline_node_source_items (node_id, item_id) VALUES ('{source_node}', '{item}');
-        INSERT INTO pipeline_node_processor_groups (node_id) VALUES ('{group_node}');
+        INSERT INTO pipeline_node_processor_groups (node_id, input_processor_id, output_processor_id)
+            VALUES ('{group_node}', '{group_input}', '{group_output}');
         INSERT INTO pipeline_node_processors (processor_id, node_id, position) VALUES ('{member}', '{group_node}', 0);
         INSERT INTO pipeline_node_relations (canvas_id, from_node_id, to_node_id) VALUES
             ('{canvas}', '{source_node}', '{group_node}'), ('{canvas}', '{group_node}', '{sink_node}');
         INSERT INTO item_processors (item_id, processor_id) VALUES ('{item}', '{src}');
         INSERT INTO processor_inputs (processor_id, input_id) VALUES
-            ('{gate}', '{src}'), ('{member}', '{gate}'), ('{foreign}', '{member}'), ('{foreign_downstream}', '{foreign}');
-        INSERT INTO sink_inputs (sink_id, input_id) VALUES ('{sink}', '{member}'), ('{sink}', '{foreign}');
+            ('{gate}', '{src}'), ('{group_input}', '{gate}'), ('{member}', '{group_input}'),
+            ('{group_output}', '{member}'), ('{foreign}', '{group_output}'), ('{foreign_downstream}', '{foreign}');
+        INSERT INTO sink_inputs (sink_id, input_id) VALUES ('{sink}', '{group_output}'), ('{sink}', '{foreign}');
     ")).await;
 
     // the other pipeline's canvas uses the same item; deleting mine must not touch it
     let other_canvas = other["canvases"][0]["canvas_id"].as_str().unwrap();
     let (other_source_node, other_group_node) = (Uuid::now_v7(), Uuid::now_v7());
     let (other_src, other_gate, other_member) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    let (other_input, other_output) = (Uuid::now_v7(), Uuid::now_v7());
     sql(&h, &format!("
         INSERT INTO processors (processor_id, name, type, adm_status, last_updated, config) VALUES
             ('{other_src}', 'other (source)', 'null', 1, now(), 'null'),
             ('{other_gate}', 'other (gate)', 'null', 1, now(), 'null'),
-            ('{other_member}', 'other member', 'null', 1, now(), 'null');
+            ('{other_member}', 'other member', 'null', 1, now(), 'null'),
+            ('{other_input}', 'other (input)', 'null', 1, now(), 'null'),
+            ('{other_output}', 'other (output)', 'null', 1, now(), 'null');
         INSERT INTO pipeline_nodes (node_id, canvas_id, kind, position_x, position_y, last_updated) VALUES
             ('{other_source_node}', '{other_canvas}', 'source', 0, 0, now()),
             ('{other_group_node}', '{other_canvas}', 'processor_group', 0, 0, now());
         INSERT INTO pipeline_node_sources (node_id, source_processor_id, gate_processor_id)
             VALUES ('{other_source_node}', '{other_src}', '{other_gate}');
         INSERT INTO pipeline_node_source_items (node_id, item_id) VALUES ('{other_source_node}', '{item}');
-        INSERT INTO pipeline_node_processor_groups (node_id) VALUES ('{other_group_node}');
+        INSERT INTO pipeline_node_processor_groups (node_id, input_processor_id, output_processor_id)
+            VALUES ('{other_group_node}', '{other_input}', '{other_output}');
         INSERT INTO pipeline_node_processors (processor_id, node_id, position) VALUES ('{other_member}', '{other_group_node}', 0);
         INSERT INTO pipeline_node_relations (canvas_id, from_node_id, to_node_id) VALUES
             ('{other_canvas}', '{other_source_node}', '{other_group_node}');
         INSERT INTO item_processors (item_id, processor_id) VALUES ('{item}', '{other_src}');
         INSERT INTO processor_inputs (processor_id, input_id) VALUES
-            ('{other_gate}', '{other_src}'), ('{other_member}', '{other_gate}');
+            ('{other_gate}', '{other_src}'), ('{other_input}', '{other_gate}'),
+            ('{other_member}', '{other_input}'), ('{other_output}', '{other_member}');
     ")).await;
 
     let (status, body) = delete(&h, &alice, id).await;
@@ -453,7 +463,9 @@ async fn delete_removes_owned_processors_and_their_runtime_rows() {
             foreign_downstream,
             other_src,
             other_gate,
-            other_member
+            other_member,
+            other_input,
+            other_output
         ]
     );
     let inputs: Vec<(Uuid, Uuid)> = client
@@ -471,7 +483,9 @@ async fn delete_removes_owned_processors_and_their_runtime_rows() {
         [
             (foreign_downstream, foreign),
             (other_gate, other_src),
-            (other_member, other_gate)
+            (other_member, other_input),
+            (other_input, other_gate),
+            (other_output, other_member)
         ]
     );
     let sink_inputs: Vec<(Uuid, Uuid)> = client
@@ -534,7 +548,8 @@ struct SeededCanvas {
     expected: Value,
     source_node: Uuid,
     sink_k2_node: Uuid,
-    hidden_processors: [Uuid; 2],
+    /// Source and gate, then input and output of group A, then of group B.
+    hidden_processors: [Uuid; 6],
     removable_item: Uuid,
     sink_k2: Uuid,
     /// The source's items: two direct ones, then the one applied from a template.
@@ -553,6 +568,7 @@ async fn seed_canvas(h: &Harness, pipeline: &Value, host: Uuid) -> SeededCanvas 
         std::array::from_fn(|_| Uuid::now_v7());
     let (src, gate) = (Uuid::now_v7(), Uuid::now_v7());
     let [drop_x, rename_a, pass] = std::array::from_fn(|_| Uuid::now_v7());
+    let [a_input, a_output, b_input, b_output] = std::array::from_fn(|_| Uuid::now_v7());
     let (ht_direct, ht_template_only, ht_applied, template) = (
         Uuid::now_v7(),
         Uuid::now_v7(),
@@ -577,7 +593,11 @@ async fn seed_canvas(h: &Harness, pipeline: &Value, host: Uuid) -> SeededCanvas 
             ('{gate}', 'p (gate)', 'null', 1, now(), 'null'),
             ('{drop_x}', 'drop x', 'drop_attributes', 1, now(), '{{\"keys\": {{\"record\": [\"x\"]}}}}'),
             ('{rename_a}', 'rename a', 'rename_attributes', 0, now(), '{{\"rename_map\": {{\"record\": {{\"a\": \"b\"}}}}}}'),
-            ('{pass}', 'pass', 'null', 1, now(), 'null');
+            ('{pass}', 'pass', 'null', 1, now(), 'null'),
+            ('{a_input}', 'p (input)', 'null', 1, now(), 'null'),
+            ('{a_output}', 'p (output)', 'null', 1, now(), 'null'),
+            ('{b_input}', 'p (input)', 'null', 1, now(), 'null'),
+            ('{b_output}', 'p (output)', 'null', 1, now(), 'null');
         INSERT INTO pipeline_nodes (node_id, canvas_id, kind, position_x, position_y, last_updated) VALUES
             ('{source_node}', '{canvas}', 'source', 0, 0, now()),
             ('{group_a}', '{canvas}', 'processor_group', -120, 35, now()),
@@ -586,7 +606,8 @@ async fn seed_canvas(h: &Harness, pipeline: &Value, host: Uuid) -> SeededCanvas 
             ('{sink_k1_node}', '{canvas}', 'sink', 400, -50, now());
         INSERT INTO pipeline_node_sources (node_id, source_processor_id, gate_processor_id)
             VALUES ('{source_node}', '{src}', '{gate}');
-        INSERT INTO pipeline_node_processor_groups (node_id) VALUES ('{group_a}'), ('{group_b}');
+        INSERT INTO pipeline_node_processor_groups (node_id, input_processor_id, output_processor_id) VALUES
+            ('{group_a}', '{a_input}', '{a_output}'), ('{group_b}', '{b_input}', '{b_output}');
         INSERT INTO pipeline_node_sinks (node_id, sink_id) VALUES
             ('{sink_k2_node}', '{sink_k2}'), ('{sink_k1_node}', '{sink_k1}');
         INSERT INTO pipeline_node_source_items (node_id, item_id) VALUES
@@ -629,7 +650,7 @@ async fn seed_canvas(h: &Harness, pipeline: &Value, host: Uuid) -> SeededCanvas 
         expected,
         source_node,
         sink_k2_node,
-        hidden_processors: [src, gate],
+        hidden_processors: [src, gate, a_input, a_output, b_input, b_output],
         removable_item: item_2,
         sink_k2,
         items: [item_1, item_2, applied_item],
@@ -869,7 +890,7 @@ async fn save_graph_creates_updates_and_deletes_nodes() {
     );
     let (_, read) = get_graph(&h, &alice, &path).await;
     assert_eq!(read["data"], saved);
-    // the source got its hidden processors, the group its row, the sinks nothing
+    // the source and the group got their hidden processors, the sinks nothing
     assert_eq!(
         count(
             &h,
@@ -886,7 +907,23 @@ async fn save_graph_creates_updates_and_deletes_nodes() {
         .await,
         1
     );
-    assert_eq!(count(&h, "SELECT count(*) FROM processors").await, 2);
+    assert_eq!(
+        count(
+            &h,
+            &format!(
+                "SELECT count(*) FROM pipeline_node_processor_groups n \
+                 JOIN processors i ON i.processor_id = n.input_processor_id \
+                 JOIN processors o ON o.processor_id = n.output_processor_id \
+                 WHERE n.node_id = '{group_a}' AND i.name = 'p (input)' AND o.name = 'p (output)' \
+                   AND i.type = 'null' AND o.type = 'null' \
+                   AND i.config = 'null' AND o.config = 'null' \
+                   AND i.adm_status = 1 AND o.adm_status = 1"
+            )
+        )
+        .await,
+        1
+    );
+    assert_eq!(count(&h, "SELECT count(*) FROM processors").await, 4);
     assert_eq!(
         uuids(&h, "SELECT node_id FROM pipeline_node_processor_groups").await,
         [group_a]
@@ -956,14 +993,15 @@ async fn save_graph_creates_updates_and_deletes_nodes() {
         .await,
         2
     );
+    let all_hidden = uuids(
+        &h,
+        "SELECT processor_id FROM processors ORDER BY processor_id",
+    )
+    .await;
     assert_eq!(
-        uuids(
-            &h,
-            "SELECT processor_id FROM processors ORDER BY processor_id"
-        )
-        .await,
-        first_hidden,
-        "the hidden processors are created once"
+        (&all_hidden[..first_hidden.len()], all_hidden.len()),
+        (&first_hidden[..], 6),
+        "the hidden processors are created once, plus those of group B"
     );
     assert_eq!(
         uuids(
@@ -1012,7 +1050,7 @@ async fn save_graph_creates_updates_and_deletes_nodes() {
         .await,
         2
     );
-    assert_eq!(count(&h, "SELECT count(*) FROM processors").await, 2);
+    assert_eq!(count(&h, "SELECT count(*) FROM processors").await, 4);
     assert_eq!(
         uuids(&h, "SELECT node_id FROM pipeline_node_sources").await,
         [source_2]
@@ -1188,7 +1226,7 @@ async fn save_graph_keeps_content_and_deletes_it_with_the_node() {
         .iter()
         .map(|p| p["processor_id"].as_str().unwrap().parse().unwrap())
         .collect();
-    let [src, gate] = seeded.hidden_processors;
+    let [src, gate, a_input, a_output, b_input, b_output] = seeded.hidden_processors;
     let sink_k1: Uuid = expected["nodes"][1]["data"]["sink_id"]
         .as_str()
         .unwrap()
@@ -1213,15 +1251,19 @@ async fn save_graph_keeps_content_and_deletes_it_with_the_node() {
             &[],
             &[
                 (gate, src),
-                (members[0], gate),
+                (a_input, gate),
+                (members[0], a_input),
                 (members[1], members[0]),
                 (members[2], members[1]),
+                (a_output, members[2]),
+                (b_input, gate),
+                (b_output, b_input),
                 (foreign, members[2]),
             ],
             &[
-                (sink_k1, members[2]),
-                (seeded.sink_k2, members[2]),
-                (sink_k1, gate)
+                (sink_k1, a_output),
+                (seeded.sink_k2, a_output),
+                (sink_k1, b_output)
             ],
         )
     );
@@ -1257,20 +1299,15 @@ async fn save_graph_keeps_content_and_deletes_it_with_the_node() {
             "SELECT processor_id FROM processors ORDER BY processor_id"
         )
         .await,
-        [src, gate, foreign]
+        [src, gate, b_input, b_output, foreign]
     );
-    let client = h.pool.get().await.unwrap();
-    let inputs: Vec<(Uuid, Uuid)> = client
-        .query("SELECT processor_id, input_id FROM processor_inputs", &[])
-        .await
-        .unwrap()
-        .iter()
-        .map(|row| (row.get(0), row.get(1)))
-        .collect();
-    assert_eq!(inputs, [(gate, src)]);
     assert_eq!(
-        runtime_rows(&h).await["sink_inputs"],
-        json!([[sink_k1, gate]])
+        runtime_rows(&h).await,
+        rows(
+            &[],
+            &[(gate, src), (b_input, gate), (b_output, b_input)],
+            &[(sink_k1, b_output)]
+        )
     );
     // the sink k2 node's sink went with the node, the sink itself stays
     assert_eq!(
@@ -1824,7 +1861,11 @@ async fn save_group_creates_updates_reorders_and_deletes_processors() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(count(&h, "SELECT count(*) FROM processors").await, 0);
+    assert_eq!(
+        count(&h, "SELECT count(*) FROM processors").await,
+        2,
+        "only the group's input and output are left"
+    );
 }
 
 /// Bad processors are a 400 and change nothing: duplicates, empty names, invalid config, ids
@@ -1922,7 +1963,11 @@ async fn save_group_rejects_bad_processors() {
         assert!(message.starts_with(&detail), "{case}: {message}");
     }
     assert_eq!(get_node(&h, &alice, &path).await, read);
-    assert_eq!(count(&h, "SELECT count(*) FROM processors").await, 1);
+    assert_eq!(
+        count(&h, "SELECT count(*) FROM processors").await,
+        5,
+        "the taken one, and the input and output of both groups"
+    );
 
     // a disabled processor is checked too
     let (status, _) = put_node(
@@ -2161,6 +2206,21 @@ async fn hidden_processors(h: &Harness, source_node: Uuid) -> (Uuid, Uuid) {
     (row.get(0), row.get(1))
 }
 
+async fn group_hidden_processors(h: &Harness, group_node: Uuid) -> (Uuid, Uuid) {
+    let row = h
+        .pool
+        .get()
+        .await
+        .unwrap()
+        .query_one(
+            "SELECT input_processor_id, output_processor_id FROM pipeline_node_processor_groups WHERE node_id = $1",
+            &[&group_node],
+        )
+        .await
+        .unwrap();
+    (row.get(0), row.get(1))
+}
+
 /// Saves the content of a node from its current read.
 async fn save_node(
     h: &Harness,
@@ -2183,7 +2243,7 @@ async fn save_node(
     body["data"].clone()
 }
 
-/// Saving wires items -> source -> gate -> groups -> sinks, with empty groups passed through.
+/// Saving wires items -> source -> gate -> group input -> members -> group output -> sinks.
 /// Each save rewires what changed and drops rows other clients added, but keeps outside readers.
 #[tokio::test]
 async fn saving_wires_the_runtime_rows() {
@@ -2221,17 +2281,24 @@ async fn saving_wires_the_runtime_rows() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (src, gate) = hidden_processors(&h, s).await;
+    let (g_in, g_out) = group_hidden_processors(&h, g).await;
+    let (e_in, e_out) = group_hidden_processors(&h, e).await;
+    let groups = [(g_in, gate), (g_out, g_in), (e_in, gate), (e_out, e_in)];
     assert_eq!(
         runtime_rows(&h).await,
-        rows(&[], &[(gate, src)], &[]),
+        rows(&[], &[&[(gate, src)][..], &groups].concat(), &[]),
         "empty sink nodes take nothing"
     );
     save_node(&h, &alice, &pipeline, n1, "sink", json!({ "sink_id": k1 })).await;
     save_node(&h, &alice, &pipeline, n2, "sink", json!({ "sink_id": k2 })).await;
     assert_eq!(
         runtime_rows(&h).await,
-        rows(&[], &[(gate, src)], &[(k1, gate), (k2, gate)]),
-        "an empty group hands the gate's output to its sink"
+        rows(
+            &[],
+            &[&[(gate, src)][..], &groups].concat(),
+            &[(k1, g_out), (k2, e_out)]
+        ),
+        "an empty group hands the gate's output on through its input and output"
     );
 
     save_node(
@@ -2259,8 +2326,16 @@ async fn saving_wires_the_runtime_rows() {
         runtime_rows(&h).await,
         rows(
             &[(a1, src), (a2, src)],
-            &[(gate, src), (p1, gate), (p2, p1)],
-            &[(k1, p2), (k2, gate)]
+            &[
+                (gate, src),
+                (g_in, gate),
+                (p1, g_in),
+                (p2, p1),
+                (g_out, p2),
+                (e_in, gate),
+                (e_out, e_in)
+            ],
+            &[(k1, g_out), (k2, e_out)]
         )
     );
 
@@ -2288,8 +2363,16 @@ async fn saving_wires_the_runtime_rows() {
         runtime_rows(&h).await,
         rows(
             &[(a1, src)],
-            &[(gate, src), (p1, gate), (p2, p1)],
-            &[(k2, gate), (k2, p2)]
+            &[
+                (gate, src),
+                (g_in, gate),
+                (p1, g_in),
+                (p2, p1),
+                (g_out, p2),
+                (e_in, gate),
+                (e_out, e_in)
+            ],
+            &[(k2, e_out), (k2, g_out)]
         )
     );
 
@@ -2315,8 +2398,17 @@ async fn saving_wires_the_runtime_rows() {
         runtime_rows(&h).await,
         rows(
             &[(a1, src)],
-            &[(gate, src), (p1, gate), (p2, p1), (reader, p2)],
-            &[(k2, gate), (k2, p2)]
+            &[
+                (gate, src),
+                (g_in, gate),
+                (p1, g_in),
+                (p2, p1),
+                (g_out, p2),
+                (e_in, gate),
+                (e_out, e_in),
+                (reader, p2)
+            ],
+            &[(k2, e_out), (k2, g_out)]
         )
     );
 }
@@ -2372,6 +2464,7 @@ async fn cycles_outside_the_canvas_do_not_block_saves() {
     )
     .await;
     let (src, gate) = hidden_processors(&h, s).await;
+    let (g_in, g_out) = group_hidden_processors(&h, g).await;
 
     // two processors of the old API that read each other
     let (x, y) = (Uuid::now_v7(), Uuid::now_v7());
@@ -2409,7 +2502,18 @@ async fn cycles_outside_the_canvas_do_not_block_saves() {
     .await;
     assert_eq!(
         runtime_rows(&h).await,
-        rows(&[], &[(gate, src), (p, gate), (x, y), (y, x)], &[])
+        rows(
+            &[],
+            &[
+                (gate, src),
+                (g_in, gate),
+                (p, g_in),
+                (g_out, p),
+                (x, y),
+                (y, x)
+            ],
+            &[]
+        )
     );
 
     // the save drops the row another client added into the canvas, and the
@@ -2431,7 +2535,18 @@ async fn cycles_outside_the_canvas_do_not_block_saves() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         runtime_rows(&h).await,
-        rows(&[], &[(gate, src), (p, gate), (x, p), (y, x)], &[])
+        rows(
+            &[],
+            &[
+                (gate, src),
+                (g_in, gate),
+                (p, g_in),
+                (g_out, p),
+                (x, p),
+                (y, x)
+            ],
+            &[]
+        )
     );
 }
 

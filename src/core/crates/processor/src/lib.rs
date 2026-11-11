@@ -18,6 +18,7 @@ mod worker_tests;
 
 use anyhow::Result;
 use flume::{Receiver, RecvTimeoutError};
+use otel_arrow_dfe_pdata::OtapArrowRecords;
 use patrolli::cache::processor::{Capture, Node, Step};
 use patrolli::chan::{self, SenderChannel};
 use patrolli::common::HasLength;
@@ -32,7 +33,8 @@ use patrolli::config::processor::{
 };
 use patrolli::payload::PayloadBatch;
 use patrolli::{cache, common, payload};
-use patrolli_proto::v1::CaptureMessage;
+use patrolli_proto::v1::capture_message::Sample;
+use patrolli_proto::v1::{CaptureMessage, CaptureMessageOtlp, SignalType};
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use std::cell::Cell;
 use std::num::NonZero;
@@ -357,25 +359,33 @@ impl Worker {
         capture_out: Option<&payload::Payload>,
     ) -> Result<bool> {
         let Some(message_in) = capture_in
-            .serialize_as(Format::JsonOtlpBatch)?
+            .serialize_as(Format::ProtoOtlp)?
             .into_iter()
             .next()
         else {
-            anyhow::bail!("empty json");
+            anyhow::bail!("empty otlp");
         };
         let message_out = if let Some(capture_out) = capture_out {
             capture_out
-                .serialize_as(Format::JsonOtlpBatch)?
+                .serialize_as(Format::ProtoOtlp)?
                 .into_iter()
                 .next()
         } else {
             None
         };
+        let signal = match capture_in.data {
+            OtapArrowRecords::Logs(_) => SignalType::Logs,
+            OtapArrowRecords::Metrics(_) => SignalType::Metrics,
+            OtapArrowRecords::Traces(_) => SignalType::Traces,
+        };
         let ok = capture
             .sender
             .send(CaptureMessage {
-                message_in,
-                message_out,
+                sample: Some(Sample::Otlp(CaptureMessageOtlp {
+                    message_in,
+                    message_out,
+                    signal: signal as i32,
+                })),
             })
             .is_ok();
         Ok(ok)

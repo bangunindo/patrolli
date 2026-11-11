@@ -15,7 +15,18 @@ mod schema;
 use anyhow::Result;
 use arrow::array::ArrowPrimitiveType;
 use bytes::Bytes;
+use otel_arrow_dfe_pdata::encode::{
+    encode_logs_otap_batch, encode_metrics_otap_batch, encode_spans_otap_batch,
+};
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::MetricsData;
+use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtlpProtoBytes, TryFromWithOptions};
+use patrolli_proto::v1::SignalType;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::borrow::Cow;
@@ -572,6 +583,25 @@ impl Payload {
                 })
             }
         }
+    }
+
+    /// Reads back what `serialize_as(Format::ProtoOtlp)` wrote, the way the
+    /// otel listener reads an export request.
+    pub fn from_proto_otlp(signal: SignalType, bytes: &[u8]) -> Result<Self> {
+        let mut data = match signal {
+            SignalType::Logs => encode_logs_otap_batch(&LogsData {
+                resource_logs: ExportLogsServiceRequest::decode(bytes)?.resource_logs,
+            })?,
+            SignalType::Metrics => encode_metrics_otap_batch(&MetricsData {
+                resource_metrics: ExportMetricsServiceRequest::decode(bytes)?.resource_metrics,
+            })?,
+            SignalType::Traces => encode_spans_otap_batch(&TracesData {
+                resource_spans: ExportTraceServiceRequest::decode(bytes)?.resource_spans,
+            })?,
+            SignalType::Unspecified => anyhow::bail!("signal type is not set"),
+        };
+        data.decode_transport_optimized_ids()?;
+        Ok(Self::new(data))
     }
 }
 

@@ -333,6 +333,8 @@ pub enum PipelineNodeSourceItems {
 pub enum PipelineNodeProcessorGroups {
     Table,
     NodeId,
+    InputProcessorId,
+    OutputProcessorId,
 }
 
 #[derive(Iden)]

@@ -38,7 +38,7 @@ pub struct UpdatePipelineGraphRequest {
 /// A node as it is stored now.
 struct CurrentNode {
     kind: GraphNodeKind,
-    /// The hidden source and gate processors of a source node.
+    /// The hidden processors of a source node or processor group.
     hidden_processors: Option<(Uuid, Uuid)>,
 }
 
@@ -93,7 +93,7 @@ pub async fn update_pipeline_graph(
             .with_detail("The canvas was saved after it was read. Read it again and retry."));
     }
 
-    // get current nodes, with the hidden processors of the source node
+    // get current nodes, with the hidden processors of sources and groups
     let (sql, values) = DbQuery::select()
         .columns([
             (PipelineNodes::Table, PipelineNodes::NodeId),
@@ -109,11 +109,29 @@ pub async fn update_pipeline_graph(
                 PipelineNodeSources::GateProcessorId,
             ),
         ])
+        .columns([
+            (
+                PipelineNodeProcessorGroups::Table,
+                PipelineNodeProcessorGroups::InputProcessorId,
+            ),
+            (
+                PipelineNodeProcessorGroups::Table,
+                PipelineNodeProcessorGroups::OutputProcessorId,
+            ),
+        ])
         .from(PipelineNodes::Table)
         .left_join(
             PipelineNodeSources::Table,
             Expr::col((PipelineNodeSources::Table, PipelineNodeSources::NodeId))
                 .equals((PipelineNodes::Table, PipelineNodes::NodeId)),
+        )
+        .left_join(
+            PipelineNodeProcessorGroups::Table,
+            Expr::col((
+                PipelineNodeProcessorGroups::Table,
+                PipelineNodeProcessorGroups::NodeId,
+            ))
+            .equals((PipelineNodes::Table, PipelineNodes::NodeId)),
         )
         .and_where(Expr::col((PipelineNodes::Table, PipelineNodes::CanvasId)).eq(canvas_id))
         .build_postgres(PostgresQueryBuilder);
@@ -126,11 +144,13 @@ pub async fn update_pipeline_graph(
         let kind: String = row.get(1);
         let source: Option<Uuid> = row.get(2);
         let gate: Option<Uuid> = row.get(3);
+        let input: Option<Uuid> = row.get(4);
+        let output: Option<Uuid> = row.get(5);
         current.insert(
             row.get::<_, Uuid>(0),
             CurrentNode {
                 kind: kind.parse().ctx("parse node kind")?,
-                hidden_processors: source.zip(gate),
+                hidden_processors: source.zip(gate).or(input.zip(output)),
             },
         );
     }
@@ -181,7 +201,7 @@ pub async fn update_pipeline_graph(
         let mut processor_ids: Vec<Uuid> = removed
             .iter()
             .filter_map(|id| current[id].hidden_processors)
-            .flat_map(|(source, gate)| [source, gate])
+            .flat_map(|(first, second)| [first, second])
             .collect();
         let (sql, values) = DbQuery::select()
             .column(PipelineNodeProcessors::ProcessorId)
@@ -244,15 +264,19 @@ pub async fn update_pipeline_graph(
             .ctx("insert nodes")?;
     }
 
-    // insert the kind row of each new node, a source node with its hidden processors
-    let mut group_ids = Vec::new();
+    // insert the kind row of each new node, a source or group with its hidden processors
     for node in &new_nodes {
         match node.kind {
             GraphNodeKind::Source => {
                 let (source, gate) = (Uuid::now_v7(), Uuid::now_v7());
-                insert_hidden_processors(&tx, &pipeline.name, source, gate, now)
-                    .await
-                    .ctx("insert hidden processors")?;
+                insert_hidden_processors(
+                    &tx,
+                    &pipeline.name,
+                    [(source, "source"), (gate, "gate")],
+                    now,
+                )
+                .await
+                .ctx("insert hidden processors")?;
                 let (sql, values) = DbQuery::insert()
                     .into_table(PipelineNodeSources::Table)
                     .columns([
@@ -267,25 +291,33 @@ pub async fn update_pipeline_graph(
                     .await
                     .ctx("insert source")?;
             }
-            GraphNodeKind::ProcessorGroup => group_ids.push(node.node_id),
+            GraphNodeKind::ProcessorGroup => {
+                let (input, output) = (Uuid::now_v7(), Uuid::now_v7());
+                insert_hidden_processors(
+                    &tx,
+                    &pipeline.name,
+                    [(input, "input"), (output, "output")],
+                    now,
+                )
+                .await
+                .ctx("insert hidden processors")?;
+                let (sql, values) = DbQuery::insert()
+                    .into_table(PipelineNodeProcessorGroups::Table)
+                    .columns([
+                        PipelineNodeProcessorGroups::NodeId,
+                        PipelineNodeProcessorGroups::InputProcessorId,
+                        PipelineNodeProcessorGroups::OutputProcessorId,
+                    ])
+                    .values([node.node_id.into(), input.into(), output.into()])
+                    .ctx("build insert processor group query")?
+                    .build_postgres(PostgresQueryBuilder);
+                tx.execute(sql.as_str(), &values.as_params())
+                    .await
+                    .ctx("insert processor group")?;
+            }
             // a sink node starts empty, which is no row
             GraphNodeKind::Sink => {}
         }
-    }
-    if !group_ids.is_empty() {
-        let mut query = DbQuery::insert();
-        query
-            .into_table(PipelineNodeProcessorGroups::Table)
-            .columns([PipelineNodeProcessorGroups::NodeId]);
-        for id in group_ids {
-            query
-                .values([id.into()])
-                .ctx("build insert processor groups query")?;
-        }
-        let (sql, values) = query.build_postgres(PostgresQueryBuilder);
-        tx.execute(sql.as_str(), &values.as_params())
-            .await
-            .ctx("insert processor groups")?;
     }
 
     // update kept nodes; their content and last_updated stay
