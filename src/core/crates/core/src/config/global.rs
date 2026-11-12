@@ -247,6 +247,9 @@ pub struct Global {
     pub processor: ProcessorConfig,
     #[serde(default)]
     pub mib: MibConfig,
+    /// The resolver behind the `dns_lookup` processor.
+    #[serde(default)]
+    pub dns: super::dns::Dns,
     pub prometheus: Option<Prometheus>,
     pub backend: Option<super::cluster::Backend>,
 }
@@ -260,6 +263,7 @@ impl Default for Global {
             logger: Logger::default(),
             processor: ProcessorConfig::default(),
             mib: MibConfig::default(),
+            dns: super::dns::Dns::default(),
             prometheus: None,
             backend: None,
         }
@@ -279,6 +283,7 @@ impl Global {
         self.logger.validate()?;
         self.processor.validate()?;
         self.mib.validate()?;
+        self.dns.validate()?;
         if let Some(prometheus) = &self.prometheus {
             prometheus.validate()?;
         }

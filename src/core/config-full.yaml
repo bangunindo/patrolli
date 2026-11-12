@@ -116,6 +116,64 @@ global:
     # channel_buffer_size: 10        # in-memory slots before the consumer, default 10.
     #                                # A payload that finds a free slot skips the disk.
 
+  # The resolver behind the `dns_lookup` processor, in process (no external
+  # resolver). Read from this file in both run modes. It starts idle and only
+  # works once a `dns_lookup` processor queues a question, so the block can be
+  # left out; every value below is its default.
+  #
+  # A lookup never waits for DNS: it reads the node's cache, and a missing or
+  # expired answer is queued for the resolver and found by a later record.
+  # dns:
+  #   # recursive: from the root servers; `forwarders` are asked only when that
+  #   # fails (not when the name does not exist). Needs outbound UDP and TCP 53
+  #   # to the whole internet (check with `dig +trace -x 8.8.8.8`).
+  #   # forward: every question goes to `forwarders`.
+  #   mode: recursive
+  #   root_servers: [198.41.0.4, 170.247.170.2, 192.33.4.12, 199.7.91.13,
+  #                  192.203.230.10, 192.5.5.241, 192.112.36.4, 198.97.190.53,
+  #                  192.36.148.17, 192.58.128.30, 193.0.14.129, 199.7.83.42,
+  #                  202.12.27.33]
+  #   recursion_limit: 64                  # the recursor's default 24 fails every IPv6 lookup
+  #   recursor_ns_cache_size: 200000       # zones whose name servers are remembered
+  #   recursor_response_cache_size: 1048576
+  #   max_inflight: 512                    # concurrent resolutions; each UDP query
+  #                                        # opens a socket, and the open-file limit
+  #                                        # is raised to its hard limit at startup
+  #   queue_capacity: 50000                # waiting questions; past it they are dropped
+  #                                        # and asked again on their next lookup
+  #   lookup_timeout: 5000                 # ms, per recursive lookup
+  #   max_entries: 1000000                 # answers kept, of every kind
+  #   positive_ttl_min: 0                  # seconds; clamp for a found name's TTL
+  #   positive_ttl_max: 86400
+  #   negative_ttl_min: 0                  # seconds; clamp for "no such name" (SOA)
+  #   negative_ttl_max: 3600
+  #   negative_ttl_default: 300            # seconds; a negative answer without an SOA
+  #   failure_ttl: 60                      # seconds a failed lookup is remembered
+  #   serve_stale: 3600                    # seconds past its TTL an answer is still
+  #                                        # served while refreshed; a failed refresh
+  #                                        # keeps the last answer until then
+  #   # udp://ip[:port], tcp://ip[:port] (port 53), or DNS over HTTPS:
+  #   # https://host[:port][/path] (port 443, /dns-query). An https host name is
+  #   # resolved by the system resolver at startup, retried until it resolves.
+  #   # Each lookup starts at the next forwarder in the list and fails over to
+  #   # the following ones on an error or timeout.
+  #   forwarders:
+  #     - udp://8.8.8.8
+  #     - https://1.1.1.1/dns-query
+  #   forwarder_max_inflight: 256          # concurrent queries per forwarder
+  #   forwarder_timeout: 2000              # ms, per forwarder query
+  #   forwarder_failure_threshold: 3       # consecutive errors/timeouts before a
+  #                                        # forwarder is skipped...
+  #   forwarder_cooldown: 30000            # ...for this long (ms). With all of a
+  #                                        # list cooling down, one is still probed.
+  #   # Internal DNS: an address inside a zone's CIDRs is asked only of that
+  #   # zone's forwarders, never of the recursor or `forwarders`; the longest
+  #   # prefix wins. In recursive mode, private, CGNAT, loopback and link-local
+  #   # addresses outside every zone are never asked (counted as skipped).
+  #   zones:
+  #     - cidrs: [10.0.0.0/8, 192.168.0.0/16]
+  #       forwarders: [udp://10.0.0.53]
+
   # Switches Patrolli into backend (cluster) mode. When present, listeners /
   # hosts / endpoints / items / processors / sinks below are ignored — those
   # come from the database.
@@ -888,6 +946,35 @@ processors:
   # literal index (`nf.data.0.x`), and composite keys align by parent record.
   # Duplicate output keys within one attribute table are rejected. All writes are intended to merge once per
   # destination table; a rule cannot read another rule's output in this processor.
+
+  # `dns_lookup` writes DNS answers (reverse lookups for now) to attributes,
+  # from the node's DNS cache, filled by the resolver configured under
+  # `global.dns`. It never waits: the first records of a new address pass
+  # through unenriched while it is resolved. Parsed by a unit test.
+  # BEGIN dns_lookup example
+  # - id: 019c98c8-5512-70a2-906e-7ccd03618712
+  #   name: reverse_dns
+  #   type: dns_lookup
+  #   config:
+  #     overwrite: false       # default: keep a destination that is already set
+  #     lookups:
+  #       - record: ptr        # the only record type for now
+  #         table: record      # destination and default input table
+  #         input:             # the same input forms as attribute_lookup
+  #           key: [nf.data.sourceIPv4Address, nf.data.sourceIPv6Address]
+  #         output: source.domain
+  #       - record: ptr
+  #         table: record
+  #         when:              # optional rule guard, same syntax as attribute_lookup
+  #           match:
+  #             table: record
+  #             key: nf.data.destinationIPv4Address
+  #             key_is_regex: true
+  #             op: "=~"
+  #             value: {string: "."}
+  #         input: {key: nf.data.destinationIPv4Address}
+  #         output: destination.domain
+  # END dns_lookup example
 
   # `attribute_collect` captures incoming attributes into mutable lookup tables.
   # Commented for the same reason as the block above — it references the example

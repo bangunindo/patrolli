@@ -17,9 +17,11 @@ use uuid::Uuid;
 
 pub mod attribute_collect;
 pub mod attribute_lookup;
+pub mod dns_lookup;
 pub mod transform;
 pub use attribute_collect::AttributeCollect;
 pub use attribute_lookup::AttributeLookup;
+pub use dns_lookup::DnsLookup;
 pub use transform::Transform;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +63,7 @@ pub enum Config {
     AttributeLookup(AttributeLookup),
     AttributeCollect(AttributeCollect),
     Transform(Transform),
+    DnsLookup(DnsLookup),
 }
 
 impl Config {
@@ -74,6 +77,7 @@ impl Config {
             Config::AttributeLookup(processor) => processor.validate()?,
             Config::AttributeCollect(processor) => processor.validate()?,
             Config::Transform(processor) => processor.validate()?,
+            Config::DnsLookup(processor) => processor.validate()?,
         }
         Ok(())
     }
@@ -88,6 +92,7 @@ impl Config {
             Config::AttributeLookup(config) => Ok(serde_json::to_value(config)?),
             Config::AttributeCollect(config) => Ok(serde_json::to_value(config)?),
             Config::Transform(config) => Ok(serde_json::to_value(config)?),
+            Config::DnsLookup(config) => Ok(serde_json::to_value(config)?),
         }
     }
 }

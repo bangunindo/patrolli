@@ -375,6 +375,9 @@ impl FormatTime for LocalTimer {
 /// 10_000-entry default.
 const MAX_LOG_SIGNATURES: usize = 2_000;
 
+/// The DNS library's log targets, see `init_logging`.
+const HICKORY_TARGETS: [&str; 3] = ["hickory_resolver", "hickory_net", "hickory_proto"];
+
 pub fn init_logging(config: &Logger) -> WorkerGuard {
     let (non_blocking, guard) = match config.output.as_str() {
         "stdout" => tracing_appender::non_blocking(io::stdout()),
@@ -395,6 +398,13 @@ pub fn init_logging(config: &Logger) -> WorkerGuard {
         .with_target("tracing_throttle::summary", LevelFilter::WARN);
     for module in &config.modules {
         targets = targets.with_target(&module.name, module.level);
+    }
+    // The resolver logs routine misses at `warn` (thousands per cold batch),
+    // so its crates stay at `error` unless `modules` names them.
+    for dns_crate in HICKORY_TARGETS {
+        if !config.modules.iter().any(|module| module.name == dns_crate) {
+            targets = targets.with_target(dns_crate, LevelFilter::ERROR);
+        }
     }
 
     // Rate-limit repeated identical events (same level/target/message/fields)
@@ -634,6 +644,13 @@ async fn local_run(conf_content: String) -> Result<()> {
         .transpose()?;
     let config_cache = cache::get_cache();
     init_cache(&local_conf, &config_cache);
+    config_cache.dns.configure(&local_conf.global.dns)?;
+    let dns_resolver = patrolli_dns::spawn(
+        config_cache.dns.clone(),
+        &local_conf.global.dns,
+        local_conf.global.internal_metrics_interval,
+        token.clone(),
+    )?;
     // loads every file-backed lookup table before the pipeline starts, so no
     // table is briefly empty
     cache::lookup_table::loader::init(&local_conf.lookup_tables, &config_cache).await?;
@@ -714,6 +731,8 @@ async fn local_run(conf_content: String) -> Result<()> {
         timeout_ms = local_conf.global.shutdown_timeout.as_millis() as u64,
         "shutting down"
     );
+    // nothing downstream waits on the resolver: it only fills the DNS cache
+    join_step("dns", dns_resolver).await;
     join_step("lookup_reload", lookup_reloader).await;
     join_step("lookup_reporter", lookup_reporter).await;
     monitors.close_scheduler();
@@ -905,6 +924,23 @@ fn api_server_ended(
     Err(anyhow::Error::new(e).context("API server failed"))
 }
 
+/// Every DNS query over UDP opens its own socket, retries included, so the
+/// resolver's concurrency needs the soft open-file limit well above
+/// `max_inflight`: raise it to the hard limit.
+fn raise_open_file_limit(dns_max_inflight: usize) {
+    let wanted = (dns_max_inflight as u64)
+        .saturating_mul(4)
+        .saturating_add(1024);
+    match rlimit::increase_nofile_limit(u64::MAX) {
+        Ok(limit) if limit < wanted => warn!(
+            limit,
+            wanted, "open-file limit is low for global.dns.max_inflight, lookups may fail"
+        ),
+        Ok(limit) => info!(limit, "open-file limit raised"),
+        Err(e) => warn!(error = %e, "could not raise the open-file limit"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     rustls::crypto::aws_lc_rs::default_provider()
@@ -951,6 +987,7 @@ async fn main() -> Result<()> {
         local_conf.validate()?;
 
         install_mem_profile_signals();
+        raise_open_file_limit(local_conf.global.dns.max_inflight);
 
         chan::init_database(&local_conf.global.disk_channel)?;
         if let Some(backend) = &local_conf.global.backend {

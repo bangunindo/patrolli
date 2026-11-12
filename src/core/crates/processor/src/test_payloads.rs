@@ -320,3 +320,49 @@ pub(super) fn attr_strs(pl: &Payload, table: ArrowPayloadType, key: &str) -> Vec
         .map(|i| values.value(i).to_owned())
         .collect()
 }
+
+/// One resource and one scope with string attributes, and one log record per
+/// entry of `records`, each with its own string attributes.
+pub(super) fn logs_with_attrs(
+    resource: &[(&str, &str)],
+    scope: &[(&str, &str)],
+    records: &[&[(&str, &str)]],
+) -> Payload {
+    let kvs = |attrs: &[(&str, &str)]| -> Vec<KeyValue> {
+        attrs
+            .iter()
+            .map(|(key, value)| KeyValue {
+                key: (*key).into(),
+                value: Some(AnyValue {
+                    value: Some(Value::StringValue((*value).into())),
+                }),
+            })
+            .collect()
+    };
+    let logs = LogsData {
+        resource_logs: vec![ResourceLogs {
+            resource: Some(Resource {
+                attributes: kvs(resource),
+                ..Default::default()
+            }),
+            scope_logs: vec![ScopeLogs {
+                scope: Some(InstrumentationScope {
+                    name: "s".into(),
+                    attributes: kvs(scope),
+                    ..Default::default()
+                }),
+                log_records: records
+                    .iter()
+                    .map(|attrs| LogRecord {
+                        time_unix_nano: 1,
+                        attributes: kvs(attrs),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+    Payload::new(encode_logs_otap_batch(&logs).unwrap())
+}

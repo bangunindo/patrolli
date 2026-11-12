@@ -6406,6 +6406,86 @@
         },
         "additionalProperties": false
       },
+      "DnsLookup": {
+        "type": "object",
+        "description": "Enrich attributes with DNS answers.\n\nA lookup never waits for DNS: it reads the node's DNS cache, and an address\nthat is not cached yet (or whose answer has expired) is queued for the\nresolver and left unenriched until a later record finds the answer. The\nfirst records of a new address therefore pass through unchanged.\n\nMissing inputs, values that are not addresses, cache misses and negative\nanswers leave the destination unchanged. Every rule reads the incoming\nattributes: another rule's output is not visible as an input.",
+        "required": [
+          "lookups"
+        ],
+        "properties": {
+          "lookups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DnsLookupRule"
+            },
+            "description": "Independent lookups; must not be empty. Destination keys must not\noverlap within an attribute table."
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "Replace existing destination values. Defaults to insert-only: a key\nalready present for the destination parent is left unchanged.",
+            "default": false
+          },
+          "when": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AttributeFilter",
+                "description": "Record-selection predicate over incoming attributes, evaluated once for\nall rules and ANDed with each rule's own `when`. Omitted means every\nrecord is eligible; unselected records pass through unchanged.\n\nFor a resource or scope destination every predicate leaf must reference\nthat same table; a record destination may reference any table."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "DnsLookupRule": {
+        "type": "object",
+        "description": "One question per record and the attribute its answer is written to.",
+        "required": [
+          "record",
+          "table",
+          "input",
+          "output"
+        ],
+        "properties": {
+          "input": {
+            "$ref": "#/components/schemas/AttributeLookupInput",
+            "description": "The attribute holding the address: one key, fallback keys tried in\norder, or a regex capture of the value. Always read as an IP (text, or\nthe bare-integer form), so `cast` may be left out; if set it must be\n`ip`. A record rule may read a resource attribute."
+          },
+          "output": {
+            "type": "string",
+            "description": "Destination attribute key; the answer is written as a string."
+          },
+          "record": {
+            "$ref": "#/components/schemas/DnsRecordType",
+            "description": "What is asked about the input."
+          },
+          "table": {
+            "$ref": "#/components/schemas/AttributeTable",
+            "description": "Destination attribute table and default location of the input\nattribute. `record` means log, span or metric attributes."
+          },
+          "when": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AttributeFilter",
+                "description": "Further record-selection predicate, ANDed with the top-level `when`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "DnsRecordType": {
+        "type": "string",
+        "description": "DNS record types a rule can ask for.",
+        "enum": [
+          "ptr"
+        ]
+      },
       "DropAttributes": {
         "type": "object",
         "required": [
@@ -10618,6 +10698,24 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "required": [
+              "config",
+              "type"
+            ],
+            "properties": {
+              "config": {
+                "$ref": "#/components/schemas/DnsLookup"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "dns_lookup"
+                ]
+              }
+            }
           }
         ]
       },
@@ -10632,7 +10730,8 @@
           "rename_attributes",
           "attribute_lookup",
           "attribute_collect",
-          "transform"
+          "transform",
+          "dns_lookup"
         ]
       },
       "ProcessorNode": {

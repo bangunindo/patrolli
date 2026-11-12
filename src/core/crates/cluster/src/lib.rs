@@ -55,6 +55,9 @@ struct Lifecycle {
     /// because they are torn down together. Minted in `new` because `run`'s
     /// does not exist yet, the reason `grpc_server` carries its own.
     lookup_tasks: (JoinHandle<()>, JoinHandle<()>, CancellationToken),
+    /// The DNS resolver behind `dns_lookup` (and its metrics reporter).
+    /// Node-wide like the lookup tasks, so it survives a node-lock flap.
+    dns: (JoinHandle<()>, CancellationToken),
 }
 
 #[repr(u8)]
@@ -234,6 +237,8 @@ impl Cluster {
         // only seeded here: the leader re-reads it every tick
         Self::db_config(&db_pool, ConfigKeys::Cluster, ClusterPolicy::validate).await?;
         let config_cache = cache::get_cache();
+        // before any processor can read it
+        config_cache.dns.configure(&global_conf.dns)?;
         let (processor_admin, processor_send) = new_channel(
             global_conf.internal_metrics_interval,
             INTERNAL_METRICS.processor_channel.clone(),
@@ -323,6 +328,13 @@ impl Cluster {
             global_conf.internal_metrics_interval,
             lookup_token.clone(),
         );
+        let dns_token = CancellationToken::new();
+        let dns = patrolli_dns::spawn(
+            config_cache.dns.clone(),
+            &global_conf.dns,
+            global_conf.internal_metrics_interval,
+            dns_token.clone(),
+        )?;
         Ok(Self {
             cluster: cluster_config,
             db_pool,
@@ -348,6 +360,7 @@ impl Cluster {
                 inter_comm_reporter,
                 grpc_server: (grpc_server, grpc_token),
                 lookup_tasks: (lookup_reloader, lookup_reporter, lookup_token),
+                dns: (dns, dns_token),
             },
             node_lock: Arc::new(NodeState::default()),
         })
@@ -408,7 +421,11 @@ impl Cluster {
 
     async fn shutdown(self) {
         let deadline = self.app_shutdown.deadline();
-        // First: the reloader swaps the data behind a lookup table that a
+        // The resolver only fills the DNS cache, which outlives it; nothing
+        // downstream waits for an answer, so it goes before anything else.
+        self.lifecycle.dns.1.cancel();
+        join_step("dns", self.lifecycle.dns.0).await;
+        // Then: the reloader swaps the data behind a lookup table that a
         // processor may still be reading, so it has to stop before they do.
         self.lifecycle.lookup_tasks.2.cancel();
         join_step("lookup_reload", self.lifecycle.lookup_tasks.0).await;

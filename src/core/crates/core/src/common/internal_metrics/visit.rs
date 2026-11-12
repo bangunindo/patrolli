@@ -19,9 +19,9 @@
 //! name, which is why the catalogue stores only that.
 
 use super::{
-    BgpListener, Channel, ChannelKind, Forwarder, ForwarderNode, ForwarderServer, InternalMetrics,
-    Listener, LookupTable, LookupTableProcessor, Monitor, Processor, ProcessorEdge, ProcessorNode,
-    Sink, SkipCounts,
+    BgpListener, Channel, ChannelKind, Dns, DnsForwarder, DnsRecord, Forwarder, ForwarderNode,
+    ForwarderServer, InternalMetrics, Listener, LookupTable, LookupTableProcessor, Monitor,
+    Processor, ProcessorEdge, ProcessorNode, Sink, SkipCounts,
 };
 use smallvec::SmallVec;
 use std::borrow::Cow;
@@ -337,6 +337,7 @@ pub fn walk<V: Visitor>(
     let monitor = metrics.monitor.load_full();
     let processor = metrics.processor.load_full();
     let lookup_table = metrics.lookup_table.load_full();
+    let dns = metrics.dns.load_full();
     let forwarder_channel = include_forwarder.then(|| metrics.forwarder_channel.load_full());
     let forwarder = include_forwarder.then(|| metrics.forwarder.load_full());
     let forwarder_server = include_forwarder.then(|| metrics.forwarder_server.load_full());
@@ -355,6 +356,7 @@ pub fn walk<V: Visitor>(
     walk_monitor(v, &monitor.1)?;
     walk_processor(v, &processor.1)?;
     walk_lookup_tables(v, &lookup_table.1)?;
+    walk_dns(v, &dns.1)?;
 
     let mut ages = vec![
         ("sink_channel", sink_channel.0.elapsed().as_secs_f64()),
@@ -367,6 +369,7 @@ pub fn walk<V: Visitor>(
         ("monitor", monitor.0.elapsed().as_secs_f64()),
         ("processor", processor.0.elapsed().as_secs_f64()),
         ("lookup_table", lookup_table.0.elapsed().as_secs_f64()),
+        ("dns", dns.0.elapsed().as_secs_f64()),
     ];
 
     if let Some(forwarder) = &forwarder {
@@ -1653,6 +1656,163 @@ fn walk_lookup_table_processors<V: Visitor>(
         ]
     );
     Ok(())
+}
+
+/// The DNS cache and resolver behind the `dns_lookup` processor. Always
+/// present, as the resolver always runs; per-forwarder families only with
+/// forwarders configured.
+fn walk_dns<V: Visitor>(v: &mut V, dns: &Dns) -> Result<(), V::Error> {
+    let records: Vec<Labeled<'_, DnsRecord>> = dns
+        .records
+        .iter()
+        .map(|record| Labeled {
+            labels: labels([("record", Cow::Borrowed(record.record))]),
+            item: record,
+        })
+        .collect();
+    counter_fields!(
+        v,
+        &records,
+        [
+            (
+                "dns.lookups_hit",
+                "DNS cache lookups answered by a fresh entry, negative or failed ones included.",
+                lookups_hit
+            ),
+            (
+                "dns.lookups_stale",
+                "DNS cache lookups answered by an expired entry, which was queued for a refresh.",
+                lookups_stale
+            ),
+            (
+                "dns.lookups_missed",
+                "DNS cache lookups that found nothing and queued the question.",
+                lookups_missed
+            ),
+            (
+                "dns.lookups_skipped",
+                "DNS cache lookups never asked: an internal address outside every zone in recursive mode.",
+                lookups_skipped
+            ),
+            (
+                "dns.resolved_positive",
+                "DNS resolutions that found an answer.",
+                resolved_positive
+            ),
+            (
+                "dns.resolved_negative",
+                "DNS resolutions answered with no such name or no such record.",
+                resolved_negative
+            ),
+            (
+                "dns.resolved_failed",
+                "DNS resolutions that failed: timeouts, refusals, server failures.",
+                resolved_failed
+            )
+        ]
+    );
+    counter_metrics!(
+        v,
+        dns,
+        [
+            (
+                "dns.queue_enqueued",
+                "Questions put on the DNS resolver queue.",
+                queue_enqueued
+            ),
+            (
+                "dns.queue_dropped",
+                "Questions turned away by a full DNS resolver queue, asked again on their next lookup.",
+                queue_dropped
+            ),
+            (
+                "dns.forwarder_fallbacks",
+                "Questions the recursor failed on that were then asked of a forwarder.",
+                forwarder_fallbacks
+            )
+        ]
+    );
+    for (name, help, value) in [
+        (
+            "dns.queue_length",
+            "Questions waiting on the DNS resolver queue.",
+            dns.queue_length,
+        ),
+        (
+            "dns.queue_capacity",
+            "Configured capacity of the DNS resolver queue.",
+            dns.queue_capacity,
+        ),
+        (
+            "dns.inflight",
+            "Questions the DNS resolver is working on.",
+            dns.inflight,
+        ),
+        (
+            "dns.max_inflight",
+            "Configured limit of questions resolved at once.",
+            dns.max_inflight,
+        ),
+        (
+            "dns.cache_entries",
+            "Answers held by the DNS cache.",
+            dns.cache_entries,
+        ),
+        (
+            "dns.cache_max_entries",
+            "Configured capacity of the DNS cache.",
+            dns.cache_max_entries,
+        ),
+    ] {
+        scalar_u64(v, name, help, Unit::None, Kind::Gauge, value)?;
+    }
+    duration_metrics!(
+        v,
+        dns,
+        [(
+            "dns.resolve",
+            "Time spent in finished DNS resolutions.",
+            resolve_time
+        )]
+    );
+
+    let forwarders: Vec<Labeled<'_, DnsForwarder>> = dns
+        .forwarders
+        .iter()
+        .map(|forwarder| Labeled {
+            labels: labels([("forwarder", Cow::Owned(forwarder.forwarder.clone()))]),
+            item: forwarder,
+        })
+        .collect();
+    counter_fields!(
+        v,
+        &forwarders,
+        [
+            (
+                "dns.forwarder.requests",
+                "Queries sent to a DNS forwarder.",
+                requests
+            ),
+            (
+                "dns.forwarder.failures",
+                "Queries to a DNS forwarder that errored or timed out.",
+                failures
+            ),
+            (
+                "dns.forwarder.cooldowns",
+                "Cooldowns a DNS forwarder entered after consecutive failures.",
+                cooldowns
+            )
+        ]
+    );
+    gauge_field(
+        v,
+        "dns.forwarder.cooling_down",
+        "Whether a DNS forwarder is past its failure threshold and not answering yet (1).",
+        Unit::None,
+        &forwarders,
+        |forwarder| u64::from(forwarder.cooling_down),
+    )
 }
 
 fn walk_forwarder<V: Visitor>(v: &mut V, forwarder: &Forwarder) -> Result<(), V::Error> {

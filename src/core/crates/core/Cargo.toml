@@ -34,6 +34,7 @@ hashbrown = "0.17.1"
 http.workspace = true
 lz4_flex.workspace = true
 mib-rs = "0.10.0"
+moka.workspace = true
 netflow_parser.workspace = true
 nom.workspace = true
 otel-arrow-dfe-pdata.workspace = true

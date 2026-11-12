@@ -5,8 +5,9 @@
 use arc_swap::Guard;
 use patrolli::common::internal_metrics::visit::SKIP_REASONS;
 use patrolli::common::internal_metrics::{
-    BgpListener, Channel, Forwarder, ForwarderNode, ForwarderServer, InternalMetrics, Listener,
-    LookupTable, LookupTableProcessor, Monitor, Processor, Sink, SkipCounts,
+    BgpListener, Channel, Dns, DnsForwarder, DnsRecord, Forwarder, ForwarderNode, ForwarderServer,
+    InternalMetrics, Listener, LookupTable, LookupTableProcessor, Monitor, Processor, Sink,
+    SkipCounts,
 };
 use patrolli::payload::{ValueOwned, ZStringOwned};
 use smol_str::SmolStr;
@@ -1831,6 +1832,143 @@ fn _get_lookup_table_metric_throughput(
     (metrics, Some(ValueOwned::Array(list)))
 }
 
+type DnsField<T> = (&'static str, fn(&T) -> u64);
+
+const DNS_GAUGES: [DnsField<Dns>; 6] = [
+    ("queue_length", |d| d.queue_length),
+    ("queue_capacity", |d| d.queue_capacity),
+    ("inflight", |d| d.inflight),
+    ("max_inflight", |d| d.max_inflight),
+    ("cache_entries", |d| d.cache_entries),
+    ("cache_max_entries", |d| d.cache_max_entries),
+];
+
+const DNS_COUNTERS: [DnsField<Dns>; 3] = [
+    ("queue_enqueued", |d| d.queue_enqueued),
+    ("queue_dropped", |d| d.queue_dropped),
+    ("forwarder_fallbacks", |d| d.forwarder_fallbacks),
+];
+
+const DNS_RECORD_COUNTERS: [DnsField<DnsRecord>; 7] = [
+    ("lookups_hit", |r| r.lookups_hit),
+    ("lookups_stale", |r| r.lookups_stale),
+    ("lookups_missed", |r| r.lookups_missed),
+    ("lookups_skipped", |r| r.lookups_skipped),
+    ("resolved_positive", |r| r.resolved_positive),
+    ("resolved_negative", |r| r.resolved_negative),
+    ("resolved_failed", |r| r.resolved_failed),
+];
+
+const DNS_FORWARDER_COUNTERS: [DnsField<DnsForwarder>; 3] = [
+    ("requests", |f| f.requests),
+    ("failures", |f| f.failures),
+    ("cooldowns", |f| f.cooldowns),
+];
+
+/// The `dns` section: running totals, or with `prev` per-second rates (and
+/// the seconds spent resolving within the window), gauges absolute in both.
+fn _dns_entry(dns: &Dns, prev: Option<(&Dns, f64)>) -> ValueOwned {
+    fn counter<T>(current: &T, prev: Option<(&T, f64)>, read: fn(&T) -> u64) -> ValueOwned {
+        match prev {
+            None => ValueOwned::Int64(read(current) as i64),
+            Some((prev, elapsed)) => {
+                ValueOwned::Double(read(current).saturating_sub(read(prev)) as f64 / elapsed)
+            }
+        }
+    }
+    let mut map =
+        Vec::<(ZStringOwned, ValueOwned)>::with_capacity(DNS_GAUGES.len() + DNS_COUNTERS.len() + 3);
+    for (name, read) in DNS_GAUGES {
+        map.push(kv(name, ValueOwned::Int64(read(dns) as i64)));
+    }
+    for (name, read) in DNS_COUNTERS {
+        map.push(kv(name, counter(dns, prev, read)));
+    }
+    map.push(kv(
+        "resolve_time",
+        match prev {
+            None => ValueOwned::Int64(dns.resolve_time.as_nanos() as i64),
+            Some((prev, _)) => ValueOwned::Double(
+                dns.resolve_time
+                    .saturating_sub(prev.resolve_time)
+                    .as_secs_f64(),
+            ),
+        },
+    ));
+    let records = dns
+        .records
+        .iter()
+        .map(|record| {
+            let prev = prev.map(|(p, elapsed)| {
+                (
+                    p.records.iter().find(|r| r.record == record.record),
+                    elapsed,
+                )
+            });
+            let mut entry = vec![kv("record", SmolStr::new_static(record.record).into())];
+            for (name, read) in DNS_RECORD_COUNTERS {
+                let value = match prev {
+                    None => counter(record, None, read),
+                    Some((p, elapsed)) => {
+                        let zero = DnsRecord::default();
+                        counter(record, Some((p.unwrap_or(&zero), elapsed)), read)
+                    }
+                };
+                entry.push(kv(name, value));
+            }
+            ValueOwned::KvList(entry)
+        })
+        .collect();
+    map.push(kv("records", ValueOwned::Array(records)));
+    let forwarders = dns
+        .forwarders
+        .iter()
+        .map(|forwarder| {
+            let prev = prev.map(|(p, elapsed)| {
+                (
+                    p.forwarders
+                        .iter()
+                        .find(|f| f.forwarder == forwarder.forwarder),
+                    elapsed,
+                )
+            });
+            let mut entry = vec![
+                kv("forwarder", SmolStr::new(&forwarder.forwarder).into()),
+                kv(
+                    "cooling_down",
+                    ValueOwned::Int64(i64::from(forwarder.cooling_down)),
+                ),
+            ];
+            for (name, read) in DNS_FORWARDER_COUNTERS {
+                let value = match prev {
+                    None => counter(forwarder, None, read),
+                    Some((p, elapsed)) => {
+                        let zero = DnsForwarder::default();
+                        counter(forwarder, Some((p.unwrap_or(&zero), elapsed)), read)
+                    }
+                };
+                entry.push(kv(name, value));
+            }
+            ValueOwned::KvList(entry)
+        })
+        .collect();
+    map.push(kv("forwarders", ValueOwned::Array(forwarders)));
+    ValueOwned::KvList(map)
+}
+
+fn _get_dns_metric_throughput(
+    snapshots: &InternalMetrics,
+    prev_value: &Arc<(Instant, Dns)>,
+) -> (Arc<(Instant, Dns)>, Option<ValueOwned>) {
+    let metrics = snapshots.dns.load_full();
+    if metrics.0 == prev_value.0 {
+        return (metrics, None);
+    }
+    let elapsed = metrics.0.duration_since(prev_value.0).as_secs_f64();
+    let entry = _dns_entry(&metrics.1, Some((&prev_value.1, elapsed)));
+    (metrics, Some(entry))
+}
+
 /// The snapshots the previous throughput pass diffed against. One per
 /// listener, so two listeners never consume each other's window.
 pub(super) struct PrevValue {
@@ -1844,6 +1982,7 @@ pub(super) struct PrevValue {
     forwarder: Arc<(Instant, Forwarder)>,
     forwarder_server: Arc<(Instant, ForwarderServer)>,
     lookup_table: Arc<(Instant, Vec<LookupTable>)>,
+    dns: Arc<(Instant, Dns)>,
 }
 
 /// One record's attributes: a nested document of every subsystem's snapshot,
@@ -1855,7 +1994,7 @@ pub(super) fn render(
     report_throughput: bool,
     baseline: &mut Option<PrevValue>,
 ) -> Option<Vec<(ZStringOwned, ValueOwned)>> {
-    let mut attrs = Vec::<(ZStringOwned, ValueOwned)>::with_capacity(10);
+    let mut attrs = Vec::<(ZStringOwned, ValueOwned)>::with_capacity(11);
     if report_throughput {
         if let Some(prev_value) = baseline {
             let (sink_channel_prev, sink_channel) = _get_channel_throughput(
@@ -1940,6 +2079,11 @@ pub(super) fn render(
                 prev_value.lookup_table = lookup_table_prev;
                 attrs.push((ZStringOwned::from_static("lookup_table"), lookup_table));
             }
+            let (dns_prev, dns) = _get_dns_metric_throughput(snapshots, &prev_value.dns);
+            if let Some(dns) = dns {
+                prev_value.dns = dns_prev;
+                attrs.push((ZStringOwned::from_static("dns"), dns));
+            }
         } else {
             *baseline = Some(PrevValue {
                 sink_channel: snapshots.sink_channel.load_full(),
@@ -1952,6 +2096,7 @@ pub(super) fn render(
                 forwarder: snapshots.forwarder.load_full(),
                 forwarder_server: snapshots.forwarder_server.load_full(),
                 lookup_table: snapshots.lookup_table.load_full(),
+                dns: snapshots.dns.load_full(),
             });
             return None;
         }
@@ -1994,6 +2139,9 @@ pub(super) fn render(
 
         let lookup_table = _get_lookup_table_metric(snapshots);
         attrs.push((ZStringOwned::from_static("lookup_table"), lookup_table));
+
+        let dns = _dns_entry(&snapshots.dns.load().1, None);
+        attrs.push((ZStringOwned::from_static("dns"), dns));
     }
     Some(attrs)
 }
@@ -2095,5 +2243,67 @@ mod lookup_table_tests {
             field(field(&new, "rows_skipped_by_reason"), "cast"),
             ValueOwned::Double(4.0)
         ));
+    }
+}
+
+#[cfg(test)]
+mod dns_tests {
+    use super::*;
+
+    fn field<'a>(value: &'a ValueOwned, name: &str) -> &'a ValueOwned {
+        let ValueOwned::KvList(fields) = value else {
+            panic!("expected a map")
+        };
+        &fields
+            .iter()
+            .find(|(key, _)| key.as_ref() == name)
+            .unwrap()
+            .1
+    }
+
+    fn first(value: &ValueOwned) -> &ValueOwned {
+        let ValueOwned::Array(items) = value else {
+            panic!("expected an array")
+        };
+        &items[0]
+    }
+
+    #[test]
+    fn counters_become_rates_and_gauges_stay_absolute() {
+        let snapshot = |hits, requests, length| Dns {
+            records: vec![DnsRecord {
+                record: "ptr",
+                lookups_hit: hits,
+                ..Default::default()
+            }],
+            queue_length: length,
+            queue_enqueued: hits,
+            forwarders: vec![DnsForwarder {
+                forwarder: "udp://10.0.0.53:53".into(),
+                requests,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let (previous, current) = (snapshot(10, 2, 1), snapshot(30, 6, 5));
+
+        let total = _dns_entry(&current, None);
+        assert!(matches!(
+            field(&total, "queue_enqueued"),
+            ValueOwned::Int64(30)
+        ));
+        let record = first(field(&total, "records"));
+        assert!(matches!(
+            field(record, "lookups_hit"),
+            ValueOwned::Int64(30)
+        ));
+
+        let rate = _dns_entry(&current, Some((&previous, 2.0)));
+        assert!(matches!(field(&rate, "queue_length"), ValueOwned::Int64(5)));
+        assert!(matches!(field(&rate, "queue_enqueued"), ValueOwned::Double(v) if *v == 10.0));
+        let record = first(field(&rate, "records"));
+        assert!(matches!(field(record, "lookups_hit"), ValueOwned::Double(v) if *v == 10.0));
+        let forwarder = first(field(&rate, "forwarders"));
+        assert!(matches!(field(forwarder, "requests"), ValueOwned::Double(v) if *v == 2.0));
     }
 }

@@ -217,7 +217,7 @@ impl AttributeKeys {
         }
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(super) fn validate(&self) -> Result<()> {
         let keys = self.as_slice();
         if keys.is_empty() {
             bail!("a key list must not be empty");

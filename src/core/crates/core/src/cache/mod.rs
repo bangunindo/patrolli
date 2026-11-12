@@ -5,6 +5,7 @@
 use parking_lot::RwLock;
 use std::sync::Arc;
 
+pub mod dns;
 pub mod endpoint;
 pub mod host;
 pub mod item;
@@ -21,6 +22,8 @@ pub struct Cache {
     pub host: Arc<RwLock<host::Host>>,
     /// no outer lock: the registry manages its own `ArcSwap` internally
     pub lookup_table: Arc<lookup_table::LookupTable>,
+    /// DNS answers for the `dns_lookup` processor; locks nothing on read
+    pub dns: Arc<dns::Dns>,
 }
 
 impl Default for Cache {
@@ -38,6 +41,7 @@ impl Cache {
             listener: Arc::new(RwLock::new(listener::Listener::new())),
             host: Arc::new(RwLock::new(host::Host::new())),
             lookup_table: Arc::new(lookup_table::LookupTable::new()),
+            dns: Arc::new(dns::Dns::default()),
         }
     }
 }
@@ -50,5 +54,6 @@ pub fn get_cache() -> Cache {
         listener: listener::LISTENER_CACHE.clone(),
         host: host::HOST_CACHE.clone(),
         lookup_table: lookup_table::LOOKUP_TABLE_CACHE.clone(),
+        dns: dns::DNS_CACHE.clone(),
     }
 }
