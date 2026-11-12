@@ -108,10 +108,10 @@ PATROLLI_CORE_IMAGE=patrolli-core:local PATROLLI_CORE_PULL_POLICY=never \
 
 The suite runs from the reusable workflow `.github/workflows/web-e2e.yaml`, called by `ci.yaml`:
 
-| When                                              | `patrolli-core` image under test                              | Effect of a failure                                          |
-| ------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------ |
-| Pull requests that touch `src/web/` or `.github/` | Core of the PR's `src/core` tree (normally the one on `main`) | `ci-ok` fails, the PR cannot merge                           |
-| Pushes to `main`                                  | Core of `main`'s `src/core` tree, published by the same run   | The `main` run fails, and that commit can't be released      |
+| When                                              | `patrolli-core` image under test                              | Effect of a failure                                     |
+| ------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------- |
+| Pull requests that touch `src/web/` or `.github/` | Core of the PR's `src/core` tree (normally the one on `main`) | `ci-ok` fails, the PR cannot merge                      |
+| Pushes to `main`                                  | Core of `main`'s `src/core` tree, published by the same run   | The `main` run fails, and that commit can't be released |
 
 It does **not** run for core-only pull requests. Core and web have different owners and core is allowed to break web on `main`; a red `main` blocks nothing except a release of that commit.
 
