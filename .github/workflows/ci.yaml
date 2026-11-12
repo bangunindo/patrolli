@@ -6,13 +6,19 @@ name: CI
 
 # Lint and test on PRs and pushes to main. PRs skip the core or web jobs when
 # they don't touch them; pushes to main run everything, which also refreshes
-# the cargo cache that PRs and release tags restore from. Require only the
-# `ci-ok` check in branch protection: skipped jobs never report their own.
+# the cargo cache that PRs restore from. Require only the `ci-ok` check in
+# branch protection: skipped jobs never report their own. A release tag
+# (build.yaml) is only published if this workflow passed for its commit on
+# main, and it promotes the tree-* images below rather than rebuilding.
 #
-# PRs that touch web also run the web e2e (web-e2e.yaml) against the
-# patrolli-core image of their src/core tree, which pushes to main publish as
-# ghcr.io/bangunindo/patrolli-core:tree-<git tree hash of src/core>. Pushes to
-# main don't run the e2e: core is allowed to break web between releases.
+# Pushes to main also publish patrolli-core and patrolli-web for linux/amd64
+# and linux/arm64 as ghcr.io/bangunindo/patrolli-<image>:tree-<git tree hash
+# of src/<image>>, each arch built natively on its own runner (no QEMU).
+#
+# PRs that touch web, and every push to main, run the web e2e (web-e2e.yaml)
+# against the patrolli-core image of their src/core tree. On main it runs
+# after that image is published, so it also catches core changes that break
+# web; that turns the main run red but blocks nothing until a release.
 on:
   pull_request:
   push:
@@ -59,23 +65,29 @@ jobs:
       web: ${{ needs.changes.outputs.web == 'true' }}
 
   web-e2e:
-    needs: changes
-    if: github.event_name == 'pull_request' && needs.changes.outputs.web == 'true'
+    # On main, waits for images-merge so it pulls the core image just published
+    # instead of building src/core itself. images-merge is skipped on PRs and
+    # when core and web are already published; !cancelled() runs past that.
+    needs: [changes, images-merge]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.web == 'true' }}
     uses: ./.github/workflows/web-e2e.yaml
 
-  core-image:
-    # The core image web PRs test against. Tagged by the src/core tree hash, so
-    # a push that doesn't change core finds its tag and skips the build.
+  images-plan:
+    # Images are tagged by their src/<image> tree hash, so a push that doesn't
+    # change an image finds its tag and skips building it. Releases promote
+    # these images, so a tag only counts if this workflow on main attested it:
+    # anyone who can push a branch can push to GHCR with GITHUB_TOKEN, and a
+    # planted tree-* tag must be rebuilt over, not skipped and shipped.
     if: github.event_name == 'push' && github.repository == 'bangunindo/patrolli'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 5
     permissions:
       contents: read
-      packages: write
-      id-token: write
-      attestations: write
-    env:
-      GHCR_IMAGE: ghcr.io/bangunindo/patrolli-core
+      packages: read
+      attestations: read
+    outputs:
+      images: ${{ steps.plan.outputs.images }}
+      tags: ${{ steps.plan.outputs.tags }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,37 +97,141 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: tag
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          tag="tree-$(git rev-parse HEAD:src/core)"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          if docker manifest inspect "$GHCR_IMAGE:$tag" >/dev/null 2>&1; then
-            echo "$GHCR_IMAGE:$tag already published"
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.tag.outputs.exists == 'false'
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+          # True if $1 is an amd64+arm64 index attested by ci.yaml on main.
+          trusted() {
+            local manifest
+            manifest="$(docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' 2>/dev/null)" || return 1
+            jq -e '[.manifests[]?.platform | "\(.os)/\(.architecture)"] | index("linux/amd64") and index("linux/arm64")' \
+              <<< "$manifest" >/dev/null || return 1
+            gh attestation verify "oci://$1" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yaml" \
+              --source-ref refs/heads/main --deny-self-hosted-runners >/dev/null
+          }
+          images=()
+          tags='{}'
+          for image in core web; do
+            tag="tree-$(git rev-parse "HEAD:src/$image")"
+            tags="$(jq -c --arg i "$image" --arg t "$tag" '.[$i] = $t' <<< "$tags")"
+            ref="ghcr.io/bangunindo/patrolli-$image:$tag"
+            if trusted "$ref"; then
+              echo "$ref already published"
+            else
+              echo "$ref is missing, single-arch or not attested by main; building it"
+              images+=("$image")
+            fi
+          done
+          echo "images=$(jq -cn '$ARGS.positional' --args "${images[@]}")" >> "$GITHUB_OUTPUT"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
+  images-build:
+    needs: images-plan
+    if: needs.images-plan.outputs.images != '[]'
+    strategy:
+      fail-fast: true
+      matrix:
+        image: ${{ fromJSON(needs.images-plan.outputs.images) }}
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GHCR_IMAGE: ghcr.io/bangunindo/patrolli-${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - id: build
-        if: steps.tag.outputs.exists == 'false'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: src/core
-          platforms: linux/amd64
-          tags: ${{ env.GHCR_IMAGE }}:${{ steps.tag.outputs.tag }}
+          context: src/${{ matrix.image }}
+          platforms: linux/${{ matrix.arch }}
           labels: |
-            org.opencontainers.image.title=patrolli-core
+            org.opencontainers.image.title=patrolli-${{ matrix.image }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=AGPL-3.0-only
-          push: true
+          outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           provenance: mode=max
           sbom: true
-      - if: steps.tag.outputs.exists == 'false'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests-${{ matrix.image }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  images-merge:
+    # Only tags an image once both of its arches built.
+    needs: [images-plan, images-build]
+    if: needs.images-plan.outputs.images != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.images-plan.outputs.images) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      GHCR_IMAGE: ghcr.io/bangunindo/patrolli-${{ matrix.image }}
+      TAG: ${{ fromJSON(needs.images-plan.outputs.tags)[matrix.image] }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.image }}-*
+          merge-multiple: true
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - id: manifest
+        name: Create multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          sources=()
+          for digest in *; do sources+=("$GHCR_IMAGE@sha256:$digest"); done
+          docker buildx imagetools create -t "$GHCR_IMAGE:$TAG" \
+            --annotation "index:org.opencontainers.image.title=patrolli-$IMAGE" \
+            --annotation "index:org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "index:org.opencontainers.image.licenses=AGPL-3.0-only" \
+            "${sources[@]}"
+          docker buildx imagetools inspect "$GHCR_IMAGE:$TAG"
+          digest="$(docker buildx imagetools inspect "$GHCR_IMAGE:$TAG" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.GHCR_IMAGE }}
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
           push-to-registry: true
 
   ci-ok:
