@@ -4,8 +4,9 @@
 
 name: Test
 
-# Lint and test core and web. Called by ci.yaml (PRs, pushes to main) and
-# build.yaml (release tags); the caller owns triggers and concurrency.
+# Lint and test core and web. Called by ci.yaml (PRs, pushes to main), which
+# owns triggers and concurrency. Releases (build.yaml) don't rerun it; they
+# require the tagged commit's CI run on main to have passed.
 on:
   workflow_call:
     inputs:
