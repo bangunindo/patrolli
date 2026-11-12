@@ -115,18 +115,33 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - id: source
-        name: Resolve the image CI published from main
+        name: Resolve and verify the image CI published from main
         env:
           IMAGE: ${{ matrix.image }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Pinned by digest, so the version tags get exactly what was checked.
+          # Pinned by digest, so the version tags get exactly what was verified.
           ref="$GHCR_IMAGE:tree-$(git rev-parse "HEAD:src/$IMAGE")"
-          if ! digest="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' | jq -re .digest)"; then
+          if ! manifest="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}')"; then
             echo "::error::$ref is not published; CI on main should have pushed it"
             exit 1
           fi
-          docker buildx imagetools inspect "$GHCR_IMAGE@$digest"
-          echo "ref=$GHCR_IMAGE@$digest" >> "$GITHUB_OUTPUT"
+          source="$GHCR_IMAGE@$(jq -r .digest <<< "$manifest")"
+          if ! jq -e '[.manifests[]?.platform | "\(.os)/\(.architecture)"] | index("linux/amd64") and index("linux/arm64")' \
+            <<< "$manifest" >/dev/null; then
+            echo "::error::$ref is not an amd64+arm64 image; re-run CI on main to rebuild it"
+            exit 1
+          fi
+          # Anyone who can push a branch can push to GHCR; only ship what
+          # ci.yaml on main built and attested.
+          if ! gh attestation verify "oci://$source" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yaml" \
+            --source-ref refs/heads/main --deny-self-hosted-runners; then
+            echo "::error::$source has no attestation from ci.yaml on main; refusing to release it"
+            exit 1
+          fi
+          docker buildx imagetools inspect "$source"
+          echo "ref=$source" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         env:

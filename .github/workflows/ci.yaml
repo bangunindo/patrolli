@@ -74,13 +74,17 @@ jobs:
 
   images-plan:
     # Images are tagged by their src/<image> tree hash, so a push that doesn't
-    # change an image finds its tag and skips building it.
+    # change an image finds its tag and skips building it. Releases promote
+    # these images, so a tag only counts if this workflow on main attested it:
+    # anyone who can push a branch can push to GHCR with GITHUB_TOKEN, and a
+    # planted tree-* tag must be rebuilt over, not skipped and shipped.
     if: github.event_name == 'push' && github.repository == 'bangunindo/patrolli'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
       packages: read
+      attestations: read
     outputs:
       images: ${{ steps.plan.outputs.images }}
       tags: ${{ steps.plan.outputs.tags }}
@@ -94,17 +98,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          # True if $1 is an amd64+arm64 index attested by ci.yaml on main.
+          trusted() {
+            local manifest
+            manifest="$(docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' 2>/dev/null)" || return 1
+            jq -e '[.manifests[]?.platform | "\(.os)/\(.architecture)"] | index("linux/amd64") and index("linux/arm64")' \
+              <<< "$manifest" >/dev/null || return 1
+            gh attestation verify "oci://$1" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yaml" \
+              --source-ref refs/heads/main --deny-self-hosted-runners >/dev/null
+          }
           images=()
           tags='{}'
           for image in core web; do
             tag="tree-$(git rev-parse "HEAD:src/$image")"
             tags="$(jq -c --arg i "$image" --arg t "$tag" '.[$i] = $t' <<< "$tags")"
             ref="ghcr.io/bangunindo/patrolli-$image:$tag"
-            if docker manifest inspect "$ref" >/dev/null 2>&1; then
+            if trusted "$ref"; then
               echo "$ref already published"
             else
-              echo "$ref will be built"
+              echo "$ref is missing, single-arch or not attested by main; building it"
               images+=("$image")
             fi
           done
