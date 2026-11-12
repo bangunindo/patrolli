@@ -54,7 +54,7 @@ use uuid::Uuid;
 pub(super) fn attribute_lookup(
     mut pl: payload::Payload,
     config: &AttributeLookup,
-    node_id: Uuid,
+    node_id: Option<Uuid>,
     cache: &cache::Cache,
 ) -> (payload::Payload, bool) {
     if pl.is_empty() {
@@ -366,7 +366,7 @@ fn run_rule(
     pl: &Payload,
     rule: &AttributeLookupRule,
     shared: Option<&BooleanArray>,
-    node_id: Uuid,
+    node_id: Option<Uuid>,
     cache: &cache::Cache,
     writes: &mut Writes,
 ) -> Result<()> {
@@ -375,7 +375,10 @@ fn run_rule(
         .get(&rule.lookup_table)
         .ok_or_else(|| anyhow!("lookup table {} is not configured", rule.lookup_table))?;
     // One guard per rule per batch; it flushes its tally on drop.
-    let read = table.read_as(node_id);
+    let read = match node_id {
+        Some(id) => table.read_as(id),
+        None => table.read(),
+    };
     if read.generation() == 0 {
         // Not loaded yet. The reloader keeps retrying, so this is transient.
         trace!(lookup_table_id = %rule.lookup_table, "lookup table has not loaded yet");
@@ -1009,7 +1012,7 @@ mod tests {
     }
 
     fn run(pl: Payload, cfg: &AttributeLookup, cache: &cache::Cache) -> (Payload, bool) {
-        attribute_lookup(pl, cfg, Uuid::now_v7(), cache)
+        attribute_lookup(pl, cfg, Some(Uuid::now_v7()), cache)
     }
 
     /// Runs with a known node id so the per-processor counters can be read back.
@@ -1020,7 +1023,7 @@ mod tests {
         table: Uuid,
     ) -> patrolli::common::internal_metrics::LookupTableProcessor {
         let node = Uuid::now_v7();
-        let _ = attribute_lookup(pl, cfg, node, cache);
+        let _ = attribute_lookup(pl, cfg, Some(node), cache);
         cache
             .lookup_table
             .get(&table)
@@ -1321,9 +1324,10 @@ mod tests {
                 vec![],
                 (0..1000).map(|_| vec![kv("host", s(key))]).collect(),
             );
-            let _ = attribute_lookup(pl.clone(), &cfg, node, &cache);
-            let ((_, errored), allocations) =
-                super::super::test_alloc::measure(|| attribute_lookup(pl, &cfg, node, &cache));
+            let _ = attribute_lookup(pl.clone(), &cfg, Some(node), &cache);
+            let ((_, errored), allocations) = super::super::test_alloc::measure(|| {
+                attribute_lookup(pl, &cfg, Some(node), &cache)
+            });
             assert!(!errored);
             counts.push(allocations.calls);
         }
@@ -1408,9 +1412,10 @@ mod tests {
                     (0..records).map(|_| vec![kv("host", s(host))]).collect(),
                 );
                 // once to warm every lazily grown map, then measure a clean run
-                let _ = attribute_lookup(pl.clone(), cfg, node, &cache);
-                let ((pl, errored), allocations) =
-                    super::super::test_alloc::measure(|| attribute_lookup(pl, cfg, node, &cache));
+                let _ = attribute_lookup(pl.clone(), cfg, Some(node), &cache);
+                let ((pl, errored), allocations) = super::super::test_alloc::measure(|| {
+                    attribute_lookup(pl, cfg, Some(node), &cache)
+                });
                 assert!(!errored);
                 assert_eq!(
                     record_attrs(&pl)
@@ -1874,9 +1879,9 @@ mod tests {
                 "match": {"keys": {"host": {"key": key}}},
                 "output": {"site": "site"},
             }]}));
-            let _ = attribute_lookup(pl.clone(), &cfg, node, &cache);
+            let _ = attribute_lookup(pl.clone(), &cfg, Some(node), &cache);
             let ((_, errored), allocations) = super::super::test_alloc::measure(|| {
-                attribute_lookup(pl.clone(), &cfg, node, &cache)
+                attribute_lookup(pl.clone(), &cfg, Some(node), &cache)
             });
             assert!(!errored);
             allocations.calls
@@ -2075,7 +2080,7 @@ mod tests {
                 vec![kv("src", s("10.0.0.1"))],
             ],
         );
-        let (pl, errored) = attribute_lookup(pl, &cfg, node, &cache);
+        let (pl, errored) = attribute_lookup(pl, &cfg, Some(node), &cache);
         assert!(!errored);
         assert!(record_attrs(&pl).contains(&(1, "country".into(), "ID".into())));
         let table = cache.lookup_table.get(&id).unwrap();

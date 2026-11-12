@@ -4758,6 +4758,7 @@ dependencies = [
  "jsonwebtoken",
  "patrolli",
  "patrolli-cluster",
+ "patrolli-processor",
  "patrolli-proto",
  "petgraph",
  "rand 0.10.3",

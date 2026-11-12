@@ -9,6 +9,7 @@ pub mod get_pipeline_graph;
 pub mod get_pipeline_node;
 mod graph;
 pub mod list_pipelines;
+pub mod preview_pipeline_node;
 mod runtime;
 pub mod update_pipeline;
 pub mod update_pipeline_graph;

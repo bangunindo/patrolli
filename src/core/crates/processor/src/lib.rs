@@ -8,6 +8,7 @@ mod attribute_collect;
 mod attribute_filter;
 mod attribute_lookup;
 mod attribute_transform;
+pub mod preview;
 #[cfg(test)]
 mod test_alloc;
 #[cfg(test)]
@@ -320,8 +321,12 @@ impl Worker {
             // while nothing is lost. The skip surfaces in each processor's
             // `warn!`, per-record failures in the table's own counters.
             Config::AttributeLookup(config) => {
-                let (pl, _errored) =
-                    attribute_lookup::attribute_lookup(pl, config, step.id(), &self.config_cache);
+                let (pl, _errored) = attribute_lookup::attribute_lookup(
+                    pl,
+                    config,
+                    Some(step.id()),
+                    &self.config_cache,
+                );
                 self.log_node(step, n.elapsed(), pl_len, None, None);
                 Some(pl)
             }
