@@ -106,34 +106,36 @@ PATROLLI_CORE_IMAGE=patrolli-core:local PATROLLI_CORE_PULL_POLICY=never \
 
 ## 5. GitHub Actions CI Integration
 
-The suite runs from the reusable workflow `.github/workflows/web-e2e.yaml`. It has two callers:
+The suite runs from the reusable workflow `.github/workflows/web-e2e.yaml`, called by `ci.yaml`:
 
-| Caller                 | When                                              | `patrolli-core` image under test                              | Effect of a failure                     |
-| ---------------------- | ------------------------------------------------- | ------------------------------------------------------------- | --------------------------------------- |
-| `ci.yaml`              | Pull requests that touch `src/web/` or `.github/` | Core of the PR's `src/core` tree (normally the one on `main`) | `ci-ok` fails, the PR cannot merge      |
-| `build.yaml` (release) | `v<semver>` tags                                  | The `linux/amd64` core image built for that tag               | No version or `latest` tag is published |
+| When                                              | `patrolli-core` image under test                              | Effect of a failure                                          |
+| ------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------ |
+| Pull requests that touch `src/web/` or `.github/` | Core of the PR's `src/core` tree (normally the one on `main`) | `ci-ok` fails, the PR cannot merge                           |
+| Pushes to `main`                                  | Core of `main`'s `src/core` tree, published by the same run   | The `main` run fails, and that commit can't be released      |
 
-It does **not** run for core-only pull requests or on pushes to `main`. Core and web have different owners and core is allowed to break web between releases; the release run is where both must agree.
+It does **not** run for core-only pull requests. Core and web have different owners and core is allowed to break web on `main`; a red `main` blocks nothing except a release of that commit.
 
-### A. Which core image a pull request uses
+### A. Which core image is used
 
-Pushes to `main` run the `core-image` job in `ci.yaml`, which builds `src/core` (`linux/amd64`) and pushes it to GHCR only, tagged by the Git tree hash of `src/core`:
+Pushes to `main` run the `images-*` jobs in `ci.yaml`, which build `src/core` and `src/web` for `linux/amd64` and `linux/arm64` and push them to GHCR only, tagged by the Git tree hash of their directory:
 
 ```bash
 ghcr.io/bangunindo/patrolli-core:tree-$(git rev-parse HEAD:src/core)
+ghcr.io/bangunindo/patrolli-web:tree-$(git rev-parse HEAD:src/web)
 ```
 
-The tree hash only changes when something under `src/core` changes, so:
+The tree hash only changes when something under that directory changes, so:
 
-- A push to `main` that does not change core finds its tag already published and skips the build.
+- A push to `main` that does not change an image finds its tag already published and skips building it.
+- On `main`, the e2e waits for the image jobs and pulls the core image they just published.
 - A web-only pull request has the same `src/core` tree as `main`, so `web-e2e.yaml` finds the tag and pulls it. No Rust build.
 - If the tag is missing (the pull request also changes core, the `main` build has not finished yet, or nothing was published yet), `web-e2e.yaml` builds `src/core` from source in the job and runs against that. This is slow but always correct, and needs no secrets, so it also works for pull requests from forks.
 
-The GHCR package must stay **public** so forks can pull without logging in. `tree-*` tags accumulate; clean them up with a retention rule on the package.
+The GHCR packages must stay **public** so forks can pull without logging in. `tree-*` tags accumulate; clean them up with a retention rule on the package. Release tags reuse the per-arch images of a `tree-*` tag, which GHCR lists as untagged versions, so the rule may delete `tree-*` versions but **must not** delete untagged ones.
 
 ### B. Release gate
 
-In `build.yaml` the per-arch images are pushed by digest first, without tags. The `web-e2e` job then runs web at that tag against `ghcr.io/bangunindo/patrolli-core@sha256:<linux/amd64 digest>` (taken from the `digests-core-amd64` artifact). The `merge` job, which creates the version tags, depends on it.
+`build.yaml` (`v<semver>` tags) runs no tests, no e2e and no builds. It only publishes if the tagged commit is on `main` and its `ci.yaml` run from the push to `main` succeeded. That run covered the tests and this e2e, and published the `tree-*` images, which the release then tags with the version (on GHCR and Docker Hub) unchanged. Tag a commit that `main` pointed at (CI only runs for the head of each push) after its run is green; if the run is still going, re-run the release workflow once it succeeds.
 
 ### C. What the job does
 

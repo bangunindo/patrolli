@@ -6,20 +6,14 @@ name: Web E2E
 
 # Playwright e2e for src/web against a real stack (src/web/dev): Postgres,
 # Keycloak and two patrolli-core clusters. Called by ci.yaml on PRs that touch
-# web, and by build.yaml on release tags before the version tags are published.
-# It never runs for core-only changes: core is allowed to break web between
-# releases, and the release run is where the two must agree.
+# web and on pushes to main. Core-only PRs don't run it: core is allowed to
+# break web between releases. Releases (build.yaml) require the main run, and
+# so this e2e, to have passed for the tagged commit.
+#
+# Runs against the core image of this checkout's src/core tree, published by
+# ci.yaml from main, or builds src/core from source when it is missing.
 on:
   workflow_call:
-    inputs:
-      core-digest-artifact:
-        description: >-
-          Artifact of this run holding one empty file named after the
-          patrolli-core image digest (without "sha256:"), as uploaded by
-          build.yaml. Empty: use the core image of this checkout's src/core
-          tree, published by ci.yaml from main, or build it when missing.
-        type: string
-        default: ""
 
 permissions:
   contents: read
@@ -47,35 +41,18 @@ jobs:
       - name: Map kc.localtest.me to localhost
         # The stack binds IPv4 only; don't depend on public DNS for the name.
         run: echo "127.0.0.1 kc.localtest.me" | sudo tee -a /etc/hosts
-      - if: inputs.core-digest-artifact != ''
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: ${{ inputs.core-digest-artifact }}
-          path: ${{ runner.temp }}/core-digest
       - name: Resolve patrolli-core image
-        env:
-          DIGEST_DIR: ${{ inputs.core-digest-artifact != '' && format('{0}/core-digest', runner.temp) || '' }}
         run: |
-          if [[ -n "$DIGEST_DIR" ]]; then
-            digest="$(ls "$DIGEST_DIR")"
-            if ! [[ "$digest" =~ ^[0-9a-f]{64}$ ]]; then
-              echo "::error::expected one digest file in the artifact, got: $digest"
-              exit 1
-            fi
-            image="$CORE_IMAGE@sha256:$digest"
-            policy=always
-          else
-            # The tree hash only changes when src/core does, so a PR that
-            # doesn't touch core finds the image ci.yaml pushed from main.
-            image="$CORE_IMAGE:tree-$(git rev-parse HEAD:src/core)"
-            policy=always
-            if ! docker manifest inspect "$image" >/dev/null 2>&1; then
-              echo "::notice::$image is not published; building src/core from source"
-              sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-              image=patrolli-core:local
-              policy=never
-              docker build -t "$image" ../core
-            fi
+          # The tree hash only changes when src/core does, so a PR that
+          # doesn't touch core finds the image ci.yaml pushed from main.
+          image="$CORE_IMAGE:tree-$(git rev-parse HEAD:src/core)"
+          policy=always
+          if ! docker manifest inspect "$image" >/dev/null 2>&1; then
+            echo "::notice::$image is not published; building src/core from source"
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+            image=patrolli-core:local
+            policy=never
+            docker build -t "$image" ../core
           fi
           echo "Using $image"
           {
