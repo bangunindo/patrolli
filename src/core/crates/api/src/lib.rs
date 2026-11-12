@@ -268,6 +268,10 @@ pub fn create_router(state: AppState, cors_config: &Option<CorsConfig>) -> Route
         "/processors/subscribe_capture/{processor_id}",
         any(processors::subscribe_capture::ws_subscribe_capture),
     );
+    ws_routes = ws_routes.route(
+        "/pipelines/{pipeline_id}/canvases/{canvas_id}/nodes/{node_id}/preview",
+        any(pipelines::preview_pipeline_node::ws_preview_pipeline_node),
+    );
     ws_routes = ws_routes.layer(axum::middleware::from_fn_with_state(
         state.clone(),
         require_auth,
