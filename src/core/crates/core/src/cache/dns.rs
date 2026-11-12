@@ -263,6 +263,17 @@ impl Dns {
             inner: self.inner(),
             now: now_ms(),
             counts: Default::default(),
+            counted: true,
+        }
+    }
+
+    /// A reader that leaves the lookup counters alone, for a processor
+    /// preview. Misses and stale entries are still queued, so a preview run
+    /// again finds what the first one asked.
+    pub fn uncounted_reader(&self) -> Reader<'_> {
+        Reader {
+            counted: false,
+            ..self.reader()
         }
     }
 
@@ -397,6 +408,7 @@ pub struct Reader<'a> {
     inner: &'a Inner,
     now: u64,
     counts: [LookupCounts; Record::ALL.len()],
+    counted: bool,
 }
 
 impl Reader<'_> {
@@ -429,6 +441,9 @@ impl Reader<'_> {
 
 impl Drop for Reader<'_> {
     fn drop(&mut self) {
+        if !self.counted {
+            return;
+        }
         for (counts, shared) in self.counts.iter().zip(&self.dns.metrics.records) {
             add(&shared.lookups_hit, counts.hit);
             add(&shared.lookups_stale, counts.stale);

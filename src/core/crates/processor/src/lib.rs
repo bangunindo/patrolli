@@ -9,6 +9,7 @@ mod attribute_filter;
 mod attribute_lookup;
 mod attribute_transform;
 mod dns_lookup;
+pub mod preview;
 #[cfg(test)]
 mod test_alloc;
 #[cfg(test)]
@@ -322,13 +323,17 @@ impl Worker {
             // `warn!`, per-record outcomes in the table's or the DNS cache's
             // own counters.
             Config::AttributeLookup(config) => {
-                let (pl, _errored) =
-                    attribute_lookup::attribute_lookup(pl, config, step.id(), &self.config_cache);
+                let (pl, _errored) = attribute_lookup::attribute_lookup(
+                    pl,
+                    config,
+                    Some(step.id()),
+                    &self.config_cache,
+                );
                 self.log_node(step, n.elapsed(), pl_len, None, None);
                 Some(pl)
             }
             Config::DnsLookup(config) => {
-                let (pl, _errored) = dns_lookup::dns_lookup(pl, config, &self.config_cache);
+                let (pl, _errored) = dns_lookup::dns_lookup(pl, config, &self.config_cache, true);
                 self.log_node(step, n.elapsed(), pl_len, None, None);
                 Some(pl)
             }

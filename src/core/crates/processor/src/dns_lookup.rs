@@ -30,10 +30,12 @@ use tracing::warn;
 
 /// Enrich `pl` in place and report whether any rule was skipped by an error.
 /// No failing return: the payload always comes back, enriched as far as it got.
+/// `counted: false` (a preview) leaves the cache's lookup counters alone.
 pub(super) fn dns_lookup(
     mut pl: Payload,
     config: &DnsLookup,
     cache: &cache::Cache,
+    counted: bool,
 ) -> (Payload, bool) {
     if pl.is_empty() {
         return (pl, false);
@@ -53,7 +55,11 @@ pub(super) fn dns_lookup(
     let mut writes = Writes::default();
     {
         let mut answers = Answers {
-            reader: cache.dns.reader(),
+            reader: if counted {
+                cache.dns.reader()
+            } else {
+                cache.dns.uncounted_reader()
+            },
             memo: FxHashMap::default(),
         };
         for (i, rule) in config.lookups.iter().enumerate() {
