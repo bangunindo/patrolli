@@ -32,6 +32,7 @@ use patrolli::payload::{Payload, attr};
 use rustc_hash::FxHashMap;
 use smol_str::{SmolStr, format_smolstr};
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::sync::Arc;
 
 pub(super) struct Write<'a> {
@@ -126,7 +127,10 @@ pub(super) fn merge(
     if parents.null_count() == 0 && parents.values().is_sorted() {
         // Ties keep the write order, which is the order an append would have
         // given them.
-        appended.sort_unstable();
+        // One key's writes are already in this order; several keys are not.
+        if !appended.is_sorted() {
+            appended.sort_unstable();
+        }
         let mut next = 0;
         for row in 0..n {
             let parent = parents.value(row);
@@ -410,8 +414,15 @@ fn write_batch(
 
 // ---- collected writes, shared by the enrichment processors ----
 
-/// The values destined for one attribute key. One destination is fed by one
-/// column, which has one declared type, so each map stores its native type.
+/// The values destined for one attribute key, in the order they were found.
+/// One destination is fed by one column, which has one declared type, so each
+/// list stores its native type.
+///
+/// A list, not a map: a rule visits its parents in ascending order and each
+/// once, so pushing keeps them the way [`apply_table`] wants them and a hit
+/// costs no hashing. A writer that does neither is still correct — the later
+/// value for a parent wins, as an insert into a map would have it — only
+/// slower, for the sort it then gets.
 ///
 /// `SmolStr`, not `String`: this is the one owned copy on the per-record path,
 /// and what enrichment carries — a site, a region, an ASN — almost always fits
@@ -419,10 +430,10 @@ fn write_batch(
 /// not an option: a mutable table's `Arc<MutableRow>` is dropped at the end of
 /// the iteration, while these values must survive until `apply` merges them.
 pub(super) enum Values {
-    Str(FxHashMap<Parent, SmolStr>),
-    Int(FxHashMap<Parent, i64>),
-    Double(FxHashMap<Parent, f64>),
-    Bool(FxHashMap<Parent, bool>),
+    Str(Vec<(Parent, SmolStr)>),
+    Int(Vec<(Parent, i64)>),
+    Double(Vec<(Parent, f64)>),
+    Bool(Vec<(Parent, bool)>),
 }
 
 impl Values {
@@ -430,10 +441,10 @@ impl Values {
         match ty {
             // No OTLP/OTAP IP value, so an IP column is emitted as a string —
             // the same bridge `CellRef::to_value` makes.
-            lt::ValueType::String | lt::ValueType::Ip => Values::Str(FxHashMap::default()),
-            lt::ValueType::Integer => Values::Int(FxHashMap::default()),
-            lt::ValueType::Double => Values::Double(FxHashMap::default()),
-            lt::ValueType::Bool => Values::Bool(FxHashMap::default()),
+            lt::ValueType::String | lt::ValueType::Ip => Values::Str(Vec::new()),
+            lt::ValueType::Integer => Values::Int(Vec::new()),
+            lt::ValueType::Double => Values::Double(Vec::new()),
+            lt::ValueType::Bool => Values::Bool(Vec::new()),
         }
     }
 
@@ -442,11 +453,11 @@ impl Values {
     /// store makes that unreachable in practice.
     pub(super) fn insert(&mut self, parent: Parent, cell: CellRef<'_>) {
         match (self, cell) {
-            (Values::Str(m), CellRef::String(v)) => drop(m.insert(parent, SmolStr::new(v))),
-            (Values::Str(m), CellRef::Ip(v)) => drop(m.insert(parent, format_smolstr!("{v}"))),
-            (Values::Int(m), CellRef::Integer(v)) => drop(m.insert(parent, v)),
-            (Values::Double(m), CellRef::Double(v)) => drop(m.insert(parent, v)),
-            (Values::Bool(m), CellRef::Bool(v)) => drop(m.insert(parent, v)),
+            (Values::Str(m), CellRef::String(v)) => m.push((parent, SmolStr::new(v))),
+            (Values::Str(m), CellRef::Ip(v)) => m.push((parent, format_smolstr!("{v}"))),
+            (Values::Int(m), CellRef::Integer(v)) => m.push((parent, v)),
+            (Values::Double(m), CellRef::Double(v)) => m.push((parent, v)),
+            (Values::Bool(m), CellRef::Bool(v)) => m.push((parent, v)),
             _ => {}
         }
     }
@@ -454,16 +465,7 @@ impl Values {
     /// Records text that is already owned, such as a rendered prefix.
     pub(super) fn insert_text(&mut self, parent: Parent, text: SmolStr) {
         if let Values::Str(m) = self {
-            m.insert(parent, text);
-        }
-    }
-
-    pub(super) fn cell(&self, parent: Parent) -> CellRef<'_> {
-        match self {
-            Self::Str(m) => CellRef::String(&m[&parent]),
-            Self::Int(m) => CellRef::Integer(m[&parent]),
-            Self::Double(m) => CellRef::Double(m[&parent]),
-            Self::Bool(m) => CellRef::Bool(m[&parent]),
+            m.push((parent, text));
         }
     }
 
@@ -476,12 +478,29 @@ impl Values {
         }
     }
 
-    pub(super) fn for_each_parent(&self, visit: impl FnMut(Parent)) {
+    pub(super) fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Every recorded value, in insertion order.
+    pub(super) fn for_each<'a>(&'a self, mut visit: impl FnMut(Parent, CellRef<'a>)) {
         match self {
-            Self::Str(m) => m.keys().copied().for_each(visit),
-            Self::Int(m) => m.keys().copied().for_each(visit),
-            Self::Double(m) => m.keys().copied().for_each(visit),
-            Self::Bool(m) => m.keys().copied().for_each(visit),
+            Self::Str(m) => m.iter().for_each(|(p, v)| visit(*p, CellRef::String(v))),
+            Self::Int(m) => m.iter().for_each(|(p, v)| visit(*p, CellRef::Integer(*v))),
+            Self::Double(m) => m.iter().for_each(|(p, v)| visit(*p, CellRef::Double(*v))),
+            Self::Bool(m) => m.iter().for_each(|(p, v)| visit(*p, CellRef::Bool(*v))),
+        }
+    }
+
+    /// Add what `other` recorded after what this holds. A list of another
+    /// type is dropped, as a cell of another type is by [`Values::insert`].
+    fn append(&mut self, other: Values) {
+        match (self, other) {
+            (Self::Str(m), Self::Str(mut o)) => m.append(&mut o),
+            (Self::Int(m), Self::Int(mut o)) => m.append(&mut o),
+            (Self::Double(m), Self::Double(mut o)) => m.append(&mut o),
+            (Self::Bool(m), Self::Bool(mut o)) => m.append(&mut o),
+            _ => {}
         }
     }
 }
@@ -504,6 +523,18 @@ impl Writes {
             AttributeTable::Scope => &mut self.scope,
             AttributeTable::Resource => &mut self.resource,
         }
+    }
+}
+
+/// Hand a rule's values for one destination over. An empty list leaves no
+/// entry: a destination nothing was found for does not touch its table.
+pub(super) fn put(table: &mut TableWrites, key: SmolStr, values: Values) {
+    if values.is_empty() {
+        return;
+    }
+    match table.entry(key) {
+        Entry::Vacant(slot) => drop(slot.insert(values)),
+        Entry::Occupied(mut slot) => slot.get_mut().append(values),
     }
 }
 
@@ -543,22 +574,39 @@ pub(super) fn apply_table(
         .get(payload_type)
         .unwrap_or(&EMPTY_U16_ATTRS_RECORD_BATCH);
     let (root, assigned) = assign_record_ids(pl, keys)?;
-    let mut writes = Vec::with_capacity(keys.values().map(Values::len).sum());
+    let mut writes: Vec<Write<'_>> = Vec::with_capacity(keys.values().map(Values::len).sum());
     for (key, values) in keys {
-        let mut parents = Vec::with_capacity(values.len());
-        values.for_each_parent(|logical| {
-            let encoded = match logical {
+        let start = writes.len();
+        // `merge` wants each key's writes ascending by parent, one per parent.
+        let mut ascending = true;
+        values.for_each(|logical, cell| {
+            let parent = match logical {
                 Parent::Existing(id) => id,
                 Parent::MissingRecord(row) => assigned[&row],
             };
-            parents.push((encoded, logical));
+            ascending &= writes[start..]
+                .last()
+                .is_none_or(|last| last.parent < parent);
+            writes.push(Write {
+                key: key.as_str(),
+                parent,
+                cell,
+            });
         });
-        parents.sort_unstable_by_key(|(encoded, _)| *encoded);
-        writes.extend(parents.into_iter().map(|(parent, logical)| Write {
-            key: key.as_str(),
-            parent,
-            cell: values.cell(logical),
-        }));
+        if !ascending {
+            // Stable, so of two values for one parent the later stays last,
+            // and is the one kept.
+            let mut run = writes.split_off(start);
+            run.sort_by_key(|write| write.parent);
+            run.dedup_by(|later, kept| {
+                if later.parent != kept.parent {
+                    return false;
+                }
+                std::mem::swap(later, kept);
+                true
+            });
+            writes.append(&mut run);
+        }
     }
     let Some(merged) = merge(existing, &writes, overwrite)? else {
         return Ok(());
@@ -589,7 +637,7 @@ fn assign_record_ids(
 ) -> Result<(Option<RecordBatch>, FxHashMap<usize, u16>)> {
     let mut missing = std::collections::BTreeSet::new();
     for values in keys.values() {
-        values.for_each_parent(|parent| {
+        values.for_each(|parent, _| {
             if let Parent::MissingRecord(row) = parent {
                 missing.insert(row);
             }

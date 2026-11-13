@@ -12,8 +12,8 @@
 use crate::config;
 use anyhow::Result;
 use arrow::array::{
-    Array, ArrayAccessor, ArrayRef, AsArray, BooleanArray, Datum, Float64Array, Int64Array,
-    RecordBatch, StringArray, TypedDictionaryArray, UInt8Array, UInt16Array,
+    Array, ArrayAccessor, ArrayRef, AsArray, BooleanArray, Datum, DictionaryArray, Float64Array,
+    Int64Array, RecordBatch, StringArray, TypedDictionaryArray, UInt8Array, UInt16Array,
 };
 use arrow::compute::kernels;
 use arrow::datatypes::{DataType, Float64Type, Int64Type, UInt8Type, UInt16Type};
@@ -668,38 +668,169 @@ fn read<'a>(values: &AttrValueCols<'a>, i: usize, keep_nulls: bool) -> Option<Va
     }
 }
 
-/// Map each `parent_id` to the typed value of the attribute named exactly
-/// `key`; the last row wins on a repeat, matching [`parent_id_values`]. With
-/// `keep_nulls`, a present-but-null attribute maps to [`Value::Null`] — see
+/// One attribute's typed values by parent id, ascending, one per parent.
+///
+/// A sorted vector, not a map: an attribute batch is written parent by parent,
+/// so the scan that fills this already yields the order, and a reader walking
+/// parents in order gets them without hashing.
+#[derive(Default)]
+pub struct ParentValues<'a>(Vec<(u16, Value<'a>)>);
+
+impl<'a> ParentValues<'a> {
+    pub fn get(&self, parent: u16) -> Option<&Value<'a>> {
+        let at = self.0.binary_search_by_key(&parent, |(p, _)| *p).ok()?;
+        Some(&self.0[at].1)
+    }
+
+    /// Ascending, without repeats.
+    pub fn parents(&self) -> impl Iterator<Item = u16> + '_ {
+        self.0.iter().map(|(parent, _)| *parent)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Which rows of a key column carry exactly `key`.
+enum KeyRows<'a> {
+    /// No row does.
+    None,
+    Dict8(&'a DictionaryArray<UInt8Type>, Vec<bool>),
+    Dict16(&'a DictionaryArray<UInt16Type>, Vec<bool>),
+    Mask(BooleanArray),
+}
+
+impl<'a> KeyRows<'a> {
+    /// A dictionary column is answered from its values: the key is compared
+    /// once per distinct string and a row is then one table read on its code.
+    /// A batch that does not carry the key at all is known from that alone.
+    /// The table is per code, not one code: merged dictionaries may repeat a
+    /// value.
+    fn find(key_col: &'a ArrayRef, key: &str) -> Result<Self> {
+        fn hits(values: &ArrayRef, key: &str) -> Option<Vec<bool>> {
+            let values = values.as_string_opt::<i32>()?;
+            Some(
+                (0..values.len())
+                    .map(|i| values.is_valid(i) && values.value(i) == key)
+                    .collect(),
+            )
+        }
+        if let Some(dict) = key_col.as_dictionary_opt::<UInt8Type>()
+            && let Some(hits) = hits(dict.values(), key)
+        {
+            return Ok(if hits.contains(&true) {
+                Self::Dict8(dict, hits)
+            } else {
+                Self::None
+            });
+        }
+        if let Some(dict) = key_col.as_dictionary_opt::<UInt16Type>()
+            && let Some(hits) = hits(dict.values(), key)
+        {
+            return Ok(if hits.contains(&true) {
+                Self::Dict16(dict, hits)
+            } else {
+                Self::None
+            });
+        }
+        Ok(Self::Mask(kernels::cmp::eq(
+            key_col,
+            &StringArray::new_scalar(key),
+        )?))
+    }
+}
+
+/// Each parent's typed value of the attribute named exactly `key`; the last
+/// row wins on a repeat, matching [`parent_id_values`]. With `keep_nulls`, a
+/// present-but-null attribute reads as [`Value::Null`] — see
 /// [`AttrValueCols::value_at_or_null`].
 pub fn parent_id_typed_values<'a>(
     attr_batch: &'a RecordBatch,
     key: &str,
     keep_nulls: bool,
-) -> Result<FxHashMap<u16, Value<'a>>> {
-    let mut out = FxHashMap::default();
-    if attr_batch.num_rows() == 0 {
-        return Ok(out);
+) -> Result<ParentValues<'a>> {
+    let n = attr_batch.num_rows();
+    if n == 0 {
+        return Ok(ParentValues::default());
     }
     let (Some(parent_id_col), Some(key_col)) = (
         parent_ids_u16(attr_batch)?,
         attr_batch.column_by_name(consts::ATTRIBUTE_KEY),
     ) else {
-        return Ok(out);
+        return Ok(ParentValues::default());
     };
-    // The `cmp` kernel has a dictionary fast path, so this never decodes the
-    // whole key column.
-    let key_mask = kernels::cmp::eq(&key_col, &StringArray::new_scalar(key))?;
+    let rows = KeyRows::find(key_col, key)?;
+    if matches!(rows, KeyRows::None) {
+        return Ok(ParentValues::default());
+    }
     let values = AttrValueCols::try_new(attr_batch)?;
-    for i in 0..attr_batch.num_rows() {
-        if !parent_id_col.is_valid(i) || !(key_mask.is_valid(i) && key_mask.value(i)) {
-            continue;
+    let mut out: Vec<(u16, Value<'a>)> = Vec::new();
+    let mut ascending = true;
+    let mut visit = |i: usize| {
+        if !parent_id_col.is_valid(i) {
+            return;
         }
-        if let Some(v) = read(&values, i, keep_nulls) {
-            out.insert(parent_id_col.value(i), v);
+        let Some(value) = read(&values, i, keep_nulls) else {
+            return;
+        };
+        let parent = parent_id_col.value(i);
+        match out.last_mut() {
+            Some(last) if last.0 == parent => last.1 = value,
+            Some(last) => {
+                ascending &= last.0 < parent;
+                out.push((parent, value));
+            }
+            None => out.push((parent, value)),
+        }
+    };
+    match &rows {
+        KeyRows::None => {}
+        KeyRows::Dict8(dict, hits) => {
+            let nulls = dict.keys().nulls();
+            for (i, code) in dict.keys().values().iter().enumerate() {
+                // a null slot's code is arbitrary, so it may be out of range
+                if hits.get(*code as usize).copied().unwrap_or(false)
+                    && nulls.is_none_or(|nulls| nulls.is_valid(i))
+                {
+                    visit(i);
+                }
+            }
+        }
+        KeyRows::Dict16(dict, hits) => {
+            let nulls = dict.keys().nulls();
+            for (i, code) in dict.keys().values().iter().enumerate() {
+                if hits.get(*code as usize).copied().unwrap_or(false)
+                    && nulls.is_none_or(|nulls| nulls.is_valid(i))
+                {
+                    visit(i);
+                }
+            }
+        }
+        KeyRows::Mask(mask) => {
+            for i in 0..n {
+                if mask.is_valid(i) && mask.value(i) {
+                    visit(i);
+                }
+            }
         }
     }
-    Ok(out)
+    if !ascending {
+        // Stable, so a parent's rows keep their order and the last still wins.
+        out.sort_by_key(|(parent, _)| *parent);
+        out.dedup_by(|later, kept| {
+            if later.0 != kept.0 {
+                return false;
+            }
+            std::mem::swap(later, kept);
+            true
+        });
+    }
+    Ok(ParentValues(out))
 }
 
 /// Map each `(parent_id, element index)` to the typed value of the flattened
@@ -979,6 +1110,67 @@ mod tests {
         let m = parent_id_values(attr, "k").unwrap();
         assert_eq!(m.get(&0).map(|s| s.as_str()), Some("v"));
         assert_eq!(m.len(), 1);
+    }
+
+    /// The reader hands parents over ascending and once each whatever the
+    /// batch looks like: rows out of parent order, an attribute repeated on a
+    /// parent (the last row wins) and a dictionary holding the key twice, as a
+    /// merged one can.
+    #[test]
+    fn parent_id_typed_values_orders_parents_and_keeps_the_last_row() {
+        use arrow::array::{DictionaryArray, RecordBatch, StringArray, UInt8Array, UInt16Array};
+        use arrow::datatypes::{DataType, Field, Schema, UInt8Type};
+        use std::sync::Arc;
+
+        let rows = [
+            (2u16, "k", "a"),
+            (0, "other", "x"),
+            (2, "k", "b"),
+            (1, "k", "c"),
+            (0, "k", "d"),
+        ];
+        let dictionary: ArrayRef = Arc::new(
+            DictionaryArray::<UInt8Type>::try_new(
+                // codes 0 and 2 both spell "k"
+                UInt8Array::from(vec![0u8, 1, 2, 0, 2]),
+                Arc::new(StringArray::from(vec!["k", "other", "k"])),
+            )
+            .unwrap(),
+        );
+        let plain: ArrayRef = Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.1)));
+        for keys in [dictionary, plain] {
+            let batch = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                    Field::new(consts::ATTRIBUTE_KEY, keys.data_type().clone(), false),
+                    Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                    Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+                ])),
+                vec![
+                    Arc::new(UInt16Array::from_iter_values(rows.iter().map(|r| r.0))),
+                    keys,
+                    Arc::new(UInt8Array::from(vec![
+                        super::AttributeValueType::Str as u8;
+                        5
+                    ])),
+                    Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.2))),
+                ],
+            )
+            .unwrap();
+            let read = super::parent_id_typed_values(&batch, "k", false).unwrap();
+            assert_eq!(read.parents().collect::<Vec<_>>(), [0, 1, 2]);
+            let text = |parent| match read.get(parent) {
+                Some(super::super::Value::String(s)) => s.as_str().to_owned(),
+                _ => panic!("no string for parent {parent}"),
+            };
+            assert_eq!([text(0), text(1), text(2)], ["d", "c", "b"]);
+            assert!(read.get(3).is_none());
+            assert!(
+                super::parent_id_typed_values(&batch, "absent", false)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 
     #[test]

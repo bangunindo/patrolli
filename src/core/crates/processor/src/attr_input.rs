@@ -17,7 +17,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use patrolli::cache::lookup_table::cell::CellRef;
 use patrolli::config::lookup_table::ValueType;
 use patrolli::config::processor::{AttributeFilter, AttributeTable};
-use patrolli::payload::attr::AttrLocation;
+use patrolli::payload::attr::{AttrLocation, ParentValues};
 use patrolli::payload::{Payload, Value, attr};
 use rustc_hash::{FxHashMap, FxHashSet};
 use smol_str::{SmolStr, format_smolstr};
@@ -88,13 +88,13 @@ pub(super) fn convert_cell(cell: CellRef<'_>, cast: Option<ValueType>) -> Option
 
 /// One binding's inputs: one value per parent.
 pub(super) enum Source<'a> {
-    Scalar(FxHashMap<u16, Value<'a>>),
+    Scalar(ParentValues<'a>),
     /// A record rule reading a resource attribute. Kept as an indirection rather
     /// than a copy per record: many records share one resource, and
     /// `payload::Value` borrows from the batch.
     ViaResource {
         of_record: FxHashMap<Parent, u16>,
-        by_resource: FxHashMap<u16, Value<'a>>,
+        by_resource: ParentValues<'a>,
     },
     /// Fallback keys: a parent's value comes from the first source holding
     /// one.
@@ -104,27 +104,28 @@ pub(super) enum Source<'a> {
 impl<'a> Source<'a> {
     pub(super) fn get(&self, parent: Parent) -> Option<&Value<'a>> {
         match self {
-            Source::Scalar(m) => m.get(&parent.encoded()?),
+            Source::Scalar(m) => m.get(parent.encoded()?),
             Source::ViaResource {
                 of_record,
                 by_resource,
-            } => by_resource.get(of_record.get(&parent)?),
+            } => by_resource.get(*of_record.get(&parent)?),
             Source::FirstOf(sources) => sources.iter().find_map(|s| s.get(parent)),
         }
     }
 
-    /// Add the parents this source can supply a value for. Composite inputs
-    /// align by parent, never by physical Arrow row position.
+    /// Add the parents this source can supply a value for, repeats and all:
+    /// [`ordered`] settles them. Composite inputs align by parent, never by
+    /// physical Arrow row position.
     pub(super) fn extend_candidates(
         &self,
         is_eligible: &impl Fn(Parent) -> bool,
-        out: &mut FxHashSet<Parent>,
+        out: &mut Vec<Parent>,
     ) {
         match self {
             Source::Scalar(m) => out.extend(
-                m.keys()
-                    .filter(|parent| is_eligible(Parent::Existing(**parent)))
-                    .map(|parent| Parent::Existing(*parent)),
+                m.parents()
+                    .map(Parent::Existing)
+                    .filter(|parent| is_eligible(*parent)),
             ),
             Source::ViaResource {
                 of_record,
@@ -133,7 +134,7 @@ impl<'a> Source<'a> {
                 of_record
                     .iter()
                     .filter(|(record, resource)| {
-                        by_resource.contains_key(resource) && is_eligible(**record)
+                        by_resource.get(**resource).is_some() && is_eligible(**record)
                     })
                     .map(|(record, _)| *record),
             ),
@@ -177,7 +178,7 @@ pub(super) fn read_source<'p>(
     let source_table = input_table.unwrap_or(rule_table);
     let Some(batch) = attr_batch(pl, source_table) else {
         // Nothing to read, so this binding produces no candidate.
-        return Ok(Source::Scalar(FxHashMap::default()));
+        return Ok(Source::Scalar(ParentValues::default()));
     };
 
     if source_table == rule_table {
@@ -239,18 +240,22 @@ pub(super) fn candidates<'s, 'p: 's>(
     sources: impl Iterator<Item = &'s Source<'p>>,
     is_eligible: impl Fn(Parent) -> bool,
 ) -> Vec<Parent> {
-    let mut set: FxHashSet<Parent> = FxHashSet::default();
+    let mut out = Vec::new();
     for source in sources {
-        source.extend_candidates(&is_eligible, &mut set);
+        source.extend_candidates(&is_eligible, &mut out);
     }
-    sorted(set)
+    ordered(out)
 }
 
-/// Deterministic iteration order for a candidate set.
-pub(super) fn sorted(set: FxHashSet<Parent>) -> Vec<Parent> {
-    let mut out: Vec<_> = set.into_iter().collect();
-    out.sort_unstable();
-    out
+/// Collected candidates as a set in deterministic order: ascending, each
+/// parent once. One source alone hands its parents over that way already, so
+/// the usual rule pays one pass here and no sort.
+pub(super) fn ordered(mut parents: Vec<Parent>) -> Vec<Parent> {
+    if !parents.is_sorted() {
+        parents.sort_unstable();
+    }
+    parents.dedup();
+    parents
 }
 
 pub(super) fn location_of(table: &AttributeTable) -> AttrLocation {
