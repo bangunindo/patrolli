@@ -408,7 +408,14 @@ pub fn init_logging(config: &Logger) -> WorkerGuard {
     // so its crates stay at `error` unless `modules` names them.
     for dns_crate in DNS_TARGETS {
         if !config.modules.iter().any(|module| module.name == dns_crate) {
-            targets = targets.with_target(dns_crate, LevelFilter::ERROR);
+            match dns_crate {
+                "patrolli_dns" => {
+                    targets = targets.with_target(dns_crate, LevelFilter::INFO);
+                }
+                _ => {
+                    targets = targets.with_target(dns_crate, LevelFilter::ERROR);
+                }
+            }
         }
     }
 
