@@ -8,6 +8,7 @@ mod attribute_collect;
 mod attribute_filter;
 mod attribute_lookup;
 mod attribute_transform;
+mod dns_lookup;
 pub mod preview;
 #[cfg(test)]
 mod test_alloc;
@@ -314,12 +315,13 @@ impl Worker {
                     }
                 }
             }
-            // Neither drops on error, so neither reports
+            // The enrichment processors do not drop on error, so none reports
             // `total_records_errored`: that counter means "records this node
             // lost", and one misconfigured rule out of ten would mark every
             // record in the batch errored, pinning an error-rate alert at 100%
             // while nothing is lost. The skip surfaces in each processor's
-            // `warn!`, per-record failures in the table's own counters.
+            // `warn!`, per-record outcomes in the table's or the DNS cache's
+            // own counters.
             Config::AttributeLookup(config) => {
                 let (pl, _errored) = attribute_lookup::attribute_lookup(
                     pl,
@@ -327,6 +329,11 @@ impl Worker {
                     Some(step.id()),
                     &self.config_cache,
                 );
+                self.log_node(step, n.elapsed(), pl_len, None, None);
+                Some(pl)
+            }
+            Config::DnsLookup(config) => {
+                let (pl, _errored) = dns_lookup::dns_lookup(pl, config, &self.config_cache, true);
                 self.log_node(step, n.elapsed(), pl_len, None, None);
                 Some(pl)
             }

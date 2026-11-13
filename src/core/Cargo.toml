@@ -9,6 +9,7 @@ members = [
     "crates/app",
     "crates/cluster",
     "crates/core",
+    "crates/dns",
     "crates/listener",
     "crates/monitor",
     "crates/processor",
@@ -60,9 +61,18 @@ flume = "0.12.0"
 futures = "0.3.34"
 futures-util = "0.3.34"
 http = "1.5.0"
+hickory-resolver = { version = "0.26.3", default-features = false, features = [
+    "recursor",
+    "tokio",
+    # DNS over HTTPS on the provider the workspace already uses (rustls
+    # `aws_lc_rs`, tonic `tls-aws-lc`); `ring` would be a second one.
+    "https-aws-lc-rs",
+    "webpki-roots",
+] }
 http-serde = "2.1.1"
 ipnet = "2.12.2"
 lz4_flex = "0.14.0"
+moka = { version = "0.12.16", features = ["sync"] }
 netflow_parser = "1.0.6"
 nom = "8.0.0"
 opentelemetry-proto = { version = "0.33.1", default-features = false, features = [
@@ -79,6 +89,7 @@ papaya = "0.2.5"
 parking_lot = { version = "0.12.5" }
 patrolli = { path = "crates/core" }
 patrolli-cluster = { path = "crates/cluster" }
+patrolli-dns = { path = "crates/dns" }
 patrolli-listener = { path = "crates/listener" }
 patrolli-monitor = { path = "crates/monitor" }
 patrolli-processor = { path = "crates/processor" }
@@ -99,6 +110,7 @@ reqwest = { version = "0.13.5", default-features = false, features = [
     "json",
     "rustls",
 ] }
+rlimit = "0.10.2"
 rustc-hash = "2.1.3"
 rustls = "0.23.46"
 sea-query = { version = "1.0.2", features = ["thread-safe"] }

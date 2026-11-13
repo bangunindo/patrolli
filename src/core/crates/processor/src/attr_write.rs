@@ -3,8 +3,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Sparse attribute upserts: one lookup per existing row, one merge per column.
+//!
+//! Also the write half shared by the enrichment processors (`attribute_lookup`,
+//! `dns_lookup`): [`Writes`] collects values per destination key and parent,
+//! and [`apply`] commits them, one rebuild per affected attribute table.
 
-use anyhow::{Result, bail};
+use super::attr_input::Parent;
+use anyhow::{Result, anyhow, bail};
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, DictionaryArray, Float64Array, Int64Array,
     PrimitiveArray, RecordBatch, StringArray, UInt8Array, UInt16Array, UInt64Array, new_null_array,
@@ -14,11 +19,19 @@ use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, DataType, Field, Schema, UInt8Type, UInt16Type,
     UInt32Type,
 };
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::transform::upsert_attributes::EMPTY_U16_ATTRS_RECORD_BATCH;
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
 use patrolli::cache::lookup_table::cell::CellRef;
+use patrolli::config::lookup_table as lt;
+use patrolli::config::processor::AttributeTable;
 use patrolli::payload::attr::StrCol;
+use patrolli::payload::{Payload, attr};
 use rustc_hash::FxHashMap;
+use smol_str::{SmolStr, format_smolstr};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub(super) struct Write<'a> {
@@ -393,6 +406,290 @@ fn write_batch(
         Arc::new(Schema::new(fields)),
         columns,
     )?)
+}
+
+// ---- collected writes, shared by the enrichment processors ----
+
+/// The values destined for one attribute key. One destination is fed by one
+/// column, which has one declared type, so each map stores its native type.
+///
+/// `SmolStr`, not `String`: this is the one owned copy on the per-record path,
+/// and what enrichment carries — a site, a region, an ASN — almost always fits
+/// the 23-byte inline buffer, so it costs no allocation. Borrowing instead is
+/// not an option: a mutable table's `Arc<MutableRow>` is dropped at the end of
+/// the iteration, while these values must survive until `apply` merges them.
+pub(super) enum Values {
+    Str(FxHashMap<Parent, SmolStr>),
+    Int(FxHashMap<Parent, i64>),
+    Double(FxHashMap<Parent, f64>),
+    Bool(FxHashMap<Parent, bool>),
+}
+
+impl Values {
+    pub(super) fn new(ty: lt::ValueType) -> Self {
+        match ty {
+            // No OTLP/OTAP IP value, so an IP column is emitted as a string —
+            // the same bridge `CellRef::to_value` makes.
+            lt::ValueType::String | lt::ValueType::Ip => Values::Str(FxHashMap::default()),
+            lt::ValueType::Integer => Values::Int(FxHashMap::default()),
+            lt::ValueType::Double => Values::Double(FxHashMap::default()),
+            lt::ValueType::Bool => Values::Bool(FxHashMap::default()),
+        }
+    }
+
+    /// Records a non-null cell against `parent`. A cell disagreeing with its
+    /// column's declared type is dropped rather than coerced; the typed column
+    /// store makes that unreachable in practice.
+    pub(super) fn insert(&mut self, parent: Parent, cell: CellRef<'_>) {
+        match (self, cell) {
+            (Values::Str(m), CellRef::String(v)) => drop(m.insert(parent, SmolStr::new(v))),
+            (Values::Str(m), CellRef::Ip(v)) => drop(m.insert(parent, format_smolstr!("{v}"))),
+            (Values::Int(m), CellRef::Integer(v)) => drop(m.insert(parent, v)),
+            (Values::Double(m), CellRef::Double(v)) => drop(m.insert(parent, v)),
+            (Values::Bool(m), CellRef::Bool(v)) => drop(m.insert(parent, v)),
+            _ => {}
+        }
+    }
+
+    /// Records text that is already owned, such as a rendered prefix.
+    pub(super) fn insert_text(&mut self, parent: Parent, text: SmolStr) {
+        if let Values::Str(m) = self {
+            m.insert(parent, text);
+        }
+    }
+
+    pub(super) fn cell(&self, parent: Parent) -> CellRef<'_> {
+        match self {
+            Self::Str(m) => CellRef::String(&m[&parent]),
+            Self::Int(m) => CellRef::Integer(m[&parent]),
+            Self::Double(m) => CellRef::Double(m[&parent]),
+            Self::Bool(m) => CellRef::Bool(m[&parent]),
+        }
+    }
+
+    pub(super) fn len(&self) -> usize {
+        match self {
+            Self::Str(m) => m.len(),
+            Self::Int(m) => m.len(),
+            Self::Double(m) => m.len(),
+            Self::Bool(m) => m.len(),
+        }
+    }
+
+    pub(super) fn for_each_parent(&self, visit: impl FnMut(Parent)) {
+        match self {
+            Self::Str(m) => m.keys().copied().for_each(visit),
+            Self::Int(m) => m.keys().copied().for_each(visit),
+            Self::Double(m) => m.keys().copied().for_each(visit),
+            Self::Bool(m) => m.keys().copied().for_each(visit),
+        }
+    }
+}
+
+/// `attribute key -> values`. `BTreeMap` so the rebuilt batch does not depend on
+/// hash iteration order.
+pub(super) type TableWrites = BTreeMap<SmolStr, Values>;
+
+#[derive(Default)]
+pub(super) struct Writes {
+    pub(super) record: TableWrites,
+    pub(super) scope: TableWrites,
+    pub(super) resource: TableWrites,
+}
+
+impl Writes {
+    pub(super) fn table(&mut self, table: &AttributeTable) -> &mut TableWrites {
+        match table {
+            AttributeTable::Record => &mut self.record,
+            AttributeTable::Scope => &mut self.scope,
+            AttributeTable::Resource => &mut self.resource,
+        }
+    }
+}
+
+// ---- writing back ----
+
+pub(super) fn apply(pl: &mut Payload, writes: Writes, overwrite: bool) -> Result<()> {
+    let mut first_error = None;
+    for (table, keys) in [
+        (AttributeTable::Record, writes.record),
+        (AttributeTable::Scope, writes.scope),
+        (AttributeTable::Resource, writes.resource),
+    ] {
+        if keys.is_empty() {
+            continue;
+        }
+        if let Err(error) = apply_table(pl, &table, &keys, overwrite) {
+            // A record-ID failure must not block scope/resource writes.
+            first_error.get_or_insert(error);
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Merge one table's writes, committing a new root and its attributes together.
+pub(super) fn apply_table(
+    pl: &mut Payload,
+    table: &AttributeTable,
+    keys: &TableWrites,
+    overwrite: bool,
+) -> Result<()> {
+    let payload_type = attrs_payload_type(&pl.data, table);
+    let existing = pl
+        .data
+        .get(payload_type)
+        .unwrap_or(&EMPTY_U16_ATTRS_RECORD_BATCH);
+    let (root, assigned) = assign_record_ids(pl, keys)?;
+    let mut writes = Vec::with_capacity(keys.values().map(Values::len).sum());
+    for (key, values) in keys {
+        let mut parents = Vec::with_capacity(values.len());
+        values.for_each_parent(|logical| {
+            let encoded = match logical {
+                Parent::Existing(id) => id,
+                Parent::MissingRecord(row) => assigned[&row],
+            };
+            parents.push((encoded, logical));
+        });
+        parents.sort_unstable_by_key(|(encoded, _)| *encoded);
+        writes.extend(parents.into_iter().map(|(parent, logical)| Write {
+            key: key.as_str(),
+            parent,
+            cell: values.cell(logical),
+        }));
+    }
+    let Some(merged) = merge(existing, &writes, overwrite)? else {
+        return Ok(());
+    };
+    // On an Arc-backed clone first: either both related batches are valid, or
+    // the original payload comes back without dangling references.
+    let mut data = pl.data.clone();
+    data.set(payload_type, merged)
+        .map_err(|e| anyhow!("set {}: {e}", table.as_str()))?;
+    if let Some(root) = root {
+        let root_type = match &data {
+            OtapArrowRecords::Logs(_) => ArrowPayloadType::Logs,
+            OtapArrowRecords::Metrics(_) => ArrowPayloadType::UnivariateMetrics,
+            OtapArrowRecords::Traces(_) => ArrowPayloadType::Spans,
+        };
+        data.set(root_type, root)
+            .map_err(|e| anyhow!("set record ids: {e}"))?;
+    }
+    pl.data = data;
+    Ok(())
+}
+
+/// Allocate IDs only for ID-less records with pending writes. Existing IDs and
+/// references are reserved; no populated ID is renumbered.
+fn assign_record_ids(
+    pl: &Payload,
+    keys: &TableWrites,
+) -> Result<(Option<RecordBatch>, FxHashMap<usize, u16>)> {
+    let mut missing = std::collections::BTreeSet::new();
+    for values in keys.values() {
+        values.for_each_parent(|parent| {
+            if let Parent::MissingRecord(row) = parent {
+                missing.insert(row);
+            }
+        });
+    }
+    let mut assigned = FxHashMap::default();
+    if missing.is_empty() {
+        return Ok((None, assigned));
+    }
+    let record = attr::get_record(pl).ok_or_else(|| anyhow!("missing root record batch"))?;
+    let mut ids = attr::location_parent_ids(pl, attr::AttrLocation::Record)?;
+    // The complete UInt16 domain fits in an 8 KiB stack bitmap.
+    let mut used = [0u64; 1024];
+    let mut reserve = |id: u16| {
+        used[id as usize / 64] |= 1u64 << (id % 64);
+    };
+    for id in ids.iter().flatten() {
+        reserve(*id);
+    }
+    let children: &[ArrowPayloadType] = match &pl.data {
+        OtapArrowRecords::Logs(_) => &[ArrowPayloadType::LogAttrs],
+        OtapArrowRecords::Traces(_) => &[
+            ArrowPayloadType::SpanAttrs,
+            ArrowPayloadType::SpanEvents,
+            ArrowPayloadType::SpanLinks,
+        ],
+        OtapArrowRecords::Metrics(_) => &[
+            ArrowPayloadType::MetricAttrs,
+            ArrowPayloadType::NumberDataPoints,
+            ArrowPayloadType::SummaryDataPoints,
+            ArrowPayloadType::HistogramDataPoints,
+            ArrowPayloadType::ExpHistogramDataPoints,
+        ],
+    };
+    for ty in children {
+        if let Some(column) = pl
+            .data
+            .get(*ty)
+            .and_then(|b| b.column_by_name(consts::PARENT_ID))
+        {
+            let parents = column
+                .as_primitive_opt::<UInt16Type>()
+                .ok_or_else(|| anyhow!("expected UInt16 parent ids in {ty:?}"))?;
+            for id in parents.iter().flatten() {
+                reserve(id);
+            }
+        }
+    }
+    let mut free = (0..=u16::MAX).filter(|id| used[*id as usize / 64] & (1u64 << (*id % 64)) == 0);
+    for row in missing {
+        let slot = ids
+            .get_mut(row)
+            .ok_or_else(|| anyhow!("record row {row} is out of bounds"))?;
+        let id = free.next().ok_or_else(|| {
+            anyhow!("record attribute IDs exhausted; leaving record attributes unchanged")
+        })?;
+        *slot = Some(id);
+        assigned.insert(row, id);
+    }
+    let schema = record.schema();
+    let mut fields = schema.fields().to_vec();
+    let mut columns = record.columns().to_vec();
+    let ids: ArrayRef = Arc::new(UInt16Array::from(ids));
+    if let Ok(index) = schema.index_of(consts::ID) {
+        columns[index] = ids;
+    } else {
+        fields.push(Arc::new(
+            Field::new(consts::ID, DataType::UInt16, true).with_metadata(
+                [(
+                    consts::metadata::COLUMN_ENCODING.to_string(),
+                    "plain".to_string(),
+                )]
+                .into(),
+            ),
+        ));
+        columns.push(ids);
+    }
+    let root = RecordBatch::try_new(
+        Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone())),
+        columns,
+    )?;
+    Ok((Some(root), assigned))
+}
+
+// ---- small mappings ----
+
+pub(super) fn attrs_payload_type(
+    data: &OtapArrowRecords,
+    table: &AttributeTable,
+) -> ArrowPayloadType {
+    match table {
+        AttributeTable::Resource => ArrowPayloadType::ResourceAttrs,
+        AttributeTable::Scope => ArrowPayloadType::ScopeAttrs,
+        // Log/span/metric attributes; data-point attributes are out of scope.
+        AttributeTable::Record => match data {
+            OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
+            OtapArrowRecords::Metrics(_) => ArrowPayloadType::MetricAttrs,
+            OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
+        },
+    }
 }
 
 #[cfg(test)]

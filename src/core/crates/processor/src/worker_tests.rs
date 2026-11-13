@@ -607,3 +607,173 @@ async fn retain_live_drops_sink_counters_of_deleted_sinks() {
     assert_eq!(h.node(kept), (1, 0, 0));
     assert_eq!(h.edge(p, kept), Some(1));
 }
+
+mod dns_lookup {
+    use super::*;
+    use crate::test_payloads::{attr_strs, logs_with_attrs};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use patrolli::cache::dns::{Answer, Outcome, Question};
+
+    fn seed(h: &Harness, ip: &str, name: &str) {
+        h.cache.dns.complete(
+            Question::Ptr(ip.parse().unwrap()),
+            Outcome::Found {
+                answer: Answer::Name(name.into()),
+                ttl: Duration::from_secs(600),
+            },
+        );
+    }
+
+    fn config(json: serde_json::Value) -> Config {
+        serde_json::from_value(serde_json::json!({"type": "dns_lookup", "config": json})).unwrap()
+    }
+
+    fn rule(table: &str, key: serde_json::Value, output: &str) -> serde_json::Value {
+        serde_json::json!({"record": "ptr", "table": table, "input": {"key": key}, "output": output})
+    }
+
+    /// Runs `config` over `pl` and returns what reached the sink.
+    async fn run(h: &mut Harness, config: Config, pl: Payload) -> Payload {
+        let p = h.processor(config, &[]);
+        let s = h.sink(&[p]).await;
+        h.send(Some(p), pl);
+        let mut out: Vec<_> = h.topics[&s].try_iter().collect();
+        assert_eq!(out.len(), 1);
+        out.remove(0)
+    }
+
+    #[tokio::test]
+    async fn a_seeded_cache_enriches_record_scope_and_resource_attributes() {
+        let mut h = Harness::new();
+        seed(&h, "8.8.8.8", "dns.google");
+        seed(&h, "1.1.1.1", "one.one.one.one");
+        seed(&h, "9.9.9.9", "dns9.quad9.net");
+        let pl = logs_with_attrs(
+            &[("host.ip", "1.1.1.1")],
+            &[("collector", "9.9.9.9")],
+            &[&[("src", "8.8.8.8")], &[("src", "203.0.113.7")], &[]],
+        );
+        let out = run(
+            &mut h,
+            config(serde_json::json!({"lookups": [
+                rule("record", "src".into(), "src.domain"),
+                rule("resource", "host.ip".into(), "host.domain"),
+                rule("scope", "collector".into(), "collector.domain"),
+                // a record rule reading the resource's address
+                {"record": "ptr", "table": "record",
+                 "input": {"table": "resource", "key": "host.ip"},
+                 "output": "host.domain"},
+            ]})),
+            pl,
+        )
+        .await;
+        assert_eq!(
+            attr_strs(&out, ArrowPayloadType::LogAttrs, "src.domain"),
+            ["dns.google"],
+            "the uncached address is left alone"
+        );
+        assert_eq!(
+            attr_strs(&out, ArrowPayloadType::LogAttrs, "host.domain"),
+            ["one.one.one.one"; 3],
+            "every record of the resource, the attribute-less one included"
+        );
+        assert_eq!(
+            attr_strs(&out, ArrowPayloadType::ResourceAttrs, "host.domain"),
+            ["one.one.one.one"]
+        );
+        assert_eq!(
+            attr_strs(&out, ArrowPayloadType::ScopeAttrs, "collector.domain"),
+            ["dns9.quad9.net"]
+        );
+        // the miss was queued, once, for the resolver
+        let requests = h.cache.dns.requests();
+        assert_eq!(
+            requests.try_iter().collect::<Vec<_>>(),
+            [Question::Ptr("203.0.113.7".parse().unwrap())]
+        );
+        let record = h.cache.dns.snapshot().records[0].clone();
+        // 8.8.8.8, 1.1.1.1 (asked by two rules, looked up once), 9.9.9.9
+        assert_eq!((record.lookups_hit, record.lookups_missed), (3, 1));
+    }
+
+    #[tokio::test]
+    async fn overwrite_replaces_an_existing_value_and_its_absence_keeps_it() {
+        for overwrite in [false, true] {
+            let mut h = Harness::new();
+            seed(&h, "8.8.8.8", "dns.google");
+            let pl = logs_with_attrs(&[], &[], &[&[("src", "8.8.8.8"), ("src.domain", "old")]]);
+            let out = run(
+                &mut h,
+                config(serde_json::json!({
+                    "overwrite": overwrite,
+                    "lookups": [rule("record", "src".into(), "src.domain")],
+                })),
+                pl,
+            )
+            .await;
+            let expected = if overwrite { "dns.google" } else { "old" };
+            assert_eq!(
+                attr_strs(&out, ArrowPayloadType::LogAttrs, "src.domain"),
+                [expected]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn when_selects_the_records_that_are_enriched() {
+        let mut h = Harness::new();
+        seed(&h, "8.8.8.8", "dns.google");
+        let pl = logs_with_attrs(
+            &[],
+            &[],
+            &[
+                &[("src", "8.8.8.8"), ("dir", "in")],
+                &[("src", "8.8.8.8"), ("dir", "out")],
+            ],
+        );
+        let out = run(
+            &mut h,
+            config(serde_json::json!({
+                "when": {"match": {"table": "record", "key": "dir", "key_is_regex": false,
+                                   "op": "=", "value": {"string": "in"}}},
+                "lookups": [rule("record", "src".into(), "src.domain")],
+            })),
+            pl,
+        )
+        .await;
+        assert_eq!(
+            attr_strs(&out, ArrowPayloadType::LogAttrs, "src.domain"),
+            ["dns.google"]
+        );
+    }
+
+    #[tokio::test]
+    async fn unparsable_addresses_are_skipped_and_mapped_v6_is_asked_as_v4() {
+        let mut h = Harness::new();
+        seed(&h, "8.8.8.8", "dns.google");
+        seed(&h, "2001:4860:4860::8888", "dns.google.v6");
+        let pl = logs_with_attrs(
+            &[],
+            &[],
+            &[
+                &[("src", "::ffff:8.8.8.8")],
+                &[("src", "not an address")],
+                &[("src", "2001:4860:4860::8888")],
+                // fallback keys and the bare-integer form (8.8.8.8)
+                &[("src6", "134744072")],
+            ],
+        );
+        let out = run(
+            &mut h,
+            config(serde_json::json!({"lookups": [
+                rule("record", serde_json::json!(["src", "src6"]), "src.domain"),
+            ]})),
+            pl,
+        )
+        .await;
+        let mut names = attr_strs(&out, ArrowPayloadType::LogAttrs, "src.domain");
+        names.sort();
+        assert_eq!(names, ["dns.google", "dns.google", "dns.google.v6"]);
+        assert!(h.cache.dns.requests().is_empty(), "nothing to ask about");
+    }
+}

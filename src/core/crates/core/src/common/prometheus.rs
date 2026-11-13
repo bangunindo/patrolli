@@ -421,8 +421,8 @@ impl visit::Visitor for PromVisitor<'_, '_> {
 mod tests {
     use super::*;
     use crate::common::internal_metrics::{
-        Channel, ChannelKind, ChannelState, Forwarder, ForwarderNode, LookupTable,
-        LookupTableProcessor, Sink, SkipCounts,
+        Channel, ChannelKind, ChannelState, Dns, DnsForwarder, DnsRecord, Forwarder, ForwarderNode,
+        LookupTable, LookupTableProcessor, Sink, SkipCounts,
     };
     use axum::body::to_bytes;
     use std::time::Instant;
@@ -849,6 +849,10 @@ mod tests {
             ],
         )));
 
+        metrics
+            .dns
+            .store(Arc::new((Instant::now(), dns_snapshot())));
+
         let output = encode_test_metrics(Arc::clone(&metrics), true);
 
         let mut recorder = RecordingVisitor {
@@ -999,5 +1003,78 @@ mod tests {
             empty.contains("snapshot=\"lookup_table\""),
             "the snapshot age is still reported, so a stalled reporter is visible"
         );
+    }
+
+    fn dns_snapshot() -> Dns {
+        Dns {
+            records: vec![DnsRecord {
+                record: "ptr",
+                lookups_hit: 90,
+                lookups_stale: 4,
+                lookups_missed: 6,
+                lookups_skipped: 2,
+                resolved_positive: 5,
+                resolved_negative: 1,
+                resolved_failed: 3,
+            }],
+            queue_enqueued: 10,
+            queue_dropped: 1,
+            queue_length: 7,
+            queue_capacity: 50_000,
+            inflight: 3,
+            max_inflight: 512,
+            cache_entries: 9,
+            cache_max_entries: 1_000_000,
+            resolve_time: Duration::from_millis(2500),
+            forwarder_fallbacks: 2,
+            forwarders: vec![DnsForwarder {
+                forwarder: "udp://8.8.8.8:53".into(),
+                requests: 4,
+                failures: 3,
+                cooldowns: 1,
+                cooling_down: true,
+            }],
+        }
+    }
+
+    /// The names the DNS panels of the Grafana dashboard query.
+    #[test]
+    fn dns_families_carry_the_names_the_dashboard_uses() {
+        let metrics = Arc::new(InternalMetrics::default());
+        metrics
+            .dns
+            .store(Arc::new((Instant::now(), dns_snapshot())));
+        let output = encode_test_metrics(metrics, false);
+        for line in [
+            "patrolli_dns_lookups_hit_total{record=\"ptr\"} 90\n",
+            "patrolli_dns_lookups_stale_total{record=\"ptr\"} 4\n",
+            "patrolli_dns_lookups_missed_total{record=\"ptr\"} 6\n",
+            "patrolli_dns_lookups_skipped_total{record=\"ptr\"} 2\n",
+            "patrolli_dns_resolved_positive_total{record=\"ptr\"} 5\n",
+            "patrolli_dns_resolved_negative_total{record=\"ptr\"} 1\n",
+            "patrolli_dns_resolved_failed_total{record=\"ptr\"} 3\n",
+            "patrolli_dns_queue_enqueued_total 10\n",
+            "patrolli_dns_queue_dropped_total 1\n",
+            "patrolli_dns_queue_length 7\n",
+            "patrolli_dns_queue_capacity 50000\n",
+            "patrolli_dns_inflight 3\n",
+            "patrolli_dns_max_inflight 512\n",
+            "patrolli_dns_cache_entries 9\n",
+            "patrolli_dns_cache_max_entries 1000000\n",
+            "patrolli_dns_resolve_seconds_total 2.5\n",
+            "patrolli_dns_forwarder_fallbacks_total 2\n",
+            "patrolli_dns_forwarder_requests_total{forwarder=\"udp://8.8.8.8:53\"} 4\n",
+            "patrolli_dns_forwarder_failures_total{forwarder=\"udp://8.8.8.8:53\"} 3\n",
+            "patrolli_dns_forwarder_cooldowns_total{forwarder=\"udp://8.8.8.8:53\"} 1\n",
+            "patrolli_dns_forwarder_cooling_down{forwarder=\"udp://8.8.8.8:53\"} 1\n",
+            "patrolli_internal_metrics_snapshot_age_seconds{snapshot=\"dns\"}",
+        ] {
+            assert!(output.contains(line), "missing {line:?} in\n{output}");
+        }
+
+        // without forwarders their families are gone, the rest stays
+        let empty = encode_test_metrics(Arc::new(InternalMetrics::default()), false);
+        assert!(!empty.contains("patrolli_dns_forwarder_requests"));
+        assert!(empty.contains("patrolli_dns_queue_capacity 0\n"));
     }
 }

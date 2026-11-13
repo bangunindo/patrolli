@@ -140,3 +140,33 @@ fn openapi_exposes_the_collect_config_and_its_field_comments() {
             .is_none()
     );
 }
+
+#[test]
+fn openapi_exposes_the_dns_lookup_config_and_its_field_comments() {
+    let api = serde_json::to_value(patrolli_api::ApiDoc::openapi()).unwrap();
+    let schemas = &api["components"]["schemas"];
+    let lookup = &schemas["DnsLookup"];
+    assert!(!lookup["description"].as_str().unwrap().is_empty());
+    assert_eq!(lookup["properties"]["overwrite"]["default"], json!(false));
+    for name in ["DnsLookup", "DnsLookupRule"] {
+        for (field, property) in schemas[name]["properties"].as_object().unwrap() {
+            let description = property.get("description").or_else(|| {
+                property
+                    .get("oneOf")?
+                    .as_array()?
+                    .iter()
+                    .find_map(|variant| variant.get("description"))
+            });
+            assert!(
+                description
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.is_empty()),
+                "{name}.{field}"
+            );
+        }
+    }
+    assert_eq!(schemas["DnsRecordType"]["enum"], json!(["ptr"]));
+    // the processor type tag lists it
+    let config = serde_json::to_string(&schemas["ProcessorConfig"]).unwrap();
+    assert!(config.contains("dns_lookup"));
+}

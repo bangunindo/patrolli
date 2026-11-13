@@ -31,6 +31,7 @@ pub struct InternalMetrics {
     pub forwarder: Arc<ArcSwap<(Instant, Forwarder)>>,
     pub forwarder_server: Arc<ArcSwap<(Instant, ForwarderServer)>>,
     pub lookup_table: Arc<ArcSwap<(Instant, Vec<LookupTable>)>>,
+    pub dns: Arc<ArcSwap<(Instant, Dns)>>,
 }
 
 impl Default for InternalMetrics {
@@ -61,6 +62,7 @@ impl Default for InternalMetrics {
                 ForwarderServer::default(),
             ))),
             lookup_table: Arc::new(ArcSwap::from_pointee((Instant::now(), Vec::new()))),
+            dns: Arc::new(ArcSwap::from_pointee((Instant::now(), Dns::default()))),
         }
     }
 }
@@ -392,4 +394,58 @@ pub struct LookupTableProcessor {
     /// rows removed, not remove calls: a partition delete counts every row it
     /// dropped, and a delete that found nothing counts none
     pub removes: u64,
+}
+
+/// The DNS cache behind the `dns_lookup` processor and the resolver that
+/// fills it. One per node.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Dns {
+    /// one per record type, `ptr` only for now
+    pub records: Vec<DnsRecord>,
+    /// questions put on the resolver queue
+    pub queue_enqueued: u64,
+    /// questions turned away by a full queue, asked again on their next lookup
+    pub queue_dropped: u64,
+    pub queue_length: u64,
+    pub queue_capacity: u64,
+    pub inflight: u64,
+    pub max_inflight: u64,
+    pub cache_entries: u64,
+    pub cache_max_entries: u64,
+    /// time spent in finished resolutions
+    pub resolve_time: Duration,
+    /// questions the recursor failed on and a forwarder was asked
+    pub forwarder_fallbacks: u64,
+    pub forwarders: Vec<DnsForwarder>,
+}
+
+/// One record type's cache lookups and resolutions.
+///
+/// `lookups_hit + lookups_stale + lookups_missed` is every lookup the cache
+/// could answer from memory or queue; `lookups_skipped` were never asked
+/// (an internal address in recursive mode without a zone).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DnsRecord {
+    pub record: &'static str,
+    pub lookups_hit: u64,
+    pub lookups_stale: u64,
+    pub lookups_missed: u64,
+    pub lookups_skipped: u64,
+    pub resolved_positive: u64,
+    pub resolved_negative: u64,
+    pub resolved_failed: u64,
+}
+
+/// One upstream resolver, shared by every list that names it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DnsForwarder {
+    /// its URL, with every default spelled out
+    pub forwarder: String,
+    pub requests: u64,
+    /// errors and timeouts; negative answers are successes
+    pub failures: u64,
+    /// cooldown periods entered, including re-arms after a failed probe
+    pub cooldowns: u64,
+    /// past the failure threshold and not yet answered again
+    pub cooling_down: bool,
 }

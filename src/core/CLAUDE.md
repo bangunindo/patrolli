@@ -14,10 +14,11 @@ Two binaries: `patrolli` (`crates/app/src/main.rs`, the daemon) and `schema_gen`
 internals); the REST API is the `patrolli-api` crate (`crates/api`), the cluster machinery is
 `patrolli-cluster` (`crates/cluster`), the listeners are `patrolli-listener` (`crates/listener`), the
 monitors are `patrolli-monitor` (`crates/monitor`), the processors are `patrolli-processor`
-(`crates/processor`) and the sinks are `patrolli-sink` (`crates/sink`). Both binaries reach them through
-`use patrolli::...`, `use patrolli_api::...`, `use patrolli_cluster::...`, `use patrolli_listener::...`,
-`use patrolli_monitor::...`, `use patrolli_processor::...` and
-`use patrolli_sink::...`. Never add a `mod` for a lib module
+(`crates/processor`), the sinks are `patrolli-sink` (`crates/sink`) and the DNS resolver behind
+`dns_lookup` is `patrolli-dns` (`crates/dns`, the only crate that depends on hickory). Both binaries
+reach them through `use patrolli::...`, `use patrolli_api::...`, `use patrolli_cluster::...`,
+`use patrolli_dns::...`, `use patrolli_listener::...`, `use patrolli_monitor::...`,
+`use patrolli_processor::...` and `use patrolli_sink::...`. Never add a `mod` for a lib module
 to `main.rs`: the binary would compile its own copy of the whole crate, doubling every rebuild and
 running each unit test twice. Unit tests live in the lib (`cargo test --lib`).
 
@@ -53,14 +54,15 @@ cargo test --test otel_e2e_test -- --nocapture
 ```
 
 No test builds a patrolli image: the end-to-end tests (`otel_e2e_test`, `cluster_forwarder_e2e`,
-`config_propagation_e2e`, like `shutdown_test`) run the `patrolli` binary cargo builds for them
+`config_propagation_e2e`, like `shutdown_test` and `dns_lookup_e2e`) run the `patrolli` binary cargo builds for them
 (`CARGO_BIN_EXE_patrolli`), through `crates/app/tests/setup::patrolli::Patrolli`. Docker is still needed for third-party
 servers: `clickhouse_insert_test` and `kafka_sink_test` (their servers), `otel_e2e_test` (OTel
 collectors and telemetrygen, which reach patrolli on the host through the Docker host gateway, so a host
 firewall must let container → host traffic through), `bgp_interop_e2e` (GoBGP and FRR routers, the
 same way), and the `cluster_*` and
 `config_propagation_e2e` binaries only for Postgres, which `PATROLLI_TEST_DATABASE_URL` replaces.
-`shutdown_test` and `lookup_table_e2e` need none. `crates/app/tests/setup::setup_db` gives each test its own migrated Postgres
+`shutdown_test`, `lookup_table_e2e` and `dns_lookup_e2e` (an in-test UDP DNS responder) need none;
+`patrolli-dns`'s one `#[ignore]`d test needs outbound HTTPS to a public DoH resolver. `crates/app/tests/setup::setup_db` gives each test its own migrated Postgres
 database: a `postgres:18-alpine` container by default, or, with `PATROLLI_TEST_DATABASE_URL` set to a
 server the user can `CREATE DATABASE` on, a fresh `patrolli_test_<uuid>` database there, dropped when
 the test's `TestDb` guard is.
@@ -127,12 +129,23 @@ monitor::WorkerGroup   (snmp, snmp_walk, prometheus_scrape,         │
   so processor workers read routes lock-free. `Processor::compile` must be called after mutating the
   graph. Processors themselves are the small set in `config::processor::Config` (null, attribute
   filter/add/drop/rename, `attribute_lookup`, which enriches attributes from `cache::lookup_table`,
-  and `transform`, a program (OPL for now, keyed by language) on otel-arrow's query engine — each processor worker keeps its own
-  lazily planned engine per processor, see `processor::transform`).
+  `dns_lookup`, which writes DNS answers (PTR for now) from `cache::dns`, and `transform`, a program
+  (OPL for now, keyed by language) on otel-arrow's query engine — each processor worker keeps its own
+  lazily planned engine per processor, see `processor::transform`). The enrichment processors share
+  their input side (`attr_input`) and their write-back (`attr_write::{Writes, apply}`).
 - **Caches** (`cache::*`) are the hot, in-memory view of configuration that the data path reads:
-  `item`, `endpoint`, `listener`, `host`, `processor`, `lookup_table`. `cache::get_cache()` returns
+  `item`, `endpoint`, `listener`, `host`, `processor`, `lookup_table`, `dns`. `cache::get_cache()` returns
   the process-wide singletons (each module holds a `LazyLock`); `Cache::new()` builds an isolated one
   for tests. Lookup tables are read synchronously because the processor hot path is a sync fn.
+- **DNS** (`cache::dns` + `patrolli-dns`): the hot path never waits for DNS. A `dns_lookup` lookup
+  reads a `moka` cache keyed by `Question` (per-entry expiry: fresh, then served stale while
+  refreshed until `serve_stale` ends); a miss or a stale entry is marked pending in a `papaya` set
+  and `try_send` onto a bounded queue (full: dropped, asked again later). `patrolli_dns::spawn` takes
+  questions off it, `max_inflight` at once, routes each (zone CIDR → its forwarders; else recursor
+  then forwarders on failure, or forwarders only in `forward` mode) and stores the outcome with
+  `Dns::complete`, which clamps TTLs and keeps the last real answer over a failed refresh. Settings
+  are `global.dns`, read from YAML in both modes; `Dns::configure` sizes the singleton once, before
+  the workers start. The resolver always runs and idles on an empty queue. Per node.
 
 ## Cluster (backend mode)
 
@@ -206,7 +219,8 @@ handlers.
   when they are done. A producer that dies cancels the intake token (`drop_guard`), the workers
   see the disconnect and return, and the supervisor's restart rebuilds the transport.
 - **Shutdown**: `CancellationToken` throughout, plus explicit ordered teardown in `local_run` /
-  `Cluster::run` — drain producers before consumers so nothing is lost. The same holds inside a
+  `Cluster::run` — drain producers before consumers so nothing is lost. The DNS resolver stops
+  first: it only fills `cache::dns`, and nothing waits on it. The same holds inside a
   listener: `Worker::close` calls `Listener::stop` (intake off, producers hand over to the
   still-running workers and drop their senders, state becomes `Closed`), then cancels the workers,
   which drain what is queued once the channel is disconnected. One `DRAIN_TIMEOUT` bounds the whole
@@ -352,6 +366,12 @@ the database tests instead of a container each), `PATROLLI_TEST_UPSTREAM` (`late
 against the newest Kafka, Redpanda and ClickHouse instead of the pinned versions),
 `PATROLLI_TEST_PANIC` (`processor`: the first processor batch panics; read by debug builds only, for
 `crates/app/tests/shutdown_test.rs`).
+- hickory logs routine resolution misses at `warn` (thousands per cold batch), so `init_logging`
+  pins `hickory_resolver`, `hickory_net` and `hickory_proto` at `error` unless
+  `global.logger.modules` names them. Every UDP DNS query opens its own socket, so `main` raises
+  the soft `nofile` limit to the hard one at startup and warns when that stays below
+  `4 × global.dns.max_inflight + 1024`. The recursor needs `recursion_limit` 64 (its default 24
+  fails every `ip6.arpa` name) and outbound UDP+TCP 53; `forward` mode does without.
 - SNMPv3 trap receiving (any USM user) and DES/3DES privacy (traps and polling) need
   async-snmp's authoritative engine state and DES salt state, which it refuses to build without.
   Both come from `common::snmp` (one per process): `snmpEngineBoots` is the seconds since

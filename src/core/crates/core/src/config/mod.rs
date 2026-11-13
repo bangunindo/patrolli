@@ -17,6 +17,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 pub mod cluster;
+pub mod dns;
 pub mod endpoint;
 pub mod global;
 pub mod host;

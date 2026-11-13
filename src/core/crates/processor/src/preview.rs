@@ -5,7 +5,7 @@
 //! Runs a draft processor chain over a payload without writing internal
 //! metrics, lookup table counters or lookup tables.
 
-use crate::{attribute_filter, attribute_lookup, attribute_transform, transform};
+use crate::{attribute_filter, attribute_lookup, attribute_transform, dns_lookup, transform};
 use anyhow::{Context, Result, anyhow, bail};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
@@ -71,6 +71,16 @@ impl Chain {
                 if errored && skipped.is_none() {
                     *skipped = Some(anyhow!(
                         "processor {}: attribute lookup skipped a rule, see the server log",
+                        processor.name
+                    ));
+                }
+                Ok(pl)
+            }
+            Config::DnsLookup(config) => {
+                let (pl, errored) = dns_lookup::dns_lookup(pl, config, cache, false);
+                if errored && skipped.is_none() {
+                    *skipped = Some(anyhow!(
+                        "processor {}: dns lookup skipped a rule, see the server log",
                         processor.name
                     ));
                 }
