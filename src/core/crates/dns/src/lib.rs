@@ -21,7 +21,7 @@ mod forwarder;
 mod outcome;
 mod recursor;
 
-pub use forwarder::{Forwarder, ForwarderList, Limits, Upstream};
+pub use forwarder::{Forwarder, ForwarderList, Limits, Reply, Upstream};
 
 use anyhow::Result;
 use futures::future::BoxFuture;
