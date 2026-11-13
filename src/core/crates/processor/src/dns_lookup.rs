@@ -121,7 +121,8 @@ fn run_rule(
     };
     let mut extractor = Extractor::new(&rule.input);
 
-    let mut names = FxHashMap::default();
+    // in candidate order, which is ascending: what `Values` wants
+    let mut names = Vec::new();
     for parent in attr_input::candidates(std::iter::once(&source), is_eligible) {
         // Not an address: nothing to ask, like a missing input.
         let Some(ip) = source
@@ -136,7 +137,7 @@ fn run_rule(
         // A negative or failed entry, a miss and a skipped question all
         // leave the destination alone.
         if let Some(Answer::Name(name)) = answers.get(question) {
-            names.insert(parent, name.clone());
+            names.push((parent, name.clone()));
         }
     }
     if !names.is_empty() {

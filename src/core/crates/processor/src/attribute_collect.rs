@@ -40,7 +40,7 @@ use patrolli::config::processor::attribute_collect::{
 };
 use patrolli::payload::{self, Payload, Value, attr};
 use regex::{CaptureLocations, Regex};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use tracing::{trace, warn};
 use uuid::Uuid;
@@ -368,11 +368,7 @@ impl<'p> PivotData<'p> {
 
     /// A parent carrying any bound element is a candidate, like one carrying
     /// any exact-key input.
-    fn extend_candidates(
-        &self,
-        is_eligible: &impl Fn(Parent) -> bool,
-        out: &mut FxHashSet<Parent>,
-    ) {
+    fn extend_candidates(&self, is_eligible: &impl Fn(Parent) -> bool, out: &mut Vec<Parent>) {
         out.extend(
             self.index
                 .keys()
@@ -528,16 +524,16 @@ fn run_rule<'a>(
     // A parent carrying none of the inputs is not a candidate — it is not
     // participating, and an error for it would drown the counter. One carrying
     // *some* is a candidate, and fails when the row is built.
-    let mut set = FxHashSet::default();
+    let mut candidates = Vec::new();
     for source in column_sources.iter().chain(prefix_source.as_ref()) {
         if let ColumnSource::Attr(source) = source {
-            source.extend_candidates(&is_eligible, &mut set);
+            source.extend_candidates(&is_eligible, &mut candidates);
         }
     }
     if let Some(pivot) = &pivot {
-        pivot.extend_candidates(&is_eligible, &mut set);
+        pivot.extend_candidates(&is_eligible, &mut candidates);
     }
-    let candidates = attr_input::sorted(set);
+    let candidates = attr_input::ordered(candidates);
 
     let mut converted = Vec::with_capacity(plan.columns.len());
     for parent in candidates {

@@ -21,7 +21,7 @@
 //! stale. Resolution is O(configured columns), not O(records).
 
 use super::attr_input;
-use super::attr_write::{Values, Writes, apply};
+use super::attr_write::{Values, Writes, apply, put};
 use anyhow::{Result, anyhow, bail};
 use arrow::array::BooleanArray;
 use patrolli::cache;
@@ -329,6 +329,13 @@ fn run_rule(
         is_eligible,
     );
     let mut converted = Vec::with_capacity(plan.keys.len());
+    // One list per output, filled in candidate order and handed to `writes`
+    // after the loop: a hit is a push, not a search for its destination.
+    let mut found_values: Vec<Values> = plan
+        .outputs
+        .iter()
+        .map(|(_, _, ty)| Values::new(*ty))
+        .collect();
 
     for parent in candidates {
         converted.clear();
@@ -388,18 +395,14 @@ fn run_rule(
         let Some(found) = read.lookup(probe) else {
             continue;
         };
-        for (destination, output, ty) in &plan.outputs {
+        for ((_, output, _), values) in plan.outputs.iter().zip(&mut found_values) {
             let cell = match output {
                 Output::Column(column) => found.row.cell(*column),
                 Output::MatchedPrefix => {
                     if let Some(net) = found.prefix {
                         // a v4 CIDR always fits `SmolStr`'s inline buffer; only
                         // a v6 one past 23 characters allocates
-                        writes
-                            .table(&rule.table)
-                            .entry(destination.clone())
-                            .or_insert_with(|| Values::new(*ty))
-                            .insert_text(parent, format_smolstr!("{net}"));
+                        values.insert_text(parent, format_smolstr!("{net}"));
                     }
                     continue;
                 }
@@ -407,12 +410,12 @@ fn run_rule(
             if cell.is_null() {
                 continue;
             }
-            writes
-                .table(&rule.table)
-                .entry(destination.clone())
-                .or_insert_with(|| Values::new(*ty))
-                .insert(parent, cell);
+            values.insert(parent, cell);
         }
+    }
+    let table = writes.table(&rule.table);
+    for ((destination, ..), values) in plan.outputs.into_iter().zip(found_values) {
+        put(table, destination, values);
     }
     Ok(())
 }
@@ -1081,6 +1084,34 @@ mod tests {
             record_attrs(&pl).contains(&(0, "tier".into(), "warm".into())),
             "{:?}",
             record_attrs(&pl)
+        );
+    }
+
+    /// The processors push each parent once and in ascending order, which is
+    /// what the merge needs. Values that arrive otherwise are put in order
+    /// here, the later one for a parent winning as it would in a map.
+    #[test]
+    fn values_out_of_order_or_repeated_are_settled_before_the_merge() {
+        let mut pl = logs(
+            vec![],
+            vec![vec![kv("msg", s("x"))], vec![kv("msg", s("y"))]],
+        );
+        let mut values = Values::new(lt::ValueType::String);
+        values.insert(Parent::Existing(1), CellRef::String("first"));
+        values.insert(Parent::Existing(0), CellRef::String("jkt"));
+        values.insert(Parent::Existing(1), CellRef::String("sby"));
+        let keys = BTreeMap::from([(SmolStr::new("site"), values)]);
+        apply_table(&mut pl, &AttributeTable::Record, &keys, false).unwrap();
+        let sites: Vec<_> = record_attrs(&pl)
+            .into_iter()
+            .filter(|(_, key, _)| key == "site")
+            .collect();
+        assert_eq!(
+            sites,
+            vec![
+                (0, "site".into(), "jkt".into()),
+                (1, "site".into(), "sby".into())
+            ]
         );
     }
 
