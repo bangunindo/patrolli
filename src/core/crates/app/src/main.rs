@@ -376,7 +376,12 @@ impl FormatTime for LocalTimer {
 const MAX_LOG_SIGNATURES: usize = 2_000;
 
 /// The DNS library's log targets, see `init_logging`.
-const HICKORY_TARGETS: [&str; 3] = ["hickory_resolver", "hickory_net", "hickory_proto"];
+const DNS_TARGETS: [&str; 4] = [
+    "hickory_resolver",
+    "hickory_net",
+    "hickory_proto",
+    "patrolli_dns",
+];
 
 pub fn init_logging(config: &Logger) -> WorkerGuard {
     let (non_blocking, guard) = match config.output.as_str() {
@@ -401,7 +406,7 @@ pub fn init_logging(config: &Logger) -> WorkerGuard {
     }
     // The resolver logs routine misses at `warn` (thousands per cold batch),
     // so its crates stay at `error` unless `modules` names them.
-    for dns_crate in HICKORY_TARGETS {
+    for dns_crate in DNS_TARGETS {
         if !config.modules.iter().any(|module| module.name == dns_crate) {
             targets = targets.with_target(dns_crate, LevelFilter::ERROR);
         }
