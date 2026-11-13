@@ -156,13 +156,15 @@ global:
   #   # https://host[:port][/path] (port 443, /dns-query). An https host name is
   #   # resolved by the system resolver at startup, retried until it resolves.
   #   # Each lookup starts at the next forwarder in the list and fails over to
-  #   # the following ones on an error or timeout.
+  #   # the following ones on a timeout, a connection error or a refusal. A
+  #   # "server failure" reply (the forwarder could not resolve the name) ends
+  #   # the lookup and does not count against the forwarder.
   #   forwarders:
   #     - udp://8.8.8.8
   #     - https://1.1.1.1/dns-query
   #   forwarder_max_inflight: 256          # concurrent queries per forwarder
   #   forwarder_timeout: 2000              # ms, per forwarder query
-  #   forwarder_failure_threshold: 3       # consecutive errors/timeouts before a
+  #   forwarder_failure_threshold: 3       # consecutive timeouts/errors before a
   #                                        # forwarder is skipped...
   #   forwarder_cooldown: 30000            # ...for this long (ms). With all of a
   #                                        # list cooling down, one is still probed.

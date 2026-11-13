@@ -10,12 +10,16 @@
 //!
 //! - **Rotation**: each lookup starts at the next forwarder of the list, so
 //!   first attempts spread evenly.
-//! - **Failover**: an error or a timeout moves on to the following ones. A
-//!   real answer, positive or negative, ends the lookup: a negative answer is
-//!   never asked again elsewhere.
-//! - **Cooldown**: `forwarder_failure_threshold` consecutive errors or
-//!   timeouts take a forwarder out of rotation and failover for
-//!   `forwarder_cooldown`. After that it is eligible again; a success resets
+//! - **Failover**: no usable reply ([`Reply::Unreachable`]: a timeout, a
+//!   connection error, a refusal) moves on to the following ones. Anything
+//!   else ends the lookup: an answer, positive or negative, and a server
+//!   failure ([`Reply::Unresolved`]), which is the forwarder saying the name
+//!   cannot be resolved, not that it is down.
+//! - **Cooldown**: `forwarder_failure_threshold` consecutive unreachable
+//!   replies take a forwarder out of rotation and failover for
+//!   `forwarder_cooldown`. A server failure counts as a reply: the fallback of
+//!   a recursor is asked mostly about broken zones, and would otherwise be
+//!   cooling down all the time. After that it is eligible again; a success resets
 //!   it, a failure re-arms the cooldown at once. With every forwarder of a list
 //!   cooling down, one (the next in rotation) is still probed, once: a blip that
 //!   tripped them all recovers on the first good answer, and an outage costs
@@ -47,6 +51,28 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+/// What a forwarder made of a question.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reply {
+    /// [`Outcome::Found`] or [`Outcome::Negative`].
+    Answered(Outcome),
+    /// It replied with a server failure: it is up, and could not resolve the
+    /// name (a zone whose servers time out or refuse).
+    Unresolved,
+    /// No usable reply: a timeout, a connection error, or any other error
+    /// response (a refusal is about the client, not the name).
+    Unreachable,
+}
+
+impl Reply {
+    fn into_outcome(self) -> Outcome {
+        match self {
+            Reply::Answered(outcome) => outcome,
+            Reply::Unresolved | Reply::Unreachable => Outcome::Failed,
+        }
+    }
+}
+
 /// How one forwarder is asked.
 pub trait Upstream: Send + Sync + 'static {
     /// Whether it can be asked at all yet: an `https://` host name resolves
@@ -55,8 +81,8 @@ pub trait Upstream: Send + Sync + 'static {
         true
     }
 
-    /// [`Outcome::Failed`] for an error; the caller bounds the time.
-    fn query<'a>(&'a self, question: &'a Question) -> BoxFuture<'a, Outcome>;
+    /// The caller bounds the time.
+    fn query<'a>(&'a self, question: &'a Question) -> BoxFuture<'a, Reply>;
 }
 
 /// The shared limits of every forwarder.
@@ -114,22 +140,22 @@ impl Forwarder {
         self.upstream.ready() && self.skip_until.load(Ordering::Relaxed) <= now
     }
 
-    async fn ask(&self, question: &Question) -> Outcome {
+    async fn ask(&self, question: &Question) -> Reply {
         let Ok(_permit) = self.inflight.acquire().await else {
-            return Outcome::Failed;
+            return Reply::Unreachable;
         };
         self.requests.fetch_add(1, Ordering::Relaxed);
-        let outcome = tokio::time::timeout(self.limits.timeout, self.upstream.query(question))
+        let reply = tokio::time::timeout(self.limits.timeout, self.upstream.query(question))
             .await
             .unwrap_or_else(|_| {
                 debug!(forwarder = %self.name, "forwarder query timed out");
-                Outcome::Failed
+                Reply::Unreachable
             });
-        match outcome {
-            Outcome::Failed => self.failed(),
-            _ => self.answered(),
+        match reply {
+            Reply::Unreachable => self.failed(),
+            Reply::Answered(_) | Reply::Unresolved => self.answered(),
         }
-        outcome
+        reply
     }
 
     fn failed(&self) {
@@ -212,14 +238,14 @@ impl Resolve for ForwarderList {
                 }
                 asked = true;
                 match forwarder.ask(question).await {
-                    Outcome::Failed => continue,
-                    answered => return answered,
+                    Reply::Unreachable => continue,
+                    reply => return reply.into_outcome(),
                 }
             }
             if !asked {
                 // all cooling down: probe the next ready one, once
                 if let Some(forwarder) = in_turn().find(|f| f.upstream.ready()) {
-                    return forwarder.ask(question).await;
+                    return forwarder.ask(question).await.into_outcome();
                 }
             }
             Outcome::Failed
@@ -240,20 +266,29 @@ impl Upstream for HickoryUpstream {
         self.resolver.load().is_some()
     }
 
-    fn query<'a>(&'a self, question: &'a Question) -> BoxFuture<'a, Outcome> {
+    fn query<'a>(&'a self, question: &'a Question) -> BoxFuture<'a, Reply> {
         Box::pin(async move {
             let Some(resolver) = self.resolver.load_full() else {
-                return Outcome::Failed;
+                return Reply::Unreachable;
             };
             let (name, record_type) = outcome::query(question);
             match resolver.lookup(name, record_type).await {
-                Ok(lookup) => {
-                    outcome::from_records(question, lookup.answers(), lookup.authorities())
-                }
-                Err(error) => outcome::from_net_error(&error).unwrap_or_else(|| {
-                    debug!(forwarder = %self.name, error = %error, "forwarder query failed");
-                    Outcome::Failed
-                }),
+                Ok(lookup) => Reply::Answered(outcome::from_records(
+                    question,
+                    lookup.answers(),
+                    lookup.authorities(),
+                )),
+                Err(error) => match outcome::from_net_error(&error) {
+                    Some(negative) => Reply::Answered(negative),
+                    None if outcome::is_server_failure(&error) => {
+                        debug!(forwarder = %self.name, "forwarder could not resolve");
+                        Reply::Unresolved
+                    }
+                    None => {
+                        debug!(forwarder = %self.name, error = %error, "forwarder query failed");
+                        Reply::Unreachable
+                    }
+                },
             }
         })
     }
@@ -288,7 +323,7 @@ impl Upstream for Shared {
         self.0.ready()
     }
 
-    fn query<'a>(&'a self, question: &'a Question) -> BoxFuture<'a, Outcome> {
+    fn query<'a>(&'a self, question: &'a Question) -> BoxFuture<'a, Reply> {
         self.0.query(question)
     }
 }
@@ -390,21 +425,25 @@ pub(crate) mod tests {
 
         #[derive(Default)]
         pub(crate) struct Script {
-            pub(crate) outcome: Mutex<Option<Outcome>>,
+            pub(crate) reply: Mutex<Option<Reply>>,
             pub(crate) calls: AtomicU64,
             pub(crate) delay: Duration,
         }
 
         impl Script {
             pub(crate) fn answering(outcome: Option<Outcome>) -> Arc<Self> {
+                Self::replying(outcome.map(Reply::Answered))
+            }
+
+            pub(crate) fn replying(reply: Option<Reply>) -> Arc<Self> {
                 Arc::new(Self {
-                    outcome: Mutex::new(outcome),
+                    reply: Mutex::new(reply),
                     ..Default::default()
                 })
             }
 
             pub(crate) fn set(&self, outcome: Option<Outcome>) {
-                *self.outcome.lock().unwrap() = outcome;
+                *self.reply.lock().unwrap() = outcome.map(Reply::Answered);
             }
 
             pub(crate) fn calls(&self) -> u64 {
@@ -412,20 +451,20 @@ pub(crate) mod tests {
             }
         }
 
-        /// `None` fails; a delay past the forwarder timeout times out.
+        /// `None` is unreachable; a delay past the forwarder timeout times out.
         pub(crate) struct Fake(pub(crate) Arc<Script>);
 
         impl Upstream for Fake {
-            fn query<'a>(&'a self, _: &'a Question) -> BoxFuture<'a, Outcome> {
+            fn query<'a>(&'a self, _: &'a Question) -> BoxFuture<'a, Reply> {
                 Box::pin(async move {
                     self.0.calls.fetch_add(1, Ordering::Relaxed);
                     tokio::time::sleep(self.0.delay).await;
                     self.0
-                        .outcome
+                        .reply
                         .lock()
                         .unwrap()
                         .clone()
-                        .unwrap_or(Outcome::Failed)
+                        .unwrap_or(Reply::Unreachable)
                 })
             }
         }
@@ -572,13 +611,77 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_server_failure_ends_the_lookup_and_is_not_held_against_the_forwarder() {
+        let unresolved = Script::replying(Some(Reply::Unresolved));
+        let spare = Script::answering(found());
+        let (list, forwarders) = make_list(&[unresolved.clone(), spare.clone()], limits(60_000));
+        // well past the threshold of 2, each lookup starting at the first
+        for _ in 0..5 {
+            list.next.store(0, Ordering::Relaxed);
+            assert_eq!(list.resolve(&q()).await, Outcome::Failed);
+        }
+        assert_eq!((unresolved.calls(), spare.calls()), (5, 0));
+        let snapshot = forwarders[0].snapshot();
+        assert!(!snapshot.cooling_down);
+        assert_eq!((snapshot.failures, snapshot.cooldowns), (0, 0));
+
+        // and it resets a count of real failures, like any reply
+        *unresolved.reply.lock().unwrap() = None;
+        list.next.store(0, Ordering::Relaxed);
+        list.resolve(&q()).await;
+        *unresolved.reply.lock().unwrap() = Some(Reply::Unresolved);
+        list.next.store(0, Ordering::Relaxed);
+        list.resolve(&q()).await;
+        *unresolved.reply.lock().unwrap() = None;
+        list.next.store(0, Ordering::Relaxed);
+        list.resolve(&q()).await;
+        assert!(!forwarders[0].snapshot().cooling_down);
+    }
+
+    /// Through hickory, against a UDP server answering with one response code.
+    #[tokio::test]
+    async fn response_codes_are_told_apart() {
+        use hickory_resolver::proto::op::{Message, MessageType, OpCode, ResponseCode};
+
+        async fn reply_of(code: ResponseCode) -> Reply {
+            let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let port = socket.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                let mut buf = vec![0; 4096];
+                while let Ok((len, peer)) = socket.recv_from(&mut buf).await {
+                    let request = Message::from_vec(&buf[..len]).unwrap();
+                    let mut response =
+                        Message::new(request.metadata.id, MessageType::Response, OpCode::Query);
+                    response.metadata.recursion_desired = true;
+                    response.metadata.recursion_available = true;
+                    response.metadata.response_code = code;
+                    for query in &request.queries {
+                        response.add_query(query.clone());
+                    }
+                    let _ = socket.send_to(&response.to_vec().unwrap(), peer).await;
+                }
+            });
+            let url = format!("udp://127.0.0.1:{port}").parse().unwrap();
+            let (upstream, _) = HickoryUpstream::new(&url, &limits(1000)).unwrap();
+            upstream.query(&q()).await
+        }
+
+        assert_eq!(reply_of(ResponseCode::ServFail).await, Reply::Unresolved);
+        assert_eq!(reply_of(ResponseCode::Refused).await, Reply::Unreachable);
+        assert_eq!(
+            reply_of(ResponseCode::NXDomain).await,
+            Reply::Answered(Outcome::Negative { ttl: None })
+        );
+    }
+
+    #[tokio::test]
     async fn a_forwarder_not_ready_is_left_out() {
         struct NotReady;
         impl Upstream for NotReady {
             fn ready(&self) -> bool {
                 false
             }
-            fn query<'a>(&'a self, _: &'a Question) -> BoxFuture<'a, Outcome> {
+            fn query<'a>(&'a self, _: &'a Question) -> BoxFuture<'a, Reply> {
                 unreachable!("never asked")
             }
         }

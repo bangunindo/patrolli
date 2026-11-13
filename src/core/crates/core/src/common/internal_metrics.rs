@@ -442,7 +442,8 @@ pub struct DnsForwarder {
     /// its URL, with every default spelled out
     pub forwarder: String,
     pub requests: u64,
-    /// errors and timeouts; negative answers are successes
+    /// timeouts, connection errors and refusals; a negative answer or a
+    /// server failure is a reply
     pub failures: u64,
     /// cooldown periods entered, including re-arms after a failed probe
     pub cooldowns: u64,

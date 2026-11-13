@@ -5,6 +5,7 @@
 //! DNS responses as [`Outcome`]s.
 
 use hickory_resolver::net::{DnsError, NetError};
+use hickory_resolver::proto::op::ResponseCode;
 use hickory_resolver::proto::rr::rdata::SOA;
 use hickory_resolver::proto::rr::{Name, RData, Record, RecordType};
 use patrolli::cache::dns::{Answer, Outcome, Question};
@@ -67,6 +68,15 @@ pub(crate) fn from_net_error(error: &NetError) -> Option<Outcome> {
         (None, None) => None,
     };
     Some(Outcome::Negative { ttl })
+}
+
+/// Whether a stub resolver's error is the server answering "server failure":
+/// it tried and could not resolve the name.
+pub(crate) fn is_server_failure(error: &NetError) -> bool {
+    matches!(
+        error,
+        NetError::Dns(DnsError::ResponseCode(ResponseCode::ServFail))
+    )
 }
 
 /// Negative-cache TTL per RFC 2308: the lesser of the SOA record's TTL and
