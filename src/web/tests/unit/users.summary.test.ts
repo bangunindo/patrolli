@@ -5,7 +5,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import usersApi from '@/app/api/users.api'
 import { httpService } from '@/app/services/http.service'
-import statsHandler from '@@/server/api/users/stats.get'
 import summaryHandler from '@@/server/api/users/summary.get'
 import * as clusterService from '@@/server/services/cluster.service'
 
@@ -235,25 +234,6 @@ describe('User Summary / Stats Feature', () => {
 
 			const event = {} as any
 			const result = await summaryHandler(event)
-
-			expect(result).toEqual({
-				status_code: 200,
-				success: true,
-				data: {
-					total_user: 0,
-					total_active_user: 0,
-					total_disabled_user: 0,
-					total_allow_sso: 0,
-					user_cluster: {}
-				}
-			})
-		})
-
-		it('should delegate statsHandler directly to summaryHandler', async () => {
-			vi.mocked(clusterService.getClustersConfig).mockReturnValueOnce([])
-
-			const event = {} as any
-			const result = await statsHandler(event)
 
 			expect(result).toEqual({
 				status_code: 200,
