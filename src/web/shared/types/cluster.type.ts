@@ -37,6 +37,13 @@ export interface IClusterSelect extends ICluster {
 	value: string
 }
 
+export interface IFormattedClusterOption {
+	alias: string
+	name: string
+	label: string
+	value: string
+}
+
 export interface IClusterListResponse extends IBaseResponse {
 	data: IClusterSelect[]
 }
@@ -46,6 +53,21 @@ export interface IClusterNode extends ResponseClusterNodeOutput {}
 export interface IClusterNodeSelect extends ResponseClusterNodeOutput {
 	label?: string
 	value?: string
+}
+
+export interface IClusterClientItem {
+	key: string
+	name: string
+	url: string
+	clientPath: string
+	label: string
+	value: string
+}
+
+export interface IClustersResponse {
+	status_code: number
+	success: boolean
+	data: IClusterClientItem[]
 }
 
 export interface IClusterNodeListResponse extends IBaseResponse {

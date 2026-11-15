@@ -2,15 +2,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import type { IClusterListResponse } from '@@/shared/types/cluster.type'
+import type { IClusterListResponse, IFormattedClusterOption } from '@@/shared/types/cluster.type'
 import { httpService } from '@/app/services/http.service'
 
-export interface IFormattedClusterOption {
-	alias: string
-	name: string
-	label: string
-	value: string
-}
+export type { IFormattedClusterOption }
 
 export function formatClusterOptions(rawList: unknown): IFormattedClusterOption[] {
 	if (!Array.isArray(rawList)) return []

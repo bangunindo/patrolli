@@ -3,4 +3,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 export { createNitroWebSocketProxy } from './websocket.controller'
-export type { INitroWsSession } from './websocket.type'
+export type { INitroWsSession } from '@@/shared/types/websocket.type'

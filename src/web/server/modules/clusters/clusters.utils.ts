@@ -2,8 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import type { ICluster } from '@@/shared/types/cluster.type'
-import type { IClusterClientItem } from './clusters.type'
+import type { ICluster, IClusterClientItem } from '@@/shared/types/cluster.type'
 
 /**
  * Formats internal cluster configurations into client-consumable list items
