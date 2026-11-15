@@ -12,12 +12,21 @@ import destr from 'destr'
 import { toNodeListener } from 'h3'
 import { useNitroApp, useRuntimeConfig } from 'nitropack/runtime'
 // @ts-ignore
+import { getAppConfigFileContent } from '@@/server/services/cluster.service'
+// @ts-ignore
 import { loadSslConfig } from '@@/server/services/ssl.service'
 import {
 	setupGracefulShutdown,
 	startScheduleRunner,
 	trapUnhandledNodeErrors
 } from 'nitropack/runtime/internal'
+
+try {
+	getAppConfigFileContent()
+} catch (err: any) {
+	console.error('[Patrolli-FE] Startup aborted:', err?.message || err)
+	process.exit(1)
+}
 
 const ssl = loadSslConfig()
 const cert = ssl?.cert || process.env.NITRO_SSL_CERT
