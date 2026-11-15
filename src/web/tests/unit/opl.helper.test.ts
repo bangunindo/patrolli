@@ -6,10 +6,10 @@ import {
 	oplLanguageConfiguration,
 	oplMonarchTokensProvider,
 	registerOplLanguage
-} from '@/app/helpers/opl.language'
+} from '@/app/helpers/opl.helper'
 import { describe, expect, it, vi } from 'vitest'
 
-describe('opl.language', () => {
+describe('opl.helper', () => {
 	it('should register language, configuration, and completion provider on monaco instance', () => {
 		const registeredLanguages: any[] = []
 		const configurations: Record<string, any> = {}

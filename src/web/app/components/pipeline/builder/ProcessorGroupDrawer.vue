@@ -12,7 +12,7 @@ import {
 	usePipelineBuildStore
 } from '@/stores/pipeline.builder.store'
 import type { IGroupProcessorItem } from '@/stores/pipeline.builder.store'
-import { useProcessorStore } from '@/stores/processor.store'
+import { useProcessorStore } from '@/stores/processors.store'
 import AppInputText from '@/components/app/input/AppInputText.vue'
 import ModalProcessorForm from '@/components/configuration/processor/ModalForm.vue'
 

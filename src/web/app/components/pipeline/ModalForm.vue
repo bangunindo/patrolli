@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script setup lang="ts">
 import PipelineForm from '@/components/pipeline/Form.vue'
-import { usePipelineStore } from '@/stores/pipeline.store'
+import { usePipelineStore } from '@/stores/pipelines.store'
 
 const pipelineStore = usePipelineStore()
 </script>

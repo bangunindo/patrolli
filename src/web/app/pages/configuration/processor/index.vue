@@ -8,7 +8,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import AppFilterDropdown from '@/components/app/AppFilterDropdown.vue'
 import AppInputSelect from '@/components/app/input/AppInputSelect.vue'
 import ProcessorTable from '@/components/configuration/processor/Table.vue'
-import { useProcessorStore } from '@/stores/processor.store'
+import { useProcessorStore } from '@/stores/processors.store'
 import type { ProcessorType } from '@@/shared/types/processor.type'
 import { onMounted, reactive, watch } from 'vue'
 

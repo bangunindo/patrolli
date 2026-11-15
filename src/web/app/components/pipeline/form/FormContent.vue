@@ -10,7 +10,7 @@ import AppInputCluster from '@/components/app/input/AppInputCluster.vue'
 import AppInputText from '@/components/app/input/AppInputText.vue'
 import HostSelectorPopover from '@/components/pipeline/HostSelectorPopover.vue'
 import SinkSelectorPopover from '@/components/pipeline/SinkSelectorPopover.vue'
-import { usePipelineStore } from '@/stores/pipeline.store'
+import { usePipelineStore } from '@/stores/pipelines.store'
 import { FormMode } from '@@/shared/types/app.type'
 
 const pipelineStore = usePipelineStore()

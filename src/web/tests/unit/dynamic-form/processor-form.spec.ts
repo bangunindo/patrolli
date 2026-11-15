@@ -2,12 +2,12 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import '@@/shared/types/array.type'
+import '@/prototypes/array.prototype'
 import { describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ProcessorForm from '@/components/configuration/processor/Form.vue'
-import { useProcessorStore } from '@/stores/processor.store'
+import { useProcessorStore } from '@/stores/processors.store'
 import { FormMode } from '@@/shared/types/app.type'
 import { AutoFormAdapter } from '@/app/services/forms/auto-adapter'
 import { AddAttributes, CreateProcessorRequest } from '@@/shared/generated/patrolliAPI.schemas.type'
