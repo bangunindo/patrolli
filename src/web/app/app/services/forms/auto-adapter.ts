@@ -5,12 +5,13 @@
 import { toRaw } from 'vue'
 import { z } from 'zod'
 import {
+	getZodDef,
 	unwrapZodType,
 	extractLiteralValue,
 	extractObjectShape,
 	flattenUnionOptions
 } from './zod-introspector'
-import { pathToString, formatFieldLabel, getValueByPath } from './path-helper'
+import { pathToString, formatFieldLabel, getValueByPath, safeClone } from './path-helper'
 import { validateFormat, type ValidationContext } from './format-registry'
 import { isSensitiveSchema, isSensitiveSetObject } from './sensitive.utils'
 import type { FormValidationResult, UiHint } from '@@/shared/types/dynamic-form.type'
@@ -30,53 +31,57 @@ export function humanizeZodIssue(issue: z.ZodIssue, hints: Record<string, UiHint
 		hint.label || (typeof lastSegment === 'string' ? formatFieldLabel(lastSegment) : 'Field')
 
 	switch (issue.code) {
-		case 'invalid_string': {
-			if (issue.validation === 'uuid') {
+		case 'invalid_format': {
+			const fmt = (issue as any).format
+			if (fmt === 'uuid') {
 				return `${fieldLabel} must be a valid UUID`
 			}
-			if (issue.validation === 'email') {
+			if (fmt === 'email') {
 				return `${fieldLabel} must be a valid email address`
 			}
-			if (issue.validation === 'ip') {
+			if (fmt === 'ip' || fmt === 'ipv4' || fmt === 'ipv6') {
 				return `${fieldLabel} must be a valid IP address`
 			}
-			if (issue.validation === 'url') {
+			if (fmt === 'url') {
 				return `${fieldLabel} must be a valid URL`
 			}
-			if (issue.validation === 'regex') {
+			if (fmt === 'regex') {
 				return `${fieldLabel} format is invalid`
 			}
 			return `${fieldLabel} is invalid: ${issue.message}`
 		}
 
 		case 'invalid_type': {
-			if (issue.received === 'undefined' || issue.received === 'null') {
+			const raw = issue as any
+			if (raw.input === undefined || raw.input === null) {
 				return `${fieldLabel} is required`
 			}
 			return `${fieldLabel} must be of type ${issue.expected}`
 		}
 
 		case 'too_small': {
-			if (issue.type === 'string') {
+			const origin = issue.origin
+			if (origin === 'string') {
 				if (issue.minimum === 1) {
 					return `${fieldLabel} cannot be empty`
 				}
 				return `${fieldLabel} must be at least ${issue.minimum} characters`
 			}
-			if (issue.type === 'number') {
+			if (origin === 'number' || origin === 'int') {
 				return `${fieldLabel} must be greater than or equal to ${issue.minimum}`
 			}
-			if (issue.type === 'array') {
+			if (origin === 'array') {
 				return `${fieldLabel} cannot be empty`
 			}
 			return `${fieldLabel} is too small`
 		}
 
 		case 'too_big': {
-			if (issue.type === 'string') {
+			const origin = issue.origin
+			if (origin === 'string') {
 				return `${fieldLabel} must be at most ${issue.maximum} characters`
 			}
-			if (issue.type === 'number') {
+			if (origin === 'number' || origin === 'int') {
 				return `${fieldLabel} must be less than or equal to ${issue.maximum}`
 			}
 			return `${fieldLabel} is too large`
@@ -118,29 +123,24 @@ function extractDiscriminatorValue(
  * handling internal-tagged, external-tagged, and nullable wrapper unions recursively.
  */
 function findMatchingUnionError(
-	unionErrors: z.ZodError[],
-	issuePath: (string | number)[],
+	unionErrors: z.ZodIssue[][],
+	_issuePath: PropertyKey[],
 	unionData: any,
 	preferredKey?: string
-): z.ZodError | undefined {
+): z.ZodIssue[] | undefined {
 	if (!unionData || typeof unionData !== 'object') {
 		return undefined
 	}
 
 	const disc = extractDiscriminatorValue(unionData, preferredKey)
-	const prefixLen = issuePath.length
 
-	// 1. Internal tagged: match based on discriminator key & value at this error level
+	// 1. Internal tagged: match based on discriminator key & value (paths in Zod v4 union errors are relative to the union)
 	if (disc && disc.val !== undefined) {
-		const matched = unionErrors.find((err) => {
-			const hasDiscMismatch = err.issues.some((sub) => {
-				const isExactDiscKey =
-					sub.path.length === prefixLen + 1 && sub.path[prefixLen] === disc.key
+		const matched = unionErrors.find((branchIssues) => {
+			const hasDiscMismatch = branchIssues.some((sub) => {
+				const isExactDiscKey = sub.path.length === 1 && sub.path[0] === disc.key
 				return (
-					isExactDiscKey &&
-					(sub.code === 'invalid_type' ||
-						sub.code === 'invalid_literal' ||
-						sub.code === 'invalid_enum_value')
+					isExactDiscKey && (sub.code === 'invalid_type' || sub.code === 'invalid_value')
 				)
 			})
 			return !hasDiscMismatch
@@ -149,45 +149,40 @@ function findMatchingUnionError(
 	}
 
 	// 2. Unnest wrapper unions (e.g. z.union([z.null(), ActualUnion]))
-	// Only unnest if issue occurs exactly at the issuePath level
-	const flatErrors: z.ZodError[] = []
-	for (const err of unionErrors) {
+	// Only unnest if issue occurs at the union root level
+	const flatErrors: z.ZodIssue[][] = []
+	for (const branchIssues of unionErrors) {
 		const isNullMismatch =
-			err.issues.length === 1 &&
-			err.issues[0].code === 'invalid_type' &&
-			(err.issues[0].expected === 'null' || err.issues[0].expected === 'undefined')
+			branchIssues.length === 1 &&
+			branchIssues[0].code === 'invalid_type' &&
+			(branchIssues[0].expected === 'null' || branchIssues[0].expected === 'undefined')
 		if (isNullMismatch) {
 			continue
 		}
 
 		if (
-			err.issues.length === 1 &&
-			err.issues[0].code === 'invalid_union' &&
-			Array.isArray((err.issues[0] as any).unionErrors) &&
-			err.issues[0].path.length === prefixLen
+			branchIssues.length === 1 &&
+			branchIssues[0].code === 'invalid_union' &&
+			Array.isArray((branchIssues[0] as any).errors) &&
+			branchIssues[0].path.length === 0
 		) {
-			const nestedErrors: z.ZodError[] = (err.issues[0] as any).unionErrors
-			const matchedNested = findMatchingUnionError(
-				nestedErrors,
-				issuePath,
-				unionData,
-				preferredKey
-			)
+			const nestedErrors: z.ZodIssue[][] = (branchIssues[0] as any).errors
+			const matchedNested = findMatchingUnionError(nestedErrors, [], unionData, preferredKey)
 			if (matchedNested) {
 				return matchedNested
 			}
 			flatErrors.push(...nestedErrors)
 		} else {
-			flatErrors.push(err)
+			flatErrors.push(branchIssues)
 		}
 	}
 
 	const candidates = flatErrors.length > 0 ? flatErrors : unionErrors
 
-	// 3. External tagged: branch matches if there is an issue in the segment right after issuePath that matches key in unionData
-	const externalMatched = candidates.find((err) => {
-		return err.issues.some((sub) => {
-			const variantKey = sub.path[prefixLen]
+	// 3. External tagged: branch matches if there is an issue in the first segment that matches key in unionData
+	const externalMatched = candidates.find((branchIssues) => {
+		return branchIssues.some((sub) => {
+			const variantKey = sub.path[0]
 			return typeof variantKey === 'string' && variantKey in unionData
 		})
 	})
@@ -197,42 +192,40 @@ function findMatchingUnionError(
 }
 
 /**
- * Extracts ZodIssues from unionErrors recursively based on the active branch
+ * Extracts ZodIssues from union errors recursively based on the active branch
  */
 function flattenZodIssues(
 	issues: z.ZodIssue[],
 	rootData: any,
-	hints: Record<string, UiHint> = {}
+	hints: Record<string, UiHint> = {},
+	basePath: (string | number)[] = []
 ): ExtractedIssue[] {
 	const result: ExtractedIssue[] = []
 
 	for (const issue of issues) {
-		if (issue.code === 'invalid_union' && Array.isArray((issue as any).unionErrors)) {
-			const unionErrors: z.ZodError[] = (issue as any).unionErrors
-			const pathKey = issue.path.join('.')
+		const absPath = [...basePath, ...(issue.path as (string | number)[])]
+		if (issue.code === 'invalid_union' && Array.isArray((issue as any).errors)) {
+			const unionErrors: z.ZodIssue[][] = (issue as any).errors
+			const pathKey = absPath.join('.')
 			const parentHint = hints[pathKey] || {}
-			const unionData = getValueByPath(rootData, issue.path as string[])
+			const unionData = getValueByPath(rootData, absPath as string[])
 
-			const chosenError =
+			const chosenIssues =
 				findMatchingUnionError(
 					unionErrors,
-					issue.path,
+					absPath,
 					unionData,
 					parentHint.discriminatorField
 				) ||
 				(unionErrors.length > 0
-					? [...unionErrors].sort((a, b) => a.issues.length - b.issues.length)[0]
+					? [...unionErrors].sort((a, b) => a.length - b.length)[0]
 					: undefined)
 
-			if (chosenError && chosenError.issues.length > 0) {
-				const subFlattened = flattenZodIssues(chosenError.issues, rootData, hints)
+			if (chosenIssues && chosenIssues.length > 0) {
+				const subFlattened = flattenZodIssues(chosenIssues, rootData, hints, absPath)
 				for (const sub of subFlattened) {
-					const isPrefixed =
-						issue.path.length > 0 &&
-						issue.path.every((seg, idx) => String(sub.path[idx]) === String(seg))
-					const fullPath = isPrefixed ? sub.path : [...issue.path, ...sub.path]
 					result.push({
-						path: fullPath,
+						path: sub.path,
 						message: sub.message,
 						issue: sub.issue
 					})
@@ -242,8 +235,8 @@ function flattenZodIssues(
 		}
 
 		result.push({
-			path: issue.path,
-			message: humanizeZodIssue(issue, hints),
+			path: absPath,
+			message: humanizeZodIssue({ ...issue, path: absPath }, hints),
 			issue
 		})
 	}
@@ -303,19 +296,6 @@ function generatePathAliases(root: any, path: (string | number)[]): string[] {
 		}
 	}
 	return aliases
-}
-
-function safeClone<T>(obj: T): T {
-	if (!obj || typeof obj !== 'object') return obj
-	try {
-		return structuredClone(toRaw(obj))
-	} catch {
-		try {
-			return JSON.parse(JSON.stringify(obj))
-		} catch {
-			return { ...obj }
-		}
-	}
 }
 
 function registerIssueWithAliases(
@@ -505,7 +485,7 @@ export class AutoFormAdapter {
 	 * Validates a specific single field, supporting absolute paths or nested field identifiers
 	 */
 	static validateField(
-		schema: z.ZodTypeAny,
+		schema: z.ZodType,
 		fieldPathKey: string,
 		draft: Record<string, any>,
 		hints: Record<string, UiHint> = {}
@@ -517,7 +497,7 @@ export class AutoFormAdapter {
 		// do not match nested fields sharing the same name (e.g. root worker_count vs listener.worker_count)
 		if (!fieldPathKey.includes('.')) {
 			const unwrapped = unwrapZodType(schema)
-			if (unwrapped.typeName === 'ZodObject') {
+			if (unwrapped.typeName === 'object') {
 				const shape = extractObjectShape(unwrapped.innerType)
 				if (fieldPathKey in shape) {
 					return res.issues[fieldPathKey] || null
@@ -533,7 +513,7 @@ export class AutoFormAdapter {
 	 * Returns matching issues within that scope.
 	 */
 	static validateScope(
-		schema: z.ZodTypeAny,
+		schema: z.ZodType,
 		scopePath: string | string[],
 		draft: Record<string, any>,
 		hints: Record<string, UiHint> = {}
@@ -571,7 +551,7 @@ export class AutoFormAdapter {
 	 * Prepares initial draft state from backend entity, filling default values where absent
 	 */
 	static toDraft(
-		schema: z.ZodTypeAny,
+		schema: z.ZodType,
 		entity?: Record<string, any> | null,
 		hints: Record<string, UiHint> = {},
 		currentPath: string[] = [],
@@ -588,13 +568,13 @@ export class AutoFormAdapter {
 		const root = rootDraft || draft
 		const unwrapped = unwrapZodType(schema)
 
-		if (unwrapped.typeName === 'ZodObject' || unwrapped.typeName === 'ZodIntersection') {
+		if (unwrapped.typeName === 'object' || unwrapped.typeName === 'intersection') {
 			const shape = extractObjectShape(unwrapped.innerType)
 
 			for (const [key, fieldSchema] of Object.entries(shape)) {
 				const fieldPath = [...currentPath, key]
 				const fieldPathKey = pathToString(fieldPath)
-				const fieldUnwrapped = unwrapZodType(fieldSchema as z.ZodTypeAny)
+				const fieldUnwrapped = unwrapZodType(fieldSchema as z.ZodType)
 
 				let fieldHint: UiHint | undefined
 				// Check specific discriminator branch alias (e.g. config.open_telemetry.listener.address)
@@ -645,36 +625,39 @@ export class AutoFormAdapter {
 						draft[key] = structuredClone(fieldHint.defaultValue)
 					} else if (fieldUnwrapped.hasDefault) {
 						draft[key] = fieldUnwrapped.defaultValue
-					} else if (fieldUnwrapped.typeName === 'ZodLiteral') {
-						draft[key] = (fieldUnwrapped.innerType as any)._def.value
-					} else if (fieldUnwrapped.typeName === 'ZodEnum') {
-						const enumValues = (fieldUnwrapped.innerType as any)._def.values || []
+					} else if (fieldUnwrapped.typeName === 'literal') {
+						const litDef = getZodDef(fieldUnwrapped.innerType)
+						draft[key] = litDef?.values?.[0] ?? litDef?.value
+					} else if (fieldUnwrapped.typeName === 'enum') {
+						const enumDef = getZodDef(fieldUnwrapped.innerType)
+						const enumValues: any[] = Array.isArray(
+							(fieldUnwrapped.innerType as any).options
+						)
+							? (fieldUnwrapped.innerType as any).options
+							: Object.values(enumDef?.entries || {})
 						if (enumValues.length > 0) {
 							draft[key] = enumValues[0]
 						}
-					} else if (fieldUnwrapped.typeName === 'ZodBoolean') {
+					} else if (fieldUnwrapped.typeName === 'boolean') {
 						if (!fieldUnwrapped.isOptional && !fieldUnwrapped.isNullable) {
 							draft[key] = false
 						}
-					} else if (isSensitiveSchema(fieldSchema as z.ZodTypeAny)) {
+					} else if (isSensitiveSchema(fieldSchema as z.ZodType)) {
 						if (!fieldUnwrapped.isOptional && !fieldUnwrapped.isNullable) {
 							draft[key] = ''
 						}
-					} else if (
-						fieldUnwrapped.typeName === 'ZodUnion' ||
-						fieldUnwrapped.typeName === 'ZodDiscriminatedUnion'
-					) {
+					} else if (fieldUnwrapped.typeName === 'union') {
 						// Initialize matching branch: check if discriminatorDefault exists in hints
 						const rawOptions = flattenUnionOptions(fieldUnwrapped.innerType)
 						const hasNull = rawOptions.some(
 							(opt) =>
-								unwrapZodType(opt).typeName === 'ZodNull' ||
-								unwrapZodType(opt).typeName === 'ZodUndefined'
+								unwrapZodType(opt).typeName === 'null' ||
+								unwrapZodType(opt).typeName === 'undefined'
 						)
 						const nonNullOptions = rawOptions.filter(
 							(opt) =>
-								unwrapZodType(opt).typeName !== 'ZodNull' &&
-								unwrapZodType(opt).typeName !== 'ZodUndefined'
+								unwrapZodType(opt).typeName !== 'null' &&
+								unwrapZodType(opt).typeName !== 'undefined'
 						)
 
 						if (hasNull || fieldUnwrapped.isOptional || fieldUnwrapped.isNullable) {
@@ -722,11 +705,11 @@ export class AutoFormAdapter {
 							)
 						}
 					} else if (
-						fieldUnwrapped.typeName === 'ZodObject' ||
-						fieldUnwrapped.typeName === 'ZodIntersection'
+						fieldUnwrapped.typeName === 'object' ||
+						fieldUnwrapped.typeName === 'intersection'
 					) {
 						draft[key] = this.toDraft(
-							fieldSchema as z.ZodTypeAny,
+							fieldSchema as z.ZodType,
 							null,
 							hints,
 							fieldPath,
@@ -739,14 +722,11 @@ export class AutoFormAdapter {
 					!Array.isArray(draft[key])
 				) {
 					if (
-						isSensitiveSchema(fieldSchema as z.ZodTypeAny) &&
+						isSensitiveSchema(fieldSchema as z.ZodType) &&
 						isSensitiveSetObject(draft[key])
 					) {
 						draft[key] = { set: draft[key].set }
-					} else if (
-						fieldUnwrapped.typeName === 'ZodUnion' ||
-						fieldUnwrapped.typeName === 'ZodDiscriminatedUnion'
-					) {
+					} else if (fieldUnwrapped.typeName === 'union') {
 						// Find option matching current discriminator
 						const rawOptions = flattenUnionOptions(fieldUnwrapped.innerType)
 						const discKey =
@@ -762,7 +742,7 @@ export class AutoFormAdapter {
 												? 'strategy'
 												: undefined
 						if (discKey && draft[key][discKey]) {
-							const matchedOpt = rawOptions.find((opt: z.ZodTypeAny) => {
+							const matchedOpt = rawOptions.find((opt: z.ZodType) => {
 								const optShape = extractObjectShape(opt)
 								const discProp = optShape[discKey]
 								if (discProp) {
@@ -782,7 +762,7 @@ export class AutoFormAdapter {
 							}
 						} else {
 							// Check externally-tagged union:
-							const matchedOpt = rawOptions.find((opt: z.ZodTypeAny) => {
+							const matchedOpt = rawOptions.find((opt: z.ZodType) => {
 								const optShape = extractObjectShape(opt)
 								const optKeys = Object.keys(optShape)
 								return optKeys.length === 1 && optKeys[0] in draft[key]
@@ -798,17 +778,17 @@ export class AutoFormAdapter {
 							}
 						}
 					} else if (
-						fieldUnwrapped.typeName === 'ZodObject' ||
-						fieldUnwrapped.typeName === 'ZodIntersection'
+						fieldUnwrapped.typeName === 'object' ||
+						fieldUnwrapped.typeName === 'intersection'
 					) {
 						draft[key] = this.toDraft(
-							fieldSchema as z.ZodTypeAny,
+							fieldSchema as z.ZodType,
 							draft[key],
 							hints,
 							fieldPath,
 							root
 						)
-					} else if (fieldUnwrapped.typeName === 'ZodRecord') {
+					} else if (fieldUnwrapped.typeName === 'record') {
 						if (
 							!draft[key] ||
 							typeof draft[key] !== 'object' ||
@@ -821,10 +801,10 @@ export class AutoFormAdapter {
 			}
 		}
 
-		if (unwrapped.typeName === 'ZodUnion' || unwrapped.typeName === 'ZodDiscriminatedUnion') {
+		if (unwrapped.typeName === 'union') {
 			const rawOptions = flattenUnionOptions(unwrapped.innerType)
 			if (rawOptions.length > 0) {
-				return this.toDraft(rawOptions[0] as z.ZodTypeAny, entity, hints, currentPath, root)
+				return this.toDraft(rawOptions[0] as z.ZodType, entity, hints, currentPath, root)
 			}
 		}
 
@@ -836,7 +816,7 @@ export class AutoFormAdapter {
 	 */
 	static deepSanitize(
 		val: any,
-		schema: z.ZodTypeAny,
+		schema: z.ZodType,
 		currentPath: string[] = [],
 		hints: Record<string, UiHint> = {},
 		rootDraft?: any
@@ -890,7 +870,7 @@ export class AutoFormAdapter {
 			const unwrappedVal = unwrapZodType(schema)
 			if (
 				val === undefined &&
-				unwrappedVal.typeName === 'ZodBoolean' &&
+				unwrappedVal.typeName === 'boolean' &&
 				!unwrappedVal.isOptional &&
 				!unwrappedVal.isNullable
 			) {
@@ -909,14 +889,18 @@ export class AutoFormAdapter {
 		}
 
 		// 2. Numeric coercion
-		if (unwrapped.typeName === 'ZodNumber' && typeof val === 'string' && val.trim() !== '') {
+		if (
+			(unwrapped.typeName === 'number' || unwrapped.typeName === 'int') &&
+			typeof val === 'string' &&
+			val.trim() !== ''
+		) {
 			const num = Number(val)
 			return isNaN(num) ? val : num
 		}
 
 		// 3. Recurse into Objects & Intersections
 		if (
-			(unwrapped.typeName === 'ZodObject' || unwrapped.typeName === 'ZodIntersection') &&
+			(unwrapped.typeName === 'object' || unwrapped.typeName === 'intersection') &&
 			typeof val === 'object' &&
 			val !== null &&
 			!Array.isArray(val)
@@ -925,21 +909,21 @@ export class AutoFormAdapter {
 			const cleaned: Record<string, any> = {}
 
 			for (const [key, propSchema] of Object.entries(shape)) {
-				const propUnwrapped = unwrapZodType(propSchema as z.ZodTypeAny)
+				const propUnwrapped = unwrapZodType(propSchema as z.ZodType)
 				if (key in val && val[key] !== undefined) {
 					cleaned[key] = this.deepSanitize(
 						val[key],
-						propSchema as z.ZodTypeAny,
+						propSchema as z.ZodType,
 						[...currentPath, key],
 						hints,
 						root
 					)
 				} else if (propUnwrapped.hasDefault) {
 					cleaned[key] = propUnwrapped.defaultValue
-				} else if (propUnwrapped.typeName === 'ZodArray') {
+				} else if (propUnwrapped.typeName === 'array') {
 					cleaned[key] = []
 				} else if (
-					propUnwrapped.typeName === 'ZodBoolean' &&
+					propUnwrapped.typeName === 'boolean' &&
 					!propUnwrapped.isOptional &&
 					!propUnwrapped.isNullable
 				) {
@@ -971,7 +955,7 @@ export class AutoFormAdapter {
 
 		// 4. Recurse into Discriminated Unions
 		if (
-			(unwrapped.typeName === 'ZodUnion' || unwrapped.typeName === 'ZodDiscriminatedUnion') &&
+			unwrapped.typeName === 'union' &&
 			typeof val === 'object' &&
 			val !== null &&
 			!Array.isArray(val)
@@ -979,8 +963,8 @@ export class AutoFormAdapter {
 			const rawOptions = flattenUnionOptions(unwrapped.innerType)
 			const hasNull = rawOptions.some(
 				(opt) =>
-					unwrapZodType(opt).typeName === 'ZodNull' ||
-					unwrapZodType(opt).typeName === 'ZodUndefined'
+					unwrapZodType(opt).typeName === 'null' ||
+					unwrapZodType(opt).typeName === 'undefined'
 			)
 			if (
 				Object.keys(val).length === 0 &&
@@ -1003,7 +987,7 @@ export class AutoFormAdapter {
 									? 'strategy'
 									: undefined
 			if (discKey && val[discKey]) {
-				const matchingOpt = rawOptions.find((opt: z.ZodTypeAny) => {
+				const matchingOpt = rawOptions.find((opt: z.ZodType) => {
 					const optShape = extractObjectShape(opt)
 					const discProp = optShape[discKey]
 					if (discProp) {
@@ -1020,8 +1004,8 @@ export class AutoFormAdapter {
 				// Check externally-tagged union or single non-null option (like nullable wrapper)
 				const nonNullOptions = rawOptions.filter(
 					(opt) =>
-						unwrapZodType(opt).typeName !== 'ZodNull' &&
-						unwrapZodType(opt).typeName !== 'ZodUndefined'
+						unwrapZodType(opt).typeName !== 'null' &&
+						unwrapZodType(opt).typeName !== 'undefined'
 				)
 				if (nonNullOptions.length === 1) {
 					const sanitizedInner = this.deepSanitize(
@@ -1037,7 +1021,7 @@ export class AutoFormAdapter {
 					return sanitizedInner
 				}
 
-				const matchingOpt = rawOptions.find((opt: z.ZodTypeAny) => {
+				const matchingOpt = rawOptions.find((opt: z.ZodType) => {
 					const optShape = extractObjectShape(opt)
 					const optKeys = Object.keys(optShape)
 					return optKeys.length === 1 && optKeys[0] in val
@@ -1049,8 +1033,9 @@ export class AutoFormAdapter {
 		}
 
 		// 5. Recurse into Arrays
-		if (unwrapped.typeName === 'ZodArray' && Array.isArray(val)) {
-			const elemSchema = (unwrapped.innerType as z.ZodArray<any>)._def.type
+		if (unwrapped.typeName === 'array' && Array.isArray(val)) {
+			const elemDef = getZodDef(unwrapped.innerType)
+			const elemSchema = elemDef?.element ?? elemDef?.type
 			return val
 				.map((item, idx) =>
 					this.deepSanitize(item, elemSchema, [...currentPath, String(idx)], hints, root)
@@ -1060,13 +1045,13 @@ export class AutoFormAdapter {
 
 		// 6. Recurse into Records
 		if (
-			unwrapped.typeName === 'ZodRecord' &&
+			unwrapped.typeName === 'record' &&
 			typeof val === 'object' &&
 			val !== null &&
 			!Array.isArray(val)
 		) {
 			const valueSchema =
-				(unwrapped.innerType as any)._def?.valueType ||
+				getZodDef(unwrapped.innerType)?.valueType ||
 				(unwrapped.innerType as any).valueSchema
 			const cleaned: Record<string, any> = {}
 			for (const [k, v] of Object.entries(val)) {

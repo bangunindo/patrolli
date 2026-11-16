@@ -2,13 +2,14 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import { toRaw } from 'vue'
 import { z } from 'zod'
 import type { FieldDescriptor, FieldPath, UiHint } from '@@/shared/types/dynamic-form.type'
 import { formatFieldLabel, pathToString } from './path-helper'
 import { isSensitiveSchema } from './sensitive.utils'
 
 export interface UnwrappedZodType {
-	innerType: z.ZodTypeAny
+	innerType: z.ZodType
 	typeName: string
 	isOptional: boolean
 	isNullable: boolean
@@ -18,14 +19,22 @@ export interface UnwrappedZodType {
 }
 
 /**
- * Recursively unwraps Zod wrappers (Optional, Nullable, Default, Effects)
+ * Safely reads the internal definition object from a Zod v4 schema/check.
+ */
+export function getZodDef(schema: any): any {
+	const raw = toRaw(schema)
+	return raw?._zod?.def ?? raw?.def
+}
+
+/**
+ * Recursively unwraps Zod wrappers (Optional, Nullable, Default, Pipe/Transform)
  * to extract the inner schema and constraint metadata.
  */
-export function unwrapZodType(schema: z.ZodTypeAny | undefined | null): UnwrappedZodType {
+export function unwrapZodType(schema: z.ZodType | undefined | null): UnwrappedZodType {
 	if (!schema) {
 		return {
 			innerType: undefined as any,
-			typeName: 'Unknown',
+			typeName: 'unknown',
 			isOptional: true,
 			isNullable: true,
 			hasDefault: false,
@@ -34,38 +43,42 @@ export function unwrapZodType(schema: z.ZodTypeAny | undefined | null): Unwrappe
 		}
 	}
 
-	let current: z.ZodTypeAny = schema
+	let current: z.ZodType = toRaw(schema)
 	let isOptional = false
 	let isNullable = false
 	let hasDefault = false
 	let defaultValue: any = undefined
-	let description: string | undefined = schema.description
+	let description: string | undefined = current.description
 
 	while (current) {
-		const typeName = current._def?.typeName
+		current = toRaw(current)
+		const def = getZodDef(current)
+		const typeName = def?.type
 		description = current.description || description
 
-		if (typeName === 'ZodOptional') {
+		if (typeName === 'optional') {
 			isOptional = true
-			current = (current as z.ZodOptional<any>)._def.innerType
-		} else if (typeName === 'ZodNullable') {
+			current = def.innerType
+		} else if (typeName === 'nullable') {
 			isNullable = true
-			current = (current as z.ZodNullable<any>)._def.innerType
-		} else if (typeName === 'ZodDefault') {
+			current = def.innerType
+		} else if (typeName === 'default' || typeName === 'prefault') {
 			hasDefault = true
 			try {
-				defaultValue = (current as z.ZodDefault<any>)._def.defaultValue()
+				const dv = def.defaultValue
+				defaultValue = typeof dv === 'function' ? dv() : dv
 			} catch {
 				defaultValue = undefined
 			}
-			current = (current as z.ZodDefault<any>)._def.innerType
-		} else if (typeName === 'ZodEffects') {
-			current = (current as z.ZodEffects<any>)._def.schema
-		} else if (typeName === 'ZodLazy') {
-			// Recursive schema: stop unwrapping to prevent infinite recursion
+			current = def.innerType
+		} else if (typeName === 'catch' || typeName === 'readonly') {
+			current = def.innerType
+		} else if (typeName === 'pipe') {
+			current = def.in
+		} else if (typeName === 'lazy') {
 			return {
 				innerType: current,
-				typeName: 'ZodLazy',
+				typeName: 'lazy',
 				isOptional: true,
 				isNullable: true,
 				hasDefault: false,
@@ -79,7 +92,7 @@ export function unwrapZodType(schema: z.ZodTypeAny | undefined | null): Unwrappe
 
 	return {
 		innerType: current,
-		typeName: current?._def?.typeName || 'Unknown',
+		typeName: getZodDef(current)?.type || 'unknown',
 		isOptional,
 		isNullable,
 		hasDefault,
@@ -91,13 +104,15 @@ export function unwrapZodType(schema: z.ZodTypeAny | undefined | null): Unwrappe
 /**
  * Extracts the literal value from a ZodLiteral or ZodEnum
  */
-export function extractLiteralValue(schema: z.ZodTypeAny): string | undefined {
+export function extractLiteralValue(schema: z.ZodType): string | undefined {
 	const unwrapped = unwrapZodType(schema)
-	if (unwrapped.typeName === 'ZodLiteral') {
-		return (unwrapped.innerType as z.ZodLiteral<any>)._def.value
+	const def = getZodDef(unwrapped.innerType)
+	if (unwrapped.typeName === 'literal') {
+		return def?.values?.[0] ?? def?.value
 	}
-	if (unwrapped.typeName === 'ZodEnum') {
-		return (unwrapped.innerType as z.ZodEnum<any>)._def.values[0]
+	if (unwrapped.typeName === 'enum') {
+		const opts = (unwrapped.innerType as any).options ?? Object.values(def?.entries || {})
+		return opts[0]
 	}
 	return undefined
 }
@@ -105,16 +120,17 @@ export function extractLiteralValue(schema: z.ZodTypeAny): string | undefined {
 /**
  * Extracts object shape from ZodObject or ZodIntersection
  */
-export function extractObjectShape(schema: z.ZodTypeAny): Record<string, z.ZodTypeAny> {
+export function extractObjectShape(schema: z.ZodType): Record<string, z.ZodType> {
 	const unwrapped = unwrapZodType(schema)
-	if (unwrapped.typeName === 'ZodObject') {
+	if (unwrapped.typeName === 'object') {
 		const obj = unwrapped.innerType as z.ZodObject<any>
-		return typeof obj._def.shape === 'function' ? obj._def.shape() : obj.shape
+		const def = getZodDef(obj)
+		return obj.shape ?? (typeof def?.shape === 'function' ? def.shape() : def?.shape) ?? {}
 	}
-	if (unwrapped.typeName === 'ZodIntersection') {
-		const inter = unwrapped.innerType as z.ZodIntersection<any, any>
-		const leftShape = extractObjectShape(inter._def.left)
-		const rightShape = extractObjectShape(inter._def.right)
+	if (unwrapped.typeName === 'intersection') {
+		const def = getZodDef(unwrapped.innerType)
+		const leftShape = extractObjectShape(def.left)
+		const rightShape = extractObjectShape(def.right)
 		return { ...leftShape, ...rightShape }
 	}
 	return {}
@@ -123,10 +139,10 @@ export function extractObjectShape(schema: z.ZodTypeAny): Record<string, z.ZodTy
 /**
  * Checks if a Zod schema is an AttributeFilter ({ and: [...] } | { or: [...] } | { match: ... })
  */
-export function isAttributeFilterSchema(schema: z.ZodTypeAny): boolean {
+export function isAttributeFilterSchema(schema: z.ZodType): boolean {
 	const unwrapped = unwrapZodType(schema)
-	if (unwrapped.typeName !== 'ZodUnion') return false
-	const options = (unwrapped.innerType as any)._def?.options || []
+	if (unwrapped.typeName !== 'union') return false
+	const options = getZodDef(unwrapped.innerType)?.options || []
 	if (options.length < 3) return false
 
 	let hasAnd = false
@@ -135,7 +151,7 @@ export function isAttributeFilterSchema(schema: z.ZodTypeAny): boolean {
 
 	for (const opt of options) {
 		const optUnwrapped = unwrapZodType(opt)
-		if (optUnwrapped.typeName === 'ZodObject') {
+		if (optUnwrapped.typeName === 'object') {
 			const shape = extractObjectShape(optUnwrapped.innerType)
 			if ('and' in shape) hasAnd = true
 			if ('or' in shape) hasOr = true
@@ -146,14 +162,14 @@ export function isAttributeFilterSchema(schema: z.ZodTypeAny): boolean {
 	return hasAnd && hasOr && hasMatch
 }
 
-export function flattenUnionOptions(schema: z.ZodTypeAny): z.ZodTypeAny[] {
+export function flattenUnionOptions(schema: z.ZodType): z.ZodType[] {
 	const unwrapped = unwrapZodType(schema)
 	const rawOptions =
-		(unwrapped.innerType as any)._def?.options || (unwrapped.innerType as any).options || []
-	const result: z.ZodTypeAny[] = []
+		getZodDef(unwrapped.innerType)?.options || (unwrapped.innerType as any).options || []
+	const result: z.ZodType[] = []
 	for (const opt of rawOptions) {
 		const optUnwrapped = unwrapZodType(opt)
-		if (optUnwrapped.typeName === 'ZodUnion') {
+		if (optUnwrapped.typeName === 'union') {
 			result.push(...flattenUnionOptions(optUnwrapped.innerType))
 		} else {
 			result.push(opt)
@@ -187,7 +203,7 @@ function sortSelectOptions(
  * into discriminator options and branch descriptors.
  */
 function resolveUnion(
-	unionSchema: z.ZodTypeAny,
+	unionSchema: z.ZodType,
 	basePath: FieldPath,
 	hints: Record<string, UiHint>,
 	isNullableUnion = false
@@ -200,9 +216,8 @@ function resolveUnion(
 	const rawOptions = flattenUnionOptions(unionSchema)
 	const parentHint = hints[pathToString(basePath)] || {}
 	const nonNullOptions = rawOptions.filter(
-		(opt: z.ZodTypeAny) =>
-			unwrapZodType(opt).typeName !== 'ZodNull' &&
-			unwrapZodType(opt).typeName !== 'ZodUndefined'
+		(opt: z.ZodType) =>
+			unwrapZodType(opt).typeName !== 'null' && unwrapZodType(opt).typeName !== 'undefined'
 	)
 	const hasNull = rawOptions.length > nonNullOptions.length || isNullableUnion
 
@@ -220,12 +235,9 @@ function resolveUnion(
 	for (const cand of candidateDiscriminators) {
 		const allMatch =
 			nonNullOptions.length > 0 &&
-			nonNullOptions.every((opt: z.ZodTypeAny) => {
+			nonNullOptions.every((opt: z.ZodType) => {
 				const unwrapped = unwrapZodType(opt)
-				if (
-					unwrapped.typeName === 'ZodObject' ||
-					unwrapped.typeName === 'ZodIntersection'
-				) {
+				if (unwrapped.typeName === 'object' || unwrapped.typeName === 'intersection') {
 					const shape = extractObjectShape(unwrapped.innerType)
 					return cand in shape && extractLiteralValue(shape[cand]) !== undefined
 				}
@@ -244,7 +256,7 @@ function resolveUnion(
 
 		for (const optSchema of nonNullOptions) {
 			const unwrapped = unwrapZodType(optSchema)
-			if (unwrapped.typeName === 'ZodObject' || unwrapped.typeName === 'ZodIntersection') {
+			if (unwrapped.typeName === 'object' || unwrapped.typeName === 'intersection') {
 				const shape = extractObjectShape(unwrapped.innerType)
 				const discVal = extractLiteralValue(shape[discriminator])
 
@@ -317,13 +329,40 @@ function resolveUnion(
 		}
 	}
 
-	// 2. Check if this is an externally-tagged union:
+	// 2. Nullable single-object union (e.g. z.union([z.null(), z.object(...)]) for optional sections like auth/privacy/tls/v2c)
+	if (hasNull && nonNullOptions.length === 1) {
+		const singleUnwrapped = unwrapZodType(nonNullOptions[0])
+		if (singleUnwrapped.typeName === 'object' || singleUnwrapped.typeName === 'intersection') {
+			const objShape = extractObjectShape(singleUnwrapped.innerType)
+			const objFields = Object.entries(objShape).map(([k, v]) =>
+				introspectField(k, v, basePath, hints)
+			)
+			objFields.sort((a, b) => (a.hints?.order ?? 9999) - (b.hints?.order ?? 9999))
+			return {
+				discriminator: '__enabled__',
+				tagMode: 'internal',
+				options: [
+					{ label: 'None', value: 'none' },
+					{
+						label: formatFieldLabel(basePath[basePath.length - 1] || 'Enabled'),
+						value: 'enabled'
+					}
+				],
+				branches: {
+					none: [],
+					enabled: objFields
+				}
+			}
+		}
+	}
+
+	// 3. Check if this is an externally-tagged union:
 	// Each branch is a ZodObject with exactly 1 property (variant name)
 	const isExternalTagged =
 		nonNullOptions.length > 0 &&
-		nonNullOptions.every((opt: z.ZodTypeAny) => {
+		nonNullOptions.every((opt: z.ZodType) => {
 			const unwrapped = unwrapZodType(opt)
-			if (unwrapped.typeName === 'ZodObject' || unwrapped.typeName === 'ZodIntersection') {
+			if (unwrapped.typeName === 'object' || unwrapped.typeName === 'intersection') {
 				const shape = extractObjectShape(unwrapped.innerType)
 				return Object.keys(shape).length === 1
 			}
@@ -398,7 +437,7 @@ function resolveUnion(
  */
 export function introspectField(
 	key: string,
-	rawSchema: z.ZodTypeAny,
+	rawSchema: z.ZodType,
 	basePath: FieldPath = [],
 	hints: Record<string, UiHint> = {}
 ): FieldDescriptor {
@@ -446,106 +485,119 @@ export function introspectField(
 	let isNullable = unwrapped.isNullable
 	const isOptional = unwrapped.isOptional
 
+	const innerDef = getZodDef(inner)
+
 	switch (typeName) {
-		case 'ZodString': {
+		case 'string': {
 			widget = hint.sensitive ? 'password' : 'text'
-			const checks = (inner as z.ZodString)._def.checks || []
-			for (const check of checks) {
-				if (check.kind === 'min') min = check.value
-				if (check.kind === 'max') max = check.value
-				if (check.kind === 'uuid') {
+			const applyStringFormat = (fmt?: string, pat?: RegExp) => {
+				if (fmt === 'uuid') {
 					format = 'uuid'
 					if (!rules.includes('uuid')) rules.push('uuid')
-				}
-				if (check.kind === 'email') {
+				} else if (fmt === 'email') {
 					format = 'email'
 					if (!rules.includes('email')) rules.push('email')
-				}
-				if (check.kind === 'ip') {
+				} else if (fmt === 'ip' || fmt === 'ipv4' || fmt === 'ipv6') {
 					format = 'ip'
 					if (!rules.includes('ip')) rules.push('ip')
-				}
-				if (check.kind === 'url') {
+				} else if (fmt === 'url') {
 					format = 'url'
 					if (!rules.includes('url')) rules.push('url')
-				}
-				if (check.kind === 'regex') {
-					regex = check.regex
-					pattern = check.regex.source
+				} else if (fmt === 'regex' && pat) {
+					regex = pat
+					pattern = pat.source
 				}
 			}
-			break
-		}
 
-		case 'ZodNumber': {
-			widget = 'number'
-			const checks = (inner as z.ZodNumber)._def.checks || []
+			if (innerDef?.format) {
+				applyStringFormat(innerDef.format, innerDef.pattern)
+			}
+
+			const checks = innerDef?.checks || []
 			for (const check of checks) {
-				if (check.kind === 'min') min = check.value
-				if (check.kind === 'max') max = check.value
-				if (check.kind === 'int') step = 1
+				const cDef = getZodDef(check)
+				if (cDef?.check === 'min_length') min = cDef.minimum
+				if (cDef?.check === 'max_length') max = cDef.maximum
+				if (cDef?.check === 'string_format') {
+					applyStringFormat(cDef.format, cDef.pattern)
+				}
 			}
 			break
 		}
 
-		case 'ZodBoolean': {
+		case 'number':
+		case 'int': {
+			widget = 'number'
+			if (typeName === 'int' || innerDef?.format === 'safeint') {
+				step = 1
+			}
+			const checks = innerDef?.checks || []
+			for (const check of checks) {
+				const cDef = getZodDef(check)
+				if (cDef?.check === 'greater_than') min = cDef.value
+				if (cDef?.check === 'less_than') max = cDef.value
+				if (cDef?.check === 'number_format' && cDef.format === 'safeint') step = 1
+			}
+			break
+		}
+
+		case 'boolean': {
 			widget = 'switch'
 			break
 		}
 
-		case 'ZodEnum': {
+		case 'enum': {
 			widget = 'select'
-			const values = (inner as z.ZodEnum<any>)._def.values || []
-			options = values.map((val: string) => ({
-				label: formatFieldLabel(val),
+			const entries = innerDef?.entries || {}
+			const values: any[] = Array.isArray((inner as any).options)
+				? (inner as any).options
+				: Object.values(entries)
+			options = values.map((val: any) => ({
+				label: formatFieldLabel(String(val)),
 				value: val
 			}))
 			break
 		}
 
-		case 'ZodNativeEnum': {
-			widget = 'select'
-			const enumObj = (inner as z.ZodNativeEnum<any>)._def.values
-			options = Object.keys(enumObj)
-				.filter((k) => isNaN(Number(k)))
-				.map((k) => ({
-					label: formatFieldLabel(k),
-					value: enumObj[k]
-				}))
-			break
-		}
-
-		case 'ZodArray': {
+		case 'array': {
 			defaultValue = []
-			const elementSchema = (inner as z.ZodArray<any>)._def.type
+			const elementSchema = innerDef?.element ?? innerDef?.type
 			const elemUnwrapped = unwrapZodType(elementSchema)
-			if (elemUnwrapped.typeName === 'ZodString') {
+			if (elemUnwrapped.typeName === 'string') {
 				widget = 'array-string'
-			} else if (elemUnwrapped.typeName === 'ZodObject') {
+			} else if (elemUnwrapped.typeName === 'object') {
 				widget = 'array-object'
 				children = introspectObjectSchema(
 					elemUnwrapped.innerType as z.ZodObject<any>,
 					path,
 					hints
 				)
+			} else if (
+				elemUnwrapped.typeName === 'tuple' &&
+				(getZodDef(elemUnwrapped.innerType)?.items?.length ?? 0) === 2
+			) {
+				widget = 'log-attrs'
 			} else {
 				widget = 'array-string'
 			}
 			break
 		}
 
-		case 'ZodRecord': {
+		case 'record': {
 			defaultValue = {}
 			widget = 'record'
 			const rec = inner as z.ZodRecord<any, any>
-			const keySchema = rec._def?.keyType || (rec as any).keySchema
-			const valueSchema = rec._def?.valueType || (rec as any).valueSchema
+			const keySchema = innerDef?.keyType || (rec as any).keySchema
+			const valueSchema = innerDef?.valueType || (rec as any).valueSchema
 			if (keySchema) {
 				const keyUnwrapped = unwrapZodType(keySchema)
-				if (keyUnwrapped.typeName === 'ZodEnum') {
-					const values = (keyUnwrapped.innerType as z.ZodEnum<any>)._def.values || []
-					options = values.map((val: string) => ({
-						label: formatFieldLabel(val),
+				if (keyUnwrapped.typeName === 'enum') {
+					const keyDef = getZodDef(keyUnwrapped.innerType)
+					const values: any[] = Array.isArray((keyUnwrapped.innerType as any).options)
+						? (keyUnwrapped.innerType as any).options
+						: Object.values(keyDef?.entries || {})
+					options = values.map((val: any) => ({
+						label: formatFieldLabel(String(val)),
 						value: val
 					}))
 				}
@@ -556,48 +608,55 @@ export function introspectField(
 			break
 		}
 
-		case 'ZodUnknown':
-		case 'ZodAny': {
+		case 'unknown':
+		case 'any': {
 			widget = 'json'
 			break
 		}
 
-		case 'ZodObject': {
+		case 'object': {
 			widget = 'custom'
 			children = introspectObjectSchema(inner as z.ZodObject<any>, path, hints)
 			break
 		}
 
-		case 'ZodIntersection': {
+		case 'intersection': {
 			widget = 'custom'
 			const shape = extractObjectShape(inner)
 			children = []
 			for (const [propKey, propSchema] of Object.entries(shape)) {
 				children.push(introspectField(propKey, propSchema, path, hints))
 			}
+			children.sort((a, b) => (a.hints?.order ?? 9999) - (b.hints?.order ?? 9999))
 			break
 		}
 
-		case 'ZodLazy': {
+		case 'lazy': {
 			widget = 'json'
 			break
 		}
 
-		case 'ZodUnion':
-		case 'ZodDiscriminatedUnion': {
+		case 'union': {
 			// Check if this is a simple nullable/optional union (e.g. z.union([z.null(), ActualSchema]))
 			const unionOpts = flattenUnionOptions(inner)
 			const nonNullOpts = unionOpts.filter(
-				(opt: z.ZodTypeAny) =>
-					unwrapZodType(opt).typeName !== 'ZodNull' &&
-					unwrapZodType(opt).typeName !== 'ZodUndefined'
+				(opt: z.ZodType) =>
+					unwrapZodType(opt).typeName !== 'null' &&
+					unwrapZodType(opt).typeName !== 'undefined'
 			)
 			const hasNull = unionOpts.length > nonNullOpts.length
 			if (hasNull) {
 				isNullable = true
 			}
 
-			if (nonNullOpts.length === 1) {
+			const singleOptType =
+				nonNullOpts.length === 1 ? unwrapZodType(nonNullOpts[0]).typeName : ''
+			const isNullableObjectUnion =
+				hasNull &&
+				nonNullOpts.length === 1 &&
+				(singleOptType === 'object' || singleOptType === 'intersection')
+
+			if (nonNullOpts.length === 1 && !isNullableObjectUnion) {
 				const innerDesc = introspectField(key, nonNullOpts[0], basePath, hints)
 				const isOpt = isOptional || hasNull
 				const isNull = hasNull || isNullable
@@ -638,6 +697,9 @@ export function introspectField(
 				unionTagMode = resolved.tagMode
 				options = resolved.options
 				unionBranches = resolved.branches
+				if (isNullableObjectUnion && resolved.branches.enabled) {
+					children = resolved.branches.enabled
+				}
 			} else {
 				widget = 'json'
 			}
@@ -676,7 +738,7 @@ export function introspectField(
 					? defaultValue
 					: unwrapped.defaultValue !== undefined
 						? unwrapped.defaultValue
-						: unwrapped.typeName === 'ZodRecord'
+						: unwrapped.typeName === 'record'
 							? {}
 							: undefined,
 		description: unwrapped.description || hint.description,
@@ -710,14 +772,13 @@ export function introspectObjectSchema(
 	basePath: FieldPath = [],
 	hints: Record<string, UiHint> = {}
 ): FieldDescriptor[] {
+	const def = getZodDef(objectSchema)
 	const shape =
-		typeof objectSchema._def.shape === 'function'
-			? objectSchema._def.shape()
-			: objectSchema.shape
+		objectSchema.shape ?? (typeof def?.shape === 'function' ? def.shape() : def?.shape) ?? {}
 	const descriptors: FieldDescriptor[] = []
 
 	for (const [key, fieldSchema] of Object.entries(shape)) {
-		descriptors.push(introspectField(key, fieldSchema as z.ZodTypeAny, basePath, hints))
+		descriptors.push(introspectField(key, fieldSchema as z.ZodType, basePath, hints))
 	}
 
 	// Sort fields based on hint.order property if specified
@@ -734,13 +795,21 @@ export function introspectObjectSchema(
  * Main entry point for runtime Zod schema introspection
  */
 export function introspectZodSchema(
-	schema: z.ZodTypeAny,
+	schema: z.ZodType,
 	basePath: FieldPath = [],
 	hints: Record<string, UiHint> = {}
 ): FieldDescriptor[] {
 	const unwrapped = unwrapZodType(schema)
-	if (unwrapped.typeName === 'ZodObject') {
+	if (unwrapped.typeName === 'object') {
 		return introspectObjectSchema(unwrapped.innerType as z.ZodObject<any>, basePath, hints)
+	}
+	if (unwrapped.typeName === 'intersection') {
+		const shape = extractObjectShape(unwrapped.innerType)
+		const descriptors = Object.entries(shape).map(([key, fieldSchema]) =>
+			introspectField(key, fieldSchema, basePath, hints)
+		)
+		descriptors.sort((a, b) => (a.hints?.order ?? 9999) - (b.hints?.order ?? 9999))
+		return descriptors
 	}
 	return [introspectField('root', unwrapped.innerType, basePath, hints)]
 }
