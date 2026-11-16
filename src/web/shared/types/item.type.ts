@@ -58,20 +58,22 @@ export const ItemFormSchema = CreateHostItemBody.extend({
 	name: z.string().min(1, 'Name is required'),
 	host_id: z.string().min(1, 'Host is required'),
 	schedule: z.string().min(1, 'Schedule is required'),
-	adm_status: z.number({ required_error: 'Status is required' }),
+	adm_status: z.number({ error: 'Status is required' }),
 	flags: z.preprocess(
 		preprocessNumber,
 		z.number({
-			required_error: 'Flags is required',
-			invalid_type_error: 'Flags must be a valid number'
+			error: (iss) =>
+				iss.input === undefined ? 'Flags is required' : 'Flags must be a valid number'
 		})
 	),
 	timeout_ms: z.preprocess(
 		preprocessNumber,
 		z
 			.number({
-				required_error: 'Timeout is required',
-				invalid_type_error: 'Timeout must be a valid number'
+				error: (iss) =>
+					iss.input === undefined
+						? 'Timeout is required'
+						: 'Timeout must be a valid number'
 			})
 			.min(1, 'Timeout must be at least 1')
 	)
@@ -81,20 +83,22 @@ export const TemplateItemFormSchema = CreateTemplateItemBody.extend({
 	name: z.string().min(1, 'Name is required'),
 	template_id: z.string().min(1, 'Template is required'),
 	schedule: z.string().min(1, 'Schedule is required'),
-	adm_status: z.number({ required_error: 'Status is required' }),
+	adm_status: z.number({ error: 'Status is required' }),
 	flags: z.preprocess(
 		preprocessNumber,
 		z.number({
-			required_error: 'Flags is required',
-			invalid_type_error: 'Flags must be a valid number'
+			error: (iss) =>
+				iss.input === undefined ? 'Flags is required' : 'Flags must be a valid number'
 		})
 	),
 	timeout_ms: z.preprocess(
 		preprocessNumber,
 		z
 			.number({
-				required_error: 'Timeout is required',
-				invalid_type_error: 'Timeout must be a valid number'
+				error: (iss) =>
+					iss.input === undefined
+						? 'Timeout is required'
+						: 'Timeout must be a valid number'
 			})
 			.min(1, 'Timeout must be at least 1')
 	)

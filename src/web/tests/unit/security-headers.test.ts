@@ -4,6 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import securityHeadersMiddleware from '@@/server/middleware/security-headers'
+import * as clusterUtils from '@@/server/services/cluster.service'
 import * as sslUtils from '@@/server/services/ssl.service'
 
 function createMockEvent() {
@@ -32,6 +33,7 @@ describe('Security Headers Middleware', () => {
 
 	beforeEach(() => {
 		vi.restoreAllMocks()
+		vi.spyOn(clusterUtils, 'getAppConfigFileContent').mockReturnValue({ parsed: {}, raw: '' })
 		process.env = { ...originalEnv }
 		process.env.CORS_ORIGIN = 'https://localhost:3000, https://kc.localtest.me:8443'
 	})

@@ -6,7 +6,7 @@ import { verifyUserClusterAccess } from '@@/server/services/cluster-access.servi
 import { getClustersConfig } from '@@/server/services/cluster.service'
 import type { H3Event } from 'h3'
 import { getCookie, getQuery, getRequestHeaders } from 'h3'
-import type { IClustersResponse } from './clusters.type'
+import type { IClustersResponse } from '@@/shared/types/cluster.type'
 import { formatClusterList } from './clusters.utils'
 
 /**

@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import '@@/shared/types/array.type'
+import '@/prototypes/array.prototype'
 import { describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -121,7 +121,7 @@ describe('Item DynamicZodForm Integration', () => {
 			adm_status: 1,
 			flags: 0,
 			host_id: 'host-123',
-			endpoint_id: '11111111-2222-3333-4444-555555555555',
+			endpoint_id: '11111111-2222-4333-8444-555555555555',
 			labels: { env: 'prod' },
 			config: {
 				type: 'snmp',
@@ -170,7 +170,7 @@ describe('Item DynamicZodForm Integration', () => {
 		expect(store.updateItemHost).toHaveBeenCalled()
 		expect(submittedPayload.id).toBe('item-host-1')
 		expect(submittedPayload.payload.name).toBe('CPU Load Item')
-		expect(submittedPayload.payload.endpoint_id).toBe('11111111-2222-3333-4444-555555555555')
+		expect(submittedPayload.payload.endpoint_id).toBe('11111111-2222-4333-8444-555555555555')
 		expect(submittedPayload.payload.config.config.oid).toBe('1.3.6.1.4.1.2021.10.1.3.1')
 	})
 
@@ -248,7 +248,7 @@ describe('Item DynamicZodForm Integration', () => {
 		vm.form.name = 'Typed Dummy Attrs Item'
 		vm.form.schedule = '15s'
 		vm.form.timeout_ms = 2000
-		vm.form.host_id = '22222222-2222-2222-2222-222222222222'
+		vm.form.host_id = '22222222-2222-4222-8222-222222222222'
 
 		vm.form.config = {
 			type: ItemType.DUMMY,
@@ -506,12 +506,12 @@ describe('Item DynamicZodForm Integration', () => {
 		expect(listenerInput.props('error')).toBe('Listener is required')
 
 		// Provide listener_id and submit
-		vm.form.listener_id = '22222222-2222-2222-2222-222222222222'
+		vm.form.listener_id = '22222222-2222-4222-8222-222222222222'
 		await vm.triggerSubmit()
 		await flushPromises()
 
 		expect(store.createItemForHost).toHaveBeenCalledTimes(1)
-		expect(submittedPayload.payload.listener_id).toBe('22222222-2222-2222-2222-222222222222')
+		expect(submittedPayload.payload.listener_id).toBe('22222222-2222-4222-8222-222222222222')
 		expect(submittedPayload.payload.endpoint_id).toBeUndefined()
 		expect(submittedPayload.payload.config.type).toBe('listener')
 	})

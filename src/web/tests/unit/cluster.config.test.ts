@@ -20,13 +20,7 @@ describe('Cluster Config Parser', () => {
 
 	beforeEach(() => {
 		process.env = { ...originalEnv }
-		delete process.env.CLUSTERS
-		delete process.env.CLUSTER
-		delete process.env.NUXT_CLUSTERS
-		delete process.env.NUXT_CLUSTER
 		delete process.env.CONFIG_FILE
-		delete process.env.CONFIG_PATH
-		delete process.env.FRONTEND_CONFIG
 	})
 
 	afterEach(() => {
@@ -135,47 +129,9 @@ clusters:
 		}
 	})
 
-	it('should fallback to process.env.CLUSTERS when config file is not found', () => {
+	it('should throw an error when config file is not found', () => {
 		process.env.CONFIG_FILE = path.resolve(process.cwd(), 'non-existent-config.yaml')
-		process.env.CLUSTERS = `
-- name: 'custom1'
-  url: 'http://custom1:8080'
-- name: 'custom2'
-  url: 'http://custom2:8080'
-`
-		const clusters = getClustersConfig()
-		expect(clusters).toHaveLength(2)
-		expect(clusters[0]).toMatchObject({
-			name: 'custom1',
-			url: 'http://custom1:8080',
-			clientPath: '/custom1'
-		})
-		expect(clusters[1]).toMatchObject({
-			name: 'custom2',
-			url: 'http://custom2:8080',
-			clientPath: '/custom2'
-		})
-	})
-
-	it('should fallback to process.env.CLUSTER when config file is not found', () => {
-		process.env.CONFIG_FILE = path.resolve(process.cwd(), 'non-existent-config.yaml')
-		process.env.CLUSTER = `
-- name: 'patrolli'
-  url: 'http://patrolli:8080'
-`
-		const clusters = getClustersConfig()
-		expect(clusters).toHaveLength(1)
-		expect(clusters[0]).toMatchObject({
-			name: 'patrolli',
-			url: 'http://patrolli:8080',
-			clientPath: '/patrolli'
-		})
-	})
-
-	it('should return empty array if config file and env are not set/found', () => {
-		process.env.CONFIG_FILE = path.resolve(process.cwd(), 'non-existent-config.yaml')
-		const clusters = getClustersConfig()
-		expect(clusters).toEqual([])
+		expect(() => getClustersConfig()).toThrow('Configuration file not found or empty')
 	})
 
 	it('should read keycloak configuration from config-fe.example.yaml', () => {

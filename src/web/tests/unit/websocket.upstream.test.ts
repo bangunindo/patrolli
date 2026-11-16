@@ -2,11 +2,16 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as clusterUtils from '@@/server/services/cluster.service'
 import { resolveWebSocketUpstreamUrl } from '@@/server/services/websocket.service'
 import type { ICluster } from '@@/shared/types/cluster.type'
 
 describe('WebSocket Upstream URL Resolution', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		vi.spyOn(clusterUtils, 'getKeycloakConfig').mockReturnValue(null)
+	})
 	const defaultCluster: ICluster = {
 		name: 'patrolli',
 		url: 'http://patrolli:8080'

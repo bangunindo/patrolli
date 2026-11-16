@@ -4,7 +4,7 @@
 
 import type { H3Event } from 'h3'
 import { getCookie, getQuery, getRequestHeaders } from 'h3'
-import type { AuthProvider } from './auth.type'
+import type { AuthProvider } from '@@/shared/types/auth.type'
 
 /**
  * Extracts auth credentials & refresh tokens from request cookies or payload

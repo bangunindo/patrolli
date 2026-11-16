@@ -5,7 +5,7 @@
 import type { H3Event } from 'h3'
 import { forwardToCluster, getClustersConfig } from '@@/server/services/cluster.service'
 import { formatClusterList } from '@@/server/modules/clusters/clusters.utils'
-import type { IClusterClientItem } from '@@/server/modules/clusters/clusters.type'
+import type { IClusterClientItem } from '@@/shared/types/cluster.type'
 import { setUserClustersCookie } from '@@/server/utils/auth-cookies'
 
 /**

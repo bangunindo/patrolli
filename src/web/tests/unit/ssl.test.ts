@@ -15,8 +15,6 @@ describe('SSL Configuration & Security Utilities', () => {
 		process.env = { ...originalEnv }
 		delete process.env.COOKIE_SECURE
 		delete process.env.CONFIG_FILE
-		delete process.env.CONFIG_PATH
-		delete process.env.FRONTEND_CONFIG
 	})
 
 	afterEach(() => {

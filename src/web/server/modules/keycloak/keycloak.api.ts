@@ -5,7 +5,7 @@
 import type { IKeycloakConfig } from '@@/shared/types/cluster.type'
 import { executeHttpRequest } from '@@/server/services/apibase.service'
 import { buildTokenExchangeBody, buildTokenRefreshBody } from './keycloak.utils'
-import type { IKeycloakTokenResponse } from './keycloak.type'
+import type { IKeycloakTokenResponse } from '@@/shared/types/keycloak.type'
 
 /**
  * Exchanges authorization code for Keycloak tokens via token endpoint

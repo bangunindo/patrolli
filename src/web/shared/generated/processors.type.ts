@@ -3,7 +3,7 @@
  * Do not edit manually.
  * Patrolli API
  * RESTful API for Patrolli monitoring system
- * OpenAPI spec version: 0.1.0-beta.1
+ * OpenAPI spec version: 0.1.0-beta.5
  */
 import * as zod from 'zod'
 
@@ -25,10 +25,10 @@ export const listProcessorsQueryLimitMin = 0
 export const listProcessorsQueryOffsetMin = 0
 
 export const ListProcessorsQueryParams = zod.object({
-	processor_ids: zod.array(zod.string().uuid()).optional(),
+	processor_ids: zod.array(zod.uuid()).optional(),
 	name: zod.string().optional(),
-	limit: zod.number().int().min(listProcessorsQueryLimitMin).optional(),
-	offset: zod.number().int().min(listProcessorsQueryOffsetMin).optional(),
+	limit: zod.int().min(listProcessorsQueryLimitMin).optional(),
+	offset: zod.int().min(listProcessorsQueryOffsetMin).optional(),
 	order_by: zod.enum(['name', 'last_updated']).optional(),
 	order_dir: zod.enum(['asc', 'desc']).optional(),
 	types: zod.array(ProcessorKind).optional()
@@ -47,7 +47,7 @@ export const CreateProcessorResponse = ResponseDataCreateProcessorResponse
  * @summary Update a processor
  */
 export const UpdateProcessorParams = zod.object({
-	processor_id: zod.string().uuid().describe('Processor UUID')
+	processor_id: zod.uuid().describe('Processor UUID')
 })
 
 export const UpdateProcessorBody = UpdateProcessorRequest
@@ -58,7 +58,7 @@ export const UpdateProcessorResponse = ResponseDataUpdateProcessorResponse
  * @summary Delete a processor
  */
 export const DeleteProcessorParams = zod.object({
-	processor_id: zod.string().uuid().describe('Processor UUID')
+	processor_id: zod.uuid().describe('Processor UUID')
 })
 
 export const DeleteProcessorResponse = ResponseDataTupleUnit

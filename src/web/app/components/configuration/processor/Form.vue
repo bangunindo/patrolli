@@ -8,7 +8,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { watchOnce } from '@vueuse/core'
-import { useProcessorStore } from '@/stores/processor.store'
+import { useProcessorStore } from '@/stores/processors.store'
 import { useAuthStore } from '@/stores/auth.store'
 import { FormMode } from '@@/shared/types/app.type'
 import { type IProcessorForm } from '@@/shared/types/processor.type'

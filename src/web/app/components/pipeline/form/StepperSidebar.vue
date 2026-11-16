@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script setup lang="ts">
 import RocketIcon from '@/components/pipeline/RocketIcon.vue'
-import { usePipelineStore } from '@/stores/pipeline.store'
+import { usePipelineStore } from '@/stores/pipelines.store'
 import { FormMode } from '@@/shared/types/app.type'
 
 const pipelineStore = usePipelineStore()

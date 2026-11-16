@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import '@@/shared/types/array.type'
+import '@/prototypes/array.prototype'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { usePipelineBuildStore } from '@/stores/pipeline.builder.store'
-import { useProcessorStore } from '@/stores/processor.store'
+import { useProcessorStore } from '@/stores/processors.store'
 import { useAppStore } from '@/stores/app.store'
 import pipelinesApi from '@/app/api/pipelines.api'
 import processorsApi from '@/app/api/processors.api'

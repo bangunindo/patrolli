@@ -26,7 +26,7 @@ import { z } from 'zod'
 describe('Automated CI Schema Drift Verification', () => {
 	const entities: Array<{
 		name: string
-		schema: z.ZodTypeAny
+		schema: z.ZodType
 		hints: Record<string, any>
 	}> = [
 		{ name: 'Endpoint', schema: CreateEndpointRequest, hints: endpointHints },

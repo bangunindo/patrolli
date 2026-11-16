@@ -3,7 +3,7 @@
  * Do not edit manually.
  * Patrolli API
  * RESTful API for Patrolli monitoring system
- * OpenAPI spec version: 0.1.0-beta.1
+ * OpenAPI spec version: 0.1.0-beta.5
  */
 import * as zod from 'zod'
 
@@ -30,8 +30,8 @@ export const listTemplatesQueryOffsetMin = 0
 
 export const ListTemplatesQueryParams = zod.object({
 	name: zod.string().optional(),
-	limit: zod.number().int().min(listTemplatesQueryLimitMin).optional(),
-	offset: zod.number().int().min(listTemplatesQueryOffsetMin).optional(),
+	limit: zod.int().min(listTemplatesQueryLimitMin).optional(),
+	offset: zod.int().min(listTemplatesQueryOffsetMin).optional(),
 	order_by: zod.enum(['template_id', 'name']).optional(),
 	order_dir: zod.enum(['asc', 'desc']).optional()
 })
@@ -60,7 +60,7 @@ export const BulkApplyTemplateResponse = ResponseDataTupleUnit
  * @summary Link a template to another template
  */
 export const LinkTemplateParams = zod.object({
-	id: zod.string().uuid().describe('Template UUID')
+	id: zod.uuid().describe('Template UUID')
 })
 
 export const LinkTemplateBody = LinkTemplateRequest
@@ -80,7 +80,7 @@ export const BulkUnapplyTemplateResponse = ResponseDataTupleUnit
  * @summary Unlink a template from another template
  */
 export const UnlinkTemplateParams = zod.object({
-	id: zod.string().uuid().describe('Template UUID')
+	id: zod.uuid().describe('Template UUID')
 })
 
 export const UnlinkTemplateBody = UnlinkTemplateRequest
@@ -91,7 +91,7 @@ export const UnlinkTemplateResponse = ResponseDataTupleUnit
  * @summary Get a template by ID
  */
 export const GetTemplateParams = zod.object({
-	id: zod.string().uuid().describe('Template UUID')
+	id: zod.uuid().describe('Template UUID')
 })
 
 export const GetTemplateResponse = ResponseDataGetTemplateResponse
@@ -100,7 +100,7 @@ export const GetTemplateResponse = ResponseDataGetTemplateResponse
  * @summary Update a template
  */
 export const UpdateTemplateParams = zod.object({
-	id: zod.string().uuid().describe('Template UUID')
+	id: zod.uuid().describe('Template UUID')
 })
 
 export const UpdateTemplateBody = UpdateTemplateRequest
@@ -111,7 +111,7 @@ export const UpdateTemplateResponse = ResponseDataUpdateTemplateResponse
  * @summary Delete a template
  */
 export const DeleteTemplateParams = zod.object({
-	id: zod.string().uuid().describe('Template UUID')
+	id: zod.uuid().describe('Template UUID')
 })
 
 export const DeleteTemplateResponse = ResponseDataTupleUnit

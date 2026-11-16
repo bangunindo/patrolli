@@ -13,8 +13,6 @@ import path from 'node:path'
 import process from 'node:process'
 import YAML from 'yaml'
 
-declare const useRuntimeConfig: (event?: H3Event) => any
-
 /**
  * Parses raw cluster configuration from various formats (YAML string, JSON string, Array of objects, Record map).
  * Supports:
@@ -22,11 +20,6 @@ declare const useRuntimeConfig: (event?: H3Event) => any
  *     clusters:
  *       - name: 'patrolli'
  *         url: 'http://patrolli:8080'
- * - Environment variable CLUSTERS / CLUSTER:
- *     - name: 'patrolli'
- *       url: 'http://patrolli:8080'
- *     - name: 'patrolli1'
- *       url: 'http://patrolli1:8080'
  * - JSON string: [ { name: 'patrolli1', url: 'http://patrolli1:8080' } ]
  * - Object / Map: { patrolli1: 'http://patrolli1:8080' }
  */
@@ -113,12 +106,8 @@ export interface IAppConfig {
 	}
 }
 
-export function getAppConfigFileContent(configPath?: string): { parsed: any; raw: string } | null {
-	const explicitPath =
-		configPath ||
-		process.env.CONFIG_FILE ||
-		process.env.CONFIG_PATH ||
-		process.env.FRONTEND_CONFIG
+export function getAppConfigFileContent(configPath?: string): { parsed: any; raw: string } {
+	const explicitPath = configPath || process.env.CONFIG_FILE
 
 	const candidatePaths = explicitPath
 		? [explicitPath]
@@ -142,7 +131,10 @@ export function getAppConfigFileContent(configPath?: string): { parsed: any; raw
 			// Skip to next candidate if error reading file
 		}
 	}
-	return null
+
+	throw new Error(
+		`[Patrolli-FE Config] Configuration file not found or empty. Checked paths: ${candidatePaths.join(', ')}`
+	)
 }
 
 export function getKeycloakConfig(configPath?: string): IKeycloakConfig | null {
@@ -162,32 +154,9 @@ export function getKeycloakConfig(configPath?: string): IKeycloakConfig | null {
 	return null
 }
 
-export function getClustersConfig(event?: H3Event, configPath?: string): ICluster[] {
+export function getClustersConfig(_event?: H3Event, configPath?: string): ICluster[] {
 	const fileConfig = getAppConfigFileContent(configPath)
-	if (fileConfig?.parsed) {
-		const clusters = parseClustersConfig(fileConfig.parsed)
-		if (clusters.length > 0) {
-			return clusters
-		}
-	}
-
-	// Fallback to environment variables
-	let rawClusters: any =
-		process.env.CLUSTERS ||
-		process.env.CLUSTER ||
-		process.env.NUXT_CLUSTERS ||
-		process.env.NUXT_CLUSTER
-
-	if (!rawClusters) {
-		try {
-			const config = event ? useRuntimeConfig(event) : useRuntimeConfig()
-			rawClusters = config?.clusters || config?.cluster
-		} catch {
-			// fallback if runtime config is not available
-		}
-	}
-
-	return parseClustersConfig(rawClusters)
+	return parseClustersConfig(fileConfig.parsed)
 }
 
 export function resolveClusterTargets(

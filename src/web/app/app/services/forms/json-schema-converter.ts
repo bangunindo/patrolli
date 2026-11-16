@@ -2,9 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { zodToJsonSchema } from 'zod-to-json-schema'
-import type { z } from 'zod'
-import type { JsonSchema } from '@jsonforms/core'
+import { z } from 'zod'
 
 /**
  * Recursively merges schemas inside allOf arrays into unified object properties & required lists.
@@ -39,28 +37,6 @@ export function mergeAllOf(schema: any): any {
 		}
 	}
 
-	// Normalize nullable primitive unions (e.g. anyOf: [{type: 'integer'}, {type: 'null'}])
-	// to type: ['integer', 'null'] so JSON Forms uses primitive control renderers instead of UnionControl
-	if (Array.isArray(res.anyOf) && res.anyOf.length === 2) {
-		const nullIdx = res.anyOf.findIndex((b: any) => b && b.type === 'null')
-		if (nullIdx !== -1) {
-			const other = res.anyOf[1 - nullIdx]
-			if (
-				other &&
-				typeof other.type === 'string' &&
-				['string', 'number', 'integer', 'boolean'].includes(other.type) &&
-				!other.anyOf &&
-				!other.oneOf &&
-				!other.allOf &&
-				!other.properties
-			) {
-				delete res.anyOf
-				Object.assign(res, other)
-				res.type = [other.type, 'null']
-			}
-		}
-	}
-
 	for (const k of Object.keys(res)) {
 		if (k !== 'properties' && typeof res[k] === 'object') {
 			res[k] = mergeAllOf(res[k])
@@ -77,20 +53,17 @@ export function mergeAllOf(schema: any): any {
 }
 
 /**
- * Converts Zod Schema to Draft-07 JSON Schema compatible with JSON Forms.
- * Inlines $ref references so the schema is self-contained and easily consumed by JSON Forms parsers.
+ * Converts a Zod schema to a Draft-07 JSON Schema with merged allOf object properties.
  */
-export function convertZodToJsonSchema(schema: z.ZodTypeAny): JsonSchema {
-	const rawSchema = zodToJsonSchema(schema, {
-		target: 'jsonSchema7',
-		$refStrategy: 'none'
+export function convertZodToJsonSchema(schema: z.ZodType): Record<string, any> {
+	const rawSchema = z.toJSONSchema(schema, {
+		target: 'draft-07',
+		unrepresentable: 'any'
 	}) as any
 
-	// Remove unnecessary top-level properties not required by JSON Forms if present
 	if (rawSchema.$schema) {
 		delete rawSchema.$schema
 	}
 
-	// Normalize allOf into flat object properties
-	return mergeAllOf(rawSchema) as JsonSchema
+	return mergeAllOf(rawSchema) as Record<string, any>
 }

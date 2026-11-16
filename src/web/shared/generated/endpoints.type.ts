@@ -3,7 +3,7 @@
  * Do not edit manually.
  * Patrolli API
  * RESTful API for Patrolli monitoring system
- * OpenAPI spec version: 0.1.0-beta.1
+ * OpenAPI spec version: 0.1.0-beta.5
  */
 import * as zod from 'zod'
 
@@ -25,11 +25,11 @@ export const listEndpointsQueryLimitMin = 0
 export const listEndpointsQueryOffsetMin = 0
 
 export const ListEndpointsQueryParams = zod.object({
-	host_ids: zod.array(zod.string().uuid()).optional(),
-	endpoint_ids: zod.array(zod.string().uuid()).optional(),
+	host_ids: zod.array(zod.uuid()).optional(),
+	endpoint_ids: zod.array(zod.uuid()).optional(),
 	name: zod.string().optional(),
-	limit: zod.number().int().min(listEndpointsQueryLimitMin).optional(),
-	offset: zod.number().int().min(listEndpointsQueryOffsetMin).optional(),
+	limit: zod.int().min(listEndpointsQueryLimitMin).optional(),
+	offset: zod.int().min(listEndpointsQueryOffsetMin).optional(),
 	order_by: zod.enum(['name', 'last_updated']).optional(),
 	order_dir: zod.enum(['asc', 'desc']).optional(),
 	types: zod.array(EndpointKind).optional()
@@ -48,7 +48,7 @@ export const CreateEndpointResponse = ResponseDataCreateEndpointResponse
  * @summary Update an endpoint
  */
 export const UpdateEndpointParams = zod.object({
-	endpoint_id: zod.string().uuid().describe('Endpoint UUID')
+	endpoint_id: zod.uuid().describe('Endpoint UUID')
 })
 
 export const UpdateEndpointBody = UpdateEndpointRequest
@@ -59,7 +59,7 @@ export const UpdateEndpointResponse = ResponseDataUpdateEndpointResponse
  * @summary Delete an endpoint
  */
 export const DeleteEndpointParams = zod.object({
-	endpoint_id: zod.string().uuid().describe('Endpoint UUID')
+	endpoint_id: zod.uuid().describe('Endpoint UUID')
 })
 
 export const DeleteEndpointResponse = ResponseDataTupleUnit

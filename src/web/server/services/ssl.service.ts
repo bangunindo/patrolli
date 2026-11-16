@@ -28,11 +28,7 @@ export interface ILoadedSslConfig {
 }
 
 function getCandidateConfigFilePaths(configPath?: string): string[] {
-	const explicitPath =
-		configPath ||
-		process.env.CONFIG_FILE ||
-		process.env.CONFIG_PATH ||
-		process.env.FRONTEND_CONFIG
+	const explicitPath = configPath || process.env.CONFIG_FILE
 
 	return explicitPath
 		? [explicitPath]

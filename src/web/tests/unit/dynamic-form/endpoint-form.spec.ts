@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import '@@/shared/types/array.type'
+import '@/prototypes/array.prototype'
 import { describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -99,7 +99,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 	describe('Endpoint Protocol Variant Validation via AutoFormAdapter', () => {
 		const baseEndpoint = {
 			name: 'Core Router RouterOS',
-			host_id: '11111111-1111-1111-1111-111111111111',
+			host_id: '11111111-1111-4111-8111-111111111111',
 			adm_status: 1
 		}
 
@@ -363,7 +363,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 		it('should populate edit mode data for HTTP endpoint with auth in AutoFormAdapter.toDraft', () => {
 			const existing = {
 				name: 'Existing HTTP',
-				host_id: '11111111-1111-1111-1111-111111111111',
+				host_id: '11111111-1111-4111-8111-111111111111',
 				adm_status: 1,
 				config: {
 					type: 'http',
