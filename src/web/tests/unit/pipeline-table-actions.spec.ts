@@ -2,12 +2,12 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import '@@/shared/types/array.type'
+import '@/prototypes/array.prototype'
 import { describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import PipelineTable from '@/components/pipeline/Table.vue'
-import { usePipelineStore } from '@/stores/pipeline.store'
+import { usePipelineStore } from '@/stores/pipelines.store'
 import type { IPipelineItem } from '@@/shared/types/pipeline.type'
 import pipelinesApi from '@/app/api/pipelines.api'
 

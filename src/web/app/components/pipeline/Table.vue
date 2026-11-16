@@ -10,7 +10,7 @@ import { useRouter } from 'vue-router'
 import { watchDebounced } from '@vueuse/core'
 import AppTable from '@/components/app/AppTable.vue'
 import ModalConfirmationDelete from '@/components/modal/ModalConfirmationDelete.vue'
-import { usePipelineStore } from '@/stores/pipeline.store'
+import { usePipelineStore } from '@/stores/pipelines.store'
 import { FormMode } from '@@/shared/types/app.type'
 import type { IPipelineItem } from '@@/shared/types/pipeline.type'
 

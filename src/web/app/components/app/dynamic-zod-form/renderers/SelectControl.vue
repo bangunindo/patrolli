@@ -5,93 +5,73 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
-import { computed, watchEffect } from 'vue'
-import { rendererProps, useJsonFormsControl } from '@jsonforms/vue'
-import type { ControlElement } from '@jsonforms/core'
+import { computed, watch } from 'vue'
+import type { FieldDescriptor } from '@@/shared/types/dynamic-form.type'
 import AppInputSelect from '@/components/app/input/AppInputSelect.vue'
+import CustomSlotRenderer from './CustomSlotRenderer.vue'
+import { useDynamicField } from '../useDynamicField'
 
-const props = defineProps({
-	...rendererProps<ControlElement>()
-})
+const props = defineProps<{
+	descriptor: FieldDescriptor
+	path: string
+}>()
 
-const { control, handleChange } = useJsonFormsControl(props)
+const { value, setValue, error, hint, label, required, disabled, customSlot, slotProps } =
+	useDynamicField(props)
 
 const selectOptions = computed(() => {
-	if (control.value.uischema?.options?.options) {
-		return control.value.uischema.options.options
+	if (Array.isArray(hint.value.options)) {
+		return hint.value.options
 	}
-	if (control.value.schema.enum) {
-		return control.value.schema.enum.map((val: any) => ({
-			label: String(val),
-			value: val
-		}))
-	}
-	if (control.value.schema.oneOf) {
-		return (control.value.schema.oneOf as any[]).map((sub: any) => ({
-			label: sub.title || String(sub.const || sub.default || sub.enum?.[0] || ''),
-			value: sub.const ?? sub.default ?? sub.enum?.[0] ?? ''
-		}))
-	}
-	if (control.value.schema.anyOf) {
-		const enumSub = (control.value.schema.anyOf as any[]).find(
-			(sub: any) => sub && sub.type !== 'null' && (sub.enum || sub.const)
-		)
-		if (enumSub?.enum) {
-			return enumSub.enum.map((val: any) => ({
-				label: String(val).toUpperCase(),
-				value: val
-			}))
-		}
-	}
-	return []
+	return props.descriptor.options || []
 })
 
-// Auto-populate default value if provided or if field is required with only 1 option
-watchEffect(() => {
-	const defaultVal = control.value.uischema?.options?.defaultValue
-	if (
-		defaultVal !== undefined &&
-		(control.value.data === undefined ||
-			control.value.data === null ||
-			control.value.data === '')
-	) {
-		handleChange(control.value.path, defaultVal)
-	} else if (
-		selectOptions.value.length === 1 &&
-		control.value.required &&
-		(control.value.data === undefined ||
-			control.value.data === null ||
-			control.value.data === '')
-	) {
-		handleChange(control.value.path, selectOptions.value[0].value)
-	}
+const isEmptyForDefault = computed(() => {
+	if (value.value === undefined || value.value === '') return true
+	if (value.value === null && hint.value.emptyPolicy !== 'null') return true
+	return false
 })
+
+watch(
+	[
+		() => hint.value.defaultValue,
+		() => props.descriptor.defaultValue,
+		() => selectOptions.value,
+		() => required.value,
+		() => value.value
+	],
+	([hintDefault, descDefault, opts, isReq, currentVal]) => {
+		const defaultVal = hintDefault !== undefined ? hintDefault : descDefault
+		if (defaultVal !== undefined && currentVal !== defaultVal && isEmptyForDefault.value) {
+			setValue(defaultVal)
+		} else if (opts.length === 1 && isReq && isEmptyForDefault.value) {
+			setValue(opts[0].value)
+		}
+	},
+	{ immediate: true }
+)
 
 const onSelect = (val: any) => {
 	let finalVal = val
-	if (
-		(val === '' || val === undefined) &&
-		control.value.uischema?.options?.emptyPolicy === 'null'
-	) {
+	if ((val === '' || val === undefined) && hint.value.emptyPolicy === 'null') {
 		finalVal = null
 	}
-	handleChange(control.value.path, finalVal)
+	setValue(finalVal)
 }
 </script>
 
 <template>
-	<div
-		v-if="control.visible"
-		:data-invalid="!!control.errors"
-		:class="{ 'has-error': !!control.errors }"
-	>
+	<div :data-invalid="!!error" :class="{ 'has-error': !!error }">
+		<CustomSlotRenderer v-if="customSlot" :render-fn="customSlot" :slot-props="slotProps" />
+
 		<AppInputSelect
-			:model-value="control.data"
-			:label="control.label"
-			:placeholder="control.uischema?.options?.placeholder || `Select ${control.label}`"
-			:required="control.required"
-			:error="control.errors"
-			:disabled="!control.enabled"
+			v-else
+			:model-value="value"
+			:label="label"
+			:placeholder="hint.placeholder || descriptor.placeholder || `Select ${label}`"
+			:required="required"
+			:error="error"
+			:disabled="disabled"
 			:options="selectOptions"
 			@update:model-value="onSelect"
 		/>

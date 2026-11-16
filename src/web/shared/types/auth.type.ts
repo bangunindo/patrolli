@@ -4,9 +4,29 @@
 
 import { ChangePasswordBody, LoginBody } from '@@/shared/generated/auth.type'
 import type { IBaseResponse } from '@@/shared/types/api.type'
+import type { IUser } from '@@/shared/types/app.type'
+import type { ICluster } from '@@/shared/types/cluster.type'
 import type z from 'zod'
 
-import type { IUser } from '@@/shared/types/app.type'
+export type AuthProvider = 'local' | 'keycloak'
+
+export interface IAuthCredentials {
+	username?: string
+	password?: string
+	[key: string]: any
+}
+
+export interface IAuthRefreshPayload {
+	refresh_token?: string
+	auth_provider?: AuthProvider
+}
+
+export interface IAuthClusterResult {
+	cluster: ICluster
+	data: any
+	status: number
+	headers?: Headers
+}
 
 export interface ILoginBody extends z.infer<typeof LoginBody> {}
 export interface IChangePasswordBody extends z.infer<typeof ChangePasswordBody> {}

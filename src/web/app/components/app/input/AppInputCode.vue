@@ -5,7 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
-import { registerOplLanguage } from '@/app/helpers/opl.language'
+import { registerOplLanguage } from '@/app/helpers/opl.helper'
 import { useMonaco } from '@/composables/useMonaco'
 import { useValidation } from '@/composables/useValidation'
 import { useAppStore } from '@/stores/app.store'

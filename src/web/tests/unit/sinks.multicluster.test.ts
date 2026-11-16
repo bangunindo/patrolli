@@ -309,6 +309,12 @@ describe('Multicluster CRUD for Sinks Feature', () => {
 					labels: '{}',
 					worker_count: 1,
 					batch: { batch_size: 1000, batch_timeout: 1000 },
+					retry: {
+						initial_interval: 1000,
+						max_elapsed: 10000,
+						max_interval: 5000,
+						multiplier: 2
+					},
 					channel: { type: 'memory' },
 					config: { type: 'file', config: { path: '/tmp/1.log' } },
 					last_updated: new Date().toISOString(),
@@ -322,6 +328,12 @@ describe('Multicluster CRUD for Sinks Feature', () => {
 					labels: '{}',
 					worker_count: 1,
 					batch: { batch_size: 1000, batch_timeout: 1000 },
+					retry: {
+						initial_interval: 1000,
+						max_elapsed: 10000,
+						max_interval: 5000,
+						multiplier: 2
+					},
 					channel: { type: 'memory' },
 					config: { type: 'file', config: { path: '/tmp/2.log' } },
 					last_updated: new Date().toISOString(),

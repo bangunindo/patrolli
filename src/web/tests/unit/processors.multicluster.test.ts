@@ -2,12 +2,12 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import '@@/shared/types/string.type'
-import '@@/shared/types/array.type'
+import '@/prototypes/string.prototype'
+import '@/prototypes/array.prototype'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import processorApi from '@/app/api/processors.api'
-import { useProcessorStore } from '@/stores/processor.store'
+import { useProcessorStore } from '@/stores/processors.store'
 import { useAppStore } from '@/stores/app.store'
 import { httpService } from '@/app/services/http.service'
 import type { IProcessor, IProcessorForm } from '@@/shared/types/processor.type'

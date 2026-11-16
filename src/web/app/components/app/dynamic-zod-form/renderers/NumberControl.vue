@@ -5,70 +5,43 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
-import { computed, inject } from 'vue'
-import { rendererProps, useJsonFormsControl } from '@jsonforms/vue'
-import type { ControlElement } from '@jsonforms/core'
+import type { FieldDescriptor } from '@@/shared/types/dynamic-form.type'
 import AppInputText from '@/components/app/input/AppInputText.vue'
 import CustomSlotRenderer from './CustomSlotRenderer.vue'
+import { useDynamicField } from '../useDynamicField'
 
-const props = defineProps({
-	...rendererProps<ControlElement>()
-})
+const props = defineProps<{
+	descriptor: FieldDescriptor
+	path: string
+}>()
 
-const { control, handleChange } = useJsonFormsControl(props)
-const slots = inject<Record<string, any>>('dynamicZodFormSlots', {})
-
-const leafName = computed(() => {
-	const p = control.value.path || ''
-	const parts = p.split('.')
-	return parts[parts.length - 1] || p
-})
-
-const customSlot = computed(() => {
-	const pathKey = control.value.path
-	return slots[`field:${pathKey}`] || slots[`field:${leafName.value}`] || null
-})
+const { value, setValue, error, hint, label, required, disabled, customSlot, slotProps } =
+	useDynamicField(props)
 
 const onInput = (val: any) => {
 	if (val === '' || val === null || val === undefined) {
-		const emptyVal = control.value.uischema?.options?.emptyPolicy === 'null' ? null : undefined
-		handleChange(control.value.path, emptyVal)
+		const emptyVal = hint.value.emptyPolicy === 'null' ? null : undefined
+		setValue(emptyVal)
 		return
 	}
 	const num = Number(val)
-	handleChange(control.value.path, isNaN(num) ? val : num)
+	setValue(isNaN(num) ? val : num)
 }
-
-const slotProps = computed(() => ({
-	value: control.value.data,
-	modelValue: control.value.data,
-	'model-value': control.value.data,
-	error: control.value.errors,
-	updateModelValue: onInput,
-	'update-model-value': onInput,
-	handleChange: onInput,
-	'handle-change': onInput
-}))
 </script>
 
 <template>
-	<div
-		v-if="control.visible"
-		:data-invalid="!!control.errors"
-		:class="{ 'has-error': !!control.errors }"
-	>
-		<!-- Custom Slot Fallback (e.g. #field:adm_status, #field:flags) -->
+	<div :data-invalid="!!error" :class="{ 'has-error': !!error }">
 		<CustomSlotRenderer v-if="customSlot" :render-fn="customSlot" :slot-props="slotProps" />
 
 		<AppInputText
 			v-else
 			type="number"
-			:model-value="control.data ?? ''"
-			:label="control.label"
-			:placeholder="control.uischema?.options?.placeholder || `Enter ${control.label}`"
-			:required="control.required"
-			:error="control.errors"
-			:disabled="!control.enabled"
+			:model-value="value ?? ''"
+			:label="label"
+			:placeholder="hint.placeholder || descriptor.placeholder || `Enter ${label}`"
+			:required="required"
+			:error="error"
+			:disabled="disabled"
 			@update:model-value="onInput"
 		/>
 	</div>

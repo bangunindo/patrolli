@@ -10,7 +10,7 @@ import {
 	resolveWebSocketAuthHeader,
 	resolveWebSocketUpstreamUrl
 } from '@@/server/services/websocket.service'
-import type { INitroWsSession } from './websocket.type'
+import type { INitroWsSession } from '@@/shared/types/websocket.type'
 
 /**
  * In-memory registry of active client peer connections to upstream WebSocket instances.

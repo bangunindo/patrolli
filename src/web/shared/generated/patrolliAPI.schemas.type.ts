@@ -3,7 +3,7 @@
  * Do not edit manually.
  * Patrolli API
  * RESTful API for Patrolli monitoring system
- * OpenAPI spec version: 0.1.0-beta.1
+ * OpenAPI spec version: 0.1.0-beta.5
  */
 import * as zod from 'zod'
 
@@ -18,7 +18,7 @@ export const OtelValue = zod.union([
 	}),
 	zod.object({
 		type: zod.enum(['int']),
-		value: zod.number().int()
+		value: zod.int()
 	}),
 	zod.object({
 		type: zod.enum(['str']),
@@ -38,12 +38,21 @@ export type AddAttributes = zod.input<typeof AddAttributes>
 export type AddAttributesOutput = zod.output<typeof AddAttributes>
 
 export const ApplyTemplatesRequest = zod.object({
-	host_ids: zod.array(zod.string().uuid()),
-	template_ids: zod.array(zod.string().uuid())
+	host_ids: zod.array(zod.uuid()),
+	template_ids: zod.array(zod.uuid())
 })
 
 export type ApplyTemplatesRequest = zod.input<typeof ApplyTemplatesRequest>
 export type ApplyTemplatesRequestOutput = zod.output<typeof ApplyTemplatesRequest>
+
+export const AttributeCollectAction = zod
+	.enum(['upsert', 'delete', 'delete_partition'])
+	.describe(
+		'What a collection rule does with each row it builds.\n\nWithin one batch, rules run in config order and records in batch order, so\nan upsert and a delete of the same key in one batch apply in that order.\nBatches handled by different processor workers are not ordered against\neach other, as for upserts alone.'
+	)
+
+export type AttributeCollectAction = zod.input<typeof AttributeCollectAction>
+export type AttributeCollectActionOutput = zod.output<typeof AttributeCollectAction>
 
 export const AttributeCollectCast = zod
 	.enum(['bool', 'double', 'integer', 'string', 'ip'])
@@ -63,10 +72,10 @@ export const AttributeCollectInput = zod
 	.object({
 		cast: zod
 			.union([
-				zod.null(),
 				AttributeCollectCast.describe(
-					"Explicit conversion before writing. Without a cast the input must\nalready match the column's declared type. A conversion failure skips the\nwhole candidate row; there is no implicit stringification.\n\n`double` is allowed for a value column, never a hash or partition key.\nA range bound must use `integer` or `ip`, matching the table's range.\n\nAn `ip` column always needs `cast: ip`, bound or not, because the input\narrives as a string and would otherwise fail the column's type check and\nskip the row. A missing or contradicting cast is rejected when the table\nresolves."
-				)
+					"Explicit conversion before writing. Without a cast the input must\nalready match the column's declared type. A conversion failure skips the\nwhole candidate row; there is no implicit stringification.\n\n`double` is allowed for a value column, never a hash or partition key.\nA prefix column is CIDR text: no cast, or `string`.\n\nAn `ip` column always needs `cast: ip`, bound or not, because the input\narrives as a string and would otherwise fail the column's type check and\nskip the row. A missing or contradicting cast is rejected when the table\nresolves."
+				),
+				zod.null()
 			])
 			.optional(),
 		key: zod
@@ -83,10 +92,10 @@ export const AttributeCollectInput = zod
 			),
 		table: zod
 			.union([
-				zod.null(),
 				AttributeTable.describe(
 					"Only with `key`. Defaults to the rule's source table. A record rule may\nalso read a resource attribute through the record's resource ID. No\nother cross-table read is supported."
-				)
+				),
+				zod.null()
 			])
 			.optional(),
 		value: zod
@@ -104,10 +113,10 @@ export type AttributeCollectInput = zod.input<typeof AttributeCollectInput>
 export type AttributeCollectInputOutput = zod.output<typeof AttributeCollectInput>
 
 export const AttributeCollectBinding = zod.union([
-	zod.null(),
 	AttributeCollectInput.describe(
 		'One entry of `columns`: `null` for a pivoted binding with every option\ndefaulted, otherwise an [`AttributeCollectInput`].'
-	)
+	),
+	zod.null()
 ])
 
 export type AttributeCollectBinding = zod.input<typeof AttributeCollectBinding>
@@ -137,7 +146,6 @@ export const regexExtractFormatGroupMin = 0
 export const RegexExtractFormat = zod
 	.object({
 		group: zod
-			.number()
 			.int()
 			.min(regexExtractFormatGroupMin)
 			.default(regexExtractFormatGroupDefault)
@@ -199,10 +207,10 @@ export const AttributeCollectPivot = zod
 			),
 		name_format: zod
 			.union([
-				zod.null(),
 				NameFormat.describe(
 					'How a raw name becomes the name matched against the columns. Omitted\nuses the raw name verbatim.'
-				)
+				),
+				zod.null()
 			])
 			.optional(),
 		value: zod
@@ -225,7 +233,7 @@ export type KeyValueOpOutput = zod.output<typeof KeyValueOp>
 
 export const FilterValue = zod.union([
 	zod.object({
-		integer: zod.number().int()
+		integer: zod.int()
 	}),
 	zod.object({
 		float: zod.number()
@@ -270,29 +278,31 @@ export const AttributeFilter: zod.ZodType<AttributeFilter> = zod.union([
 	zod.object({
 		match: AttributeFilterExpr
 	})
-]) as any
+])
 
 export type AttributeFilterOutput = zod.output<typeof AttributeFilter>
 
 export const AttributeCollectRule = zod
 	.object({
+		action: AttributeCollectAction.optional().describe(
+			'What each eligible parent does to the table. Default `upsert`.'
+		),
 		columns: zod
 			.record(zod.string(), AttributeCollectBinding)
 			.describe(
-				"Lookup-table column name -> source binding. Must bind every declared\ncolumn exactly once, hash keys and range partition\/start\/end columns\nincluded; an unknown column is rejected when the table resolves. YAML\nmap order determines neither schema nor composite-key order.\n\nA binding with a `key` reads that exact attribute. A `null` binding, or\none without `key`, is \*pivoted\*: it reads the `pivot.value` field of the\narray element whose normalized name equals the column name (or the\nbinding's `name`), and requires `pivot` on the rule.\n\nA hash key is taken from the resulting row. In a range table the bound\ncolumns supply the interval, whose type and inclusive ends the table\ndefines; bounds are consumed by the index, not stored as readable\nvalues. There is no match block and no per-processor key, TTL or\ncapacity setting.\n\nA missing input or failed cast skips the whole candidate row, leaving\nany existing row untouched. No partial updates, no fallback values."
+				"Lookup-table column name -> source binding. For `upsert`, must bind\nevery declared column exactly once, hash keys and the prefix and\npartition columns included; for `delete`, exactly the key columns; for\n`delete_partition`, exactly the partition columns. An unknown column is\nrejected when the table resolves. YAML map order determines neither\nschema nor composite-key order.\n\nA binding with a `key` reads that exact attribute. A `null` binding, or\none without `key`, is \*pivoted\*: it reads the `pivot.value` field of the\narray element whose normalized name equals the column name (or the\nbinding's `name`), and requires `pivot` on the rule.\n\nA hash key is taken from the resulting row. In a prefix table the prefix\ncolumn supplies the CIDR (a string attribute such as `10.1.0.0\/16`, or a\nbare address for a host route; host bits set is an error), which is\nconsumed by the index, not stored as a readable value. There is no match\nblock and no per-processor key, TTL or capacity setting.\n\nA missing input or failed cast skips the whole candidate row, leaving\nany existing row untouched. No partial updates, no fallback values."
 			),
 		lookup_table: zod
-			.string()
 			.uuid()
 			.describe(
 				'UUID of a configured lookup table whose source is `processor` (mutable);\nfile-backed tables are not writable. Names are not unique identifiers.'
 			),
 		pivot: zod
 			.union([
-				zod.null(),
 				AttributeCollectPivot.describe(
 					"Bind columns to the elements of one flattened array by a naming field\nrather than by element position. Required by, and only useful with,\nbindings in `columns` that have no `key`. Elements are read from the\nrule's source table."
-				)
+				),
+				zod.null()
 			])
 			.optional(),
 		table: AttributeTable.describe(
@@ -300,10 +310,10 @@ export const AttributeCollectRule = zod
 		),
 		when: zod
 			.union([
-				zod.null(),
 				AttributeFilter.describe(
 					'Further record-selection predicate, ANDed with the top-level `when`.\nOmitted adds no restriction. A predicate error skips only this rule.\n\nA record rule may reference record, resource or scope attributes; a\nresource or scope rule only its own table, inherited guard included.\nSelection is over whole records.'
-				)
+				),
+				zod.null()
 			])
 			.optional()
 	})
@@ -321,10 +331,10 @@ export const AttributeCollect = zod
 			),
 		when: zod
 			.union([
-				zod.null(),
 				AttributeFilter.describe(
 					"Record-selection predicate over incoming attributes, evaluated once for\nall rules and ANDed with each rule's own `when`. Omitted means every\nrecord is eligible. A predicate error skips all collection without\ndropping telemetry.\n\nFor a resource or scope rule every predicate leaf must reference that\nrule's source table, so selection is uniform for its shared parent; a\nrecord rule may reference any table. Selection is per record."
-				)
+				),
+				zod.null()
 			])
 			.optional()
 	})
@@ -334,6 +344,54 @@ export const AttributeCollect = zod
 
 export type AttributeCollect = zod.input<typeof AttributeCollect>
 export type AttributeCollectOutput = zod.output<typeof AttributeCollect>
+
+export const AttributeKeyList = zod
+	.union([zod.string(), zod.array(zod.string())])
+	.describe('One attribute key, or keys tried in order.')
+
+export type AttributeKeyList = zod.input<typeof AttributeKeyList>
+export type AttributeKeyListOutput = zod.output<typeof AttributeKeyList>
+
+export const attributeKeyExtractGroupDefault = 1
+export const attributeKeyExtractGroupMin = 0
+
+export const AttributeKeyExtract = zod
+	.object({
+		from: AttributeKeyList.describe(
+			'The attribute key, or fallback keys, whose value is searched; the first\nkey present on the parent supplies it.'
+		),
+		group: zod
+			.int()
+			.min(attributeKeyExtractGroupMin)
+			.default(attributeKeyExtractGroupDefault)
+			.describe(
+				'Capture group whose text becomes the probe value, `0` being the whole\nmatch. Must exist in `pattern`. Defaults to `1`.'
+			),
+		pattern: zod
+			.string()
+			.describe(
+				'Regular expression in Rust `regex` syntax, searched anywhere in the\nvalue; the first match is used.'
+			)
+	})
+	.describe(
+		'Read `from` as a plain key would be read, then probe with one capture group\nof `pattern` instead of the whole value: `ae21.0` with `^(.+)\\.\\d+$` probes\n`ae21`.\n\nExtraction runs before `cast`, so `cast: integer` turns an extracted `\"21\"`\ninto `21`; without a cast the result is a string. Only string values are\nsearched. A non-string value, no match, or an unmatched or empty group is an\ninvalid input, like a failed cast: the next fallback key is not tried.'
+	)
+
+export type AttributeKeyExtract = zod.input<typeof AttributeKeyExtract>
+export type AttributeKeyExtractOutput = zod.output<typeof AttributeKeyExtract>
+
+export const AttributeKeys = zod
+	.union([
+		zod.string(),
+		zod.array(zod.string()),
+		AttributeKeyExtract.describe('Probe with part of the value instead of all of it.')
+	])
+	.describe(
+		'One attribute key, or keys tried in order, optionally narrowed by a regular\nexpression. A single key keeps its plain string form when written back.'
+	)
+
+export type AttributeKeys = zod.input<typeof AttributeKeys>
+export type AttributeKeysOutput = zod.output<typeof AttributeKeys>
 
 export const AttributeLookupCast = zod
 	.enum(['bool', 'integer', 'string', 'ip'])
@@ -348,23 +406,21 @@ export const AttributeLookupInput = zod
 	.object({
 		cast: zod
 			.union([
-				zod.null(),
 				AttributeLookupCast.describe(
-					"Explicit conversion before probing. Without a cast the input must\nalready match the table's key type. A conversion failure skips the\nprobe; composite keys are never implicitly stringified.\n\nAn `ip` key column or range point always needs `cast: ip`, because the\ninput arrives as a string and would otherwise miss every record. A\nmissing or contradicting cast is rejected when the table resolves."
-				)
+					"Explicit conversion before probing. Without a cast the input must\nalready match the table's key type. A conversion failure skips the\nprobe; composite keys are never implicitly stringified.\n\nAn `ip` key column always needs `cast: ip`, because the input arrives as\na string and would otherwise miss every record. A missing or\ncontradicting cast is rejected when the table resolves. A prefix\ntable's `point` is always an IP and needs no cast."
+				),
+				zod.null()
 			])
 			.optional(),
-		key: zod
-			.string()
-			.describe(
-				'Dotted attribute key, matched byte for byte. A flattened array element\nis addressed by its literal index, such as `interfaces.0.ifIndex`; no\nsegment carries a special meaning. Composite inputs align by parent ID,\nnever by Arrow row position.'
-			),
+		key: AttributeKeys.describe(
+			"Dotted attribute key, matched byte for byte. A flattened array element\nis addressed by its literal index, such as `interfaces.0.ifIndex`; no\nsegment carries a special meaning. Composite inputs align by parent ID,\nnever by Arrow row position.\n\nA list names fallbacks: the first key present on the parent supplies\nthe input, such as `[bgp.router, source.address]` for a router mapped\nfrom its exporter where a mapping exists. `table` and `cast` apply to\neach. A present value that fails its cast is an invalid input; the next\nkey is not tried.\n\n`{from: <key or list>, pattern: <regex>, group: <n>}` probes with one\ncapture group of the value instead of the whole of it, such as\n`{from: interface.name, pattern: '^(.+)\\.\\d+$'}` to look up `ae21`\nfrom `ae21.0`. Extraction runs before `cast` ([`AttributeKeyExtract`])."
+		),
 		table: zod
 			.union([
-				zod.null(),
 				AttributeTable.describe(
 					"Defaults to the rule's destination table. A record rule may also read a\nresource attribute, resolved through the record's resource ID. No other\ncross-table read is supported."
-				)
+				),
+				zod.null()
 			])
 			.optional()
 	})
@@ -373,25 +429,40 @@ export const AttributeLookupInput = zod
 export type AttributeLookupInput = zod.input<typeof AttributeLookupInput>
 export type AttributeLookupInputOutput = zod.output<typeof AttributeLookupInput>
 
+export const AttributeLookupLiteral = zod
+	.union([zod.boolean(), zod.int(), zod.string()])
+	.describe(
+		"A constant probe value. Any YAML scalar but a float: it is rendered as text\nand parsed as the key column's type, the way the table parses its rows."
+	)
+
+export type AttributeLookupLiteral = zod.input<typeof AttributeLookupLiteral>
+export type AttributeLookupLiteralOutput = zod.output<typeof AttributeLookupLiteral>
+
 export const AttributeLookupMatch = zod
 	.object({
 		keys: zod
 			.record(zod.string(), AttributeLookupInput)
 			.optional()
 			.describe(
-				'Lookup-table key\/partition column -> input attribute. Empty only for an\nunpartitioned range lookup. Range bound columns are not probe bindings.'
+				'Lookup-table key\/partition column -> input attribute. Empty only for an\nunpartitioned prefix lookup. The prefix column is not a probe binding.'
+			),
+		literals: zod
+			.record(zod.string(), AttributeLookupLiteral)
+			.optional()
+			.describe(
+				"Lookup-table key\/partition column -> a constant every record probes\nwith, such as `vrf: global` on a route table. Parsed as the column's type\nwhen the table resolves, so `router: 192.0.2.1` binds an ip column with\nno cast. A column is bound here or in `keys`, never both, and a hash\nkey needs at least one column from `keys`."
 			),
 		point: zod
 			.union([
-				zod.null(),
 				AttributeLookupInput.describe(
-					"Point to search for in a range index; absent for a hash lookup. An\nexplicit cast must be `integer` or `ip`, matching the table's range."
-				)
+					'Address to look up in a prefix table; absent for a hash lookup. Always\nread as an IP (text, or the bare-integer form), so `cast` may be left\nout; if set it must be `ip`.'
+				),
+				zod.null()
 			])
 			.optional()
 	})
 	.describe(
-		'Bind attributes to the index already defined by the lookup table.\n\nA hash table requires exactly its configured key columns and no `point`; a\nrange table its partition columns (possibly none) plus `point`. Bindings are\nnamed, so YAML map order does not determine tuple order.'
+		'Bind attributes to the index already defined by the lookup table.\n\nA hash table requires exactly its configured key columns and no `point`; a\nprefix table its partition columns (possibly none) plus `point`, which\nfinds the longest stored prefix containing that address. Bindings are\nnamed, so YAML map order does not determine tuple order.'
 	)
 
 export type AttributeLookupMatch = zod.input<typeof AttributeLookupMatch>
@@ -400,26 +471,25 @@ export type AttributeLookupMatchOutput = zod.output<typeof AttributeLookupMatch>
 export const AttributeLookupRule = zod
 	.object({
 		lookup_table: zod
-			.string()
 			.uuid()
 			.describe('UUID of a configured lookup table. Names are not unique identifiers.'),
 		match: AttributeLookupMatch.describe(
-			"Input attributes supplying the table's hash key or partition\/range key."
+			"Input attributes supplying the table's hash key, or a prefix table's\npartition and probe address."
 		),
 		output: zod
 			.record(zod.string(), zod.string())
 			.describe(
-				'Destination attribute key -> lookup-table column name. All columns come\nfrom the same matched row, so extra outputs add no index probes. Values\nkeep their column types; IP values are emitted as strings.'
+				"Destination attribute key -> lookup-table column name. All columns come\nfrom the same matched row, so extra outputs add no index probes. Values\nkeep their column types; IP values are emitted as strings. Naming a\nprefix table's `prefix_column` emits the prefix that matched, as CIDR\ntext (`10.1.0.0\/16`)."
 			),
 		table: AttributeTable.describe(
 			'Destination attribute table and default location of input attributes.\n`record` means log, span or metric attributes; it does not include metric\ndata-point attributes. All outputs belong to this table.'
 		),
 		when: zod
 			.union([
-				zod.null(),
 				AttributeFilter.describe(
 					'Further record-selection predicate, ANDed with the top-level `when`.\nOmitted adds no restriction. A predicate error skips only this rule.\n\nA record destination may reference record, resource or scope attributes;\na resource or scope destination only its own table — the same\nrestriction the inherited top-level predicate carries.'
-				)
+				),
+				zod.null()
 			])
 			.optional()
 	})
@@ -445,15 +515,15 @@ export const AttributeLookup = zod
 			),
 		when: zod
 			.union([
-				zod.null(),
 				AttributeFilter.describe(
 					"Record-selection predicate over incoming attributes, evaluated once for\nall rules and ANDed with each rule's own `when`. Omitted means every\nrecord is eligible; unselected records pass through unchanged. A\npredicate error skips all enrichment without dropping telemetry.\n\nFor a resource or scope destination every predicate leaf must reference\nthat same table, so eligibility is uniform for its shared parent; a\nrecord destination may reference any table. Selection is per record and\ndoes not change output-collision rules."
-				)
+				),
+				zod.null()
 			])
 			.optional()
 	})
 	.describe(
-		"Enrich attributes with independent lookups, applying their writes together.\n\nEvery rule reads the incoming attributes: another rule's outputs are not\nvisible as inputs. Each parent matches at most one lookup row, whose\nselected columns supply scalar output attributes.\n\nMissing inputs, failed casts, lookup misses and null result cells leave the\ndestination unchanged; invalid inputs are counted separately from misses.\nDefaults and fallback expressions are not supported."
+		"Enrich attributes with independent lookups, applying their writes together.\n\nEvery rule reads the incoming attributes: another rule's outputs are not\nvisible as inputs. Each parent matches at most one lookup row, whose\nselected columns supply scalar output attributes.\n\nMissing inputs, failed casts, lookup misses and null result cells leave the\ndestination unchanged; invalid inputs are counted separately from misses.\nDefault values are not supported; an input key may list fallback\nattributes, and may probe with a regex capture of the value instead of the\nwhole of it ([`AttributeKeys`])."
 	)
 
 export type AttributeLookup = zod.input<typeof AttributeLookup>
@@ -501,7 +571,6 @@ export const batchBatchTimeoutMin = 0
 
 export const Batch = zod.object({
 	batch_size: zod
-		.number()
 		.int()
 		.min(batchBatchSizeMin)
 		.default(batchBatchSizeDefault)
@@ -509,7 +578,6 @@ export const Batch = zod.object({
 			"Omitted or 0 takes the default of 1000. At most 65535 on a listener or\nmonitor, which numbers a payload's rows with a `u16`; a sink only counts\nwhole payloads against it, so there it goes up to 2147483647."
 		),
 	batch_timeout: zod
-		.number()
 		.int()
 		.min(batchBatchTimeoutMin)
 		.default(batchBatchTimeoutDefault)
@@ -518,6 +586,207 @@ export const Batch = zod.object({
 
 export type Batch = zod.input<typeof Batch>
 export type BatchOutput = zod.output<typeof Batch>
+
+export const OnFull = zod
+	.enum(['drop', 'wait'])
+	.describe('What a full event channel does to the session that produced the event.')
+
+export type OnFull = zod.input<typeof OnFull>
+export type OnFullOutput = zod.output<typeof OnFull>
+
+export const bgpEventsBufferSizeDefault = 10000
+export const bgpEventsBufferSizeMin = 0
+
+export const bgpEventsOnFullDefault = 'drop'
+export const bgpEventsRoutesDefault = false
+
+export const BgpEvents = zod.object({
+	buffer_size: zod
+		.int()
+		.min(bgpEventsBufferSizeMin)
+		.default(bgpEventsBufferSizeDefault)
+		.describe('Events held between the sessions and the workers.'),
+	on_full: OnFull.default(bgpEventsOnFullDefault),
+	routes: zod
+		.boolean()
+		.default(bgpEventsRoutesDefault)
+		.describe(
+			'One record per announced or withdrawn route, besides the lifecycle\nevents. A full table dump is a record per route.'
+		)
+})
+
+export type BgpEvents = zod.input<typeof BgpEvents>
+export type BgpEventsOutput = zod.output<typeof BgpEvents>
+
+export const TcpListener = zod.object({
+	address: zod.string(),
+	ip_blacklist: zod.array(zod.string()).optional(),
+	ip_whitelist: zod.array(zod.string()).optional()
+})
+
+export type TcpListener = zod.input<typeof TcpListener>
+export type TcpListenerOutput = zod.output<typeof TcpListener>
+
+export const bgpPeerAsnMin = 0
+
+export const bgpPeerHoldTimeMin = 0
+
+export const BgpPeer = zod
+	.object({
+		address: zod.string().describe("The router's address, as its TCP connection comes from."),
+		asn: zod
+			.int()
+			.min(bgpPeerAsnMin)
+			.nullish()
+			.describe("patrolli's AS toward this router, instead of the section's `asn`."),
+		hold_time: zod
+			.int()
+			.min(bgpPeerHoldTimeMin)
+			.nullish()
+			.describe(
+				"Seconds offered to this router, instead of the section's\n`hold_time`; 0 or at least 3."
+			),
+		password: zod
+			.union([Sensitive.describe('TCP-MD5 (RFC 2385) password; Linux only.'), zod.null()])
+			.optional()
+	})
+	.describe('Settings for one router of a passive BGP section.')
+
+export type BgpPeer = zod.input<typeof BgpPeer>
+export type BgpPeerOutput = zod.output<typeof BgpPeer>
+
+export const bgpPeeringAsnDefault = null
+export const bgpPeeringAsnMin = 0
+
+export const bgpPeeringHoldTimeDefault = 90
+export const bgpPeeringHoldTimeMin = 0
+
+export const bgpPeeringKeepDefault = 300
+export const bgpPeeringKeepMin = 0
+
+export const bgpPeeringListenerDefault = {
+	address: '0.0.0.0:179',
+	ip_blacklist: [],
+	ip_whitelist: []
+}
+export const bgpPeeringPeersDefault = []
+export const bgpPeeringRouterIdDefault = null
+
+export const BgpPeering = zod
+	.object({
+		asn: zod
+			.int()
+			.min(bgpPeeringAsnMin)
+			.nullish()
+			.default(bgpPeeringAsnDefault)
+			.describe(
+				"patrolli's AS. Unset, patrolli answers each router with the router's\nown AS, so every session is iBGP (patrolli as a route-reflector\nclient sees the whole table)."
+			),
+		hold_time: zod
+			.int()
+			.min(bgpPeeringHoldTimeMin)
+			.default(bgpPeeringHoldTimeDefault)
+			.describe(
+				'Seconds offered; 0 (no keepalives) or at least 3. A router offering\nless wins.'
+			),
+		keep: zod
+			.int()
+			.min(bgpPeeringKeepMin)
+			.default(bgpPeeringKeepDefault)
+			.describe(
+				"Seconds a router's routes stay after its session is lost, for it to\nreconnect and send them again."
+			),
+		listener: TcpListener.default(bgpPeeringListenerDefault).describe(
+			'Port 179 needs `CAP_NET_BIND_SERVICE`. The allow\/deny lists decide\nwhich routers may peer.'
+		),
+		peers: zod
+			.array(BgpPeer)
+			.default(bgpPeeringPeersDefault)
+			.describe('Settings for single routers. A router needs no entry to peer.'),
+		router_id: zod
+			.string()
+			.nullish()
+			.default(bgpPeeringRouterIdDefault)
+			.describe(
+				"patrolli's BGP identifier. Unset, the session's local IPv4 address;\nrequired on an IPv6 listener."
+			)
+	})
+	.describe('Passive BGP sessions: patrolli never connects, it waits for routers.')
+
+export type BgpPeering = zod.input<typeof BgpPeering>
+export type BgpPeeringOutput = zod.output<typeof BgpPeering>
+
+export const bmpListenerKeepDefault = 300
+export const bmpListenerKeepMin = 0
+
+export const bmpListenerListenerDefault = {
+	address: '0.0.0.0:10179',
+	ip_blacklist: [],
+	ip_whitelist: []
+}
+export const bmpListenerMaxMessageSizeDefault = 1048576
+export const bmpListenerMaxMessageSizeMin = 0
+
+export const BmpListener = zod.object({
+	keep: zod
+		.int()
+		.min(bmpListenerKeepMin)
+		.default(bmpListenerKeepDefault)
+		.describe(
+			"Seconds a router's routes stay after its session is lost, for it to\nreconnect and send them again."
+		),
+	listener: TcpListener.default(bmpListenerListenerDefault),
+	max_message_size: zod
+		.int()
+		.min(bmpListenerMaxMessageSizeMin)
+		.default(bmpListenerMaxMessageSizeDefault)
+		.describe('Bytes; a longer message ends the session.')
+})
+
+export type BmpListener = zod.input<typeof BmpListener>
+export type BmpListenerOutput = zod.output<typeof BmpListener>
+
+export const bgpListenerBgpDefault = null
+export const bgpListenerBmpDefault = null
+export const bgpListenerEventsDefault = {
+	buffer_size: 10000,
+	on_full: 'drop' as const,
+	routes: false
+}
+export const bgpListenerVrfsDefault = []
+
+export const BgpListener = zod
+	.object({
+		bgp: zod
+			.union([
+				BgpPeering.describe(
+					'Passive BGP (RFC 4271): routers connect and send what they would\nannounce to a peer. Their routes go into the `global` VRF.'
+				),
+				zod.null()
+			])
+			.default(bgpListenerBgpDefault),
+		bmp: zod
+			.union([
+				BmpListener.describe(
+					"BMP (RFC 7854): only the routers' Loc-RIB (RFC 9069) is read."
+				),
+				zod.null()
+			])
+			.default(bgpListenerBmpDefault),
+		events: BgpEvents.default(bgpListenerEventsDefault),
+		vrfs: zod
+			.array(zod.string())
+			.default(bgpListenerVrfsDefault)
+			.describe(
+				"VRFs kept, spelled as the table's `vrf` column (`global`, `65000:1`,\n`192.0.2.1:7`). Empty keeps every VRF."
+			)
+	})
+	.describe(
+		'A BGP route collector: routers feed it over BMP or passive BGP, and their\nroutes go into the `bgp` lookup table whose source names this listener.\nIts records are lifecycle events and, optionally, one per route change.'
+	)
+
+export type BgpListener = zod.input<typeof BgpListener>
+export type BgpListenerOutput = zod.output<typeof BgpListener>
 
 export const cefEnabledDefault = true
 
@@ -541,12 +810,10 @@ export const oidPositionsStartMin = 0
 
 export const OidPositions = zod.object({
 	end: zod
-		.number()
 		.int()
 		.min(oidPositionsEndMin)
 		.describe('index of the last sub-identifier to take, inclusive'),
 	start: zod
-		.number()
 		.int()
 		.min(oidPositionsStartMin)
 		.describe('index of the first sub-identifier to take, inclusive')
@@ -583,7 +850,7 @@ export type ChangePasswordRequestOutput = zod.output<typeof ChangePasswordReques
 export const memoryChannelChannelBufferSizeMin = 0
 
 export const MemoryChannel = zod.object({
-	channel_buffer_size: zod.number().int().min(memoryChannelChannelBufferSizeMin).optional(),
+	channel_buffer_size: zod.int().min(memoryChannelChannelBufferSizeMin).optional(),
 	non_blocking: zod.boolean().optional()
 })
 
@@ -605,7 +872,6 @@ export const diskChannelWorkerCountMin = 0
 
 export const DiskChannel = zod.object({
 	channel_buffer_size: zod
-		.number()
 		.int()
 		.min(diskChannelChannelBufferSizeMin)
 		.optional()
@@ -614,14 +880,13 @@ export const DiskChannel = zod.object({
 		),
 	compression: OtapCompression.optional(),
 	max_disk_size: zod
-		.number()
 		.int()
 		.min(diskChannelMaxDiskSizeMin)
 		.optional()
 		.describe(
 			'Bytes of payloads (as stored, after compression) the topic holds\nbefore a send waits or, with `non_blocking`, fails; 0 is unbounded.\nNot the size of its files, which keep delivered payloads until a\ncompaction drops them.'
 		),
-	max_memtable_size: zod.number().int().min(diskChannelMaxMemtableSizeMin).optional(),
+	max_memtable_size: zod.int().min(diskChannelMaxMemtableSizeMin).optional(),
 	non_blocking: zod.boolean().optional(),
 	transport_optimized: zod
 		.boolean()
@@ -629,7 +894,7 @@ export const DiskChannel = zod.object({
 		.describe(
 			'Stores payloads in the OTAP transport encoding (batches sorted, ids\ndelta-encoded) before `compression`: smaller on disk, mostly for\nmetrics, for a costlier encode and decode. Payloads come back with\ntheir attributes reordered. A topic still reads what it stored with\nthe other setting.'
 		),
-	worker_count: zod.number().int().min(diskChannelWorkerCountMin).optional(),
+	worker_count: zod.int().min(diskChannelWorkerCountMin).optional(),
 	write_through: zod
 		.boolean()
 		.optional()
@@ -695,19 +960,16 @@ export const Cise = zod
 				'Off, ISE\/ACS messages are plain syslog: one record per segment, no\n`cise` attribute.'
 			),
 		max_pending: zod
-			.number()
 			.int()
 			.min(ciseMaxPendingMin)
 			.default(ciseMaxPendingDefault)
 			.describe('Events held at once; past it the oldest is sent incomplete.'),
 		max_pending_bytes: zod
-			.number()
 			.int()
 			.min(ciseMaxPendingBytesMin)
 			.default(ciseMaxPendingBytesDefault)
 			.describe('Bytes held at once; past it the oldest event is sent incomplete.'),
 		max_segments: zod
-			.number()
 			.int()
 			.min(ciseMaxSegmentsMin)
 			.default(ciseMaxSegmentsDefault)
@@ -715,7 +977,6 @@ export const Cise = zod
 				'Events split into more segments are not reassembled: each segment is\nits own record. `1` turns reassembly off.'
 			),
 		reassembly_timeout: zod
-			.number()
 			.int()
 			.min(ciseReassemblyTimeoutMin)
 			.default(ciseReassemblyTimeoutDefault)
@@ -755,7 +1016,7 @@ export type ClickhouseTableEngine = zod.input<typeof ClickhouseTableEngine>
 export type ClickhouseTableEngineOutput = zod.output<typeof ClickhouseTableEngine>
 
 export const clickhouseCreateSchemaClusterNameDefault = null
-export const clickhouseCreateSchemaTableEngineDefault = { name: 'MergeTree' as const, params: [] }
+export const clickhouseCreateSchemaTableEngineDefault = { name: 'MergeTree', params: [] }
 export const clickhouseCreateSchemaTtlDefault = 0
 export const clickhouseCreateSchemaTtlMin = 0
 
@@ -769,7 +1030,6 @@ export const ClickhouseCreateSchema = zod.object({
 		),
 	table_engine: ClickhouseTableEngine.default(clickhouseCreateSchemaTableEngineDefault),
 	ttl: zod
-		.number()
 		.int()
 		.min(clickhouseCreateSchemaTtlMin)
 		.default(clickhouseCreateSchemaTtlDefault)
@@ -829,7 +1089,7 @@ export const Tls = zod.object({
 	ca_cert_path: zod.string().nullish(),
 	cert_path: zod.string().nullish(),
 	insecure_skip_verify: zod.boolean().optional(),
-	key_password: zod.union([zod.null(), Sensitive]).optional(),
+	key_password: zod.union([Sensitive, zod.null()]).optional(),
 	key_path: zod.string().nullish()
 })
 
@@ -851,10 +1111,10 @@ export const Clickhouse = zod.object({
 	compression: ClickhouseCompression.optional(),
 	create_schema: zod
 		.union([
-			zod.null(),
 			ClickhouseCreateSchema.describe(
 				"Run `CREATE DATABASE` \/ `CREATE TABLE IF NOT EXISTS` on startup. Handy\nfor a first run; turn it off in production so workers don't race to\ncreate tables and so schema changes stay under your control.\n\nOmit the block to leave schema management entirely to you. The DDL knobs\ninside it (`cluster_name`, `table_engine`, `ttl`) only apply at creation\ntime — changing them later does not alter existing tables."
-			)
+			),
+			zod.null()
 		])
 		.optional(),
 	database: zod.string().optional(),
@@ -869,14 +1129,13 @@ export const Clickhouse = zod.object({
 			'HTTP interface URLs, e.g. `http:\/\/ch-1:8123` or `https:\/\/ch-1:8443`.\nListing more than one turns on client-side routing (see `distribution`).\nWith chproxy\/HAProxy or a `Distributed` table in front, list the single\nfront door and leave `distribution` at its default.'
 		),
 	max_concurrent_inserts: zod
-		.number()
 		.int()
 		.min(clickhouseMaxConcurrentInsertsMin)
 		.optional()
 		.describe(
 			"Inserts in flight to one endpoint at once, across the sink's workers.\nA batch sends one insert per table, so this counts inserts, not\nbatches. Past it, a worker waits with its batch ready (the wait does\nnot count toward `write_timeout`). 0 (default) means no limit."
 		),
-	password: zod.union([zod.null(), Sensitive]).optional(),
+	password: zod.union([Sensitive, zod.null()]).optional(),
 	settings: zod
 		.record(zod.string(), zod.string())
 		.optional()
@@ -884,7 +1143,7 @@ export const Clickhouse = zod.object({
 			'Extra Clickhouse session settings sent with every statement, e.g.\n`max_execution_time: \"60\"`. Escape hatch for anything not modelled above.'
 		),
 	tables: ClickhouseTables.optional(),
-	tls: zod.union([zod.null(), Tls]).optional(),
+	tls: zod.union([Tls, zod.null()]).optional(),
 	username: zod.string().nullish(),
 	wait_for_async_insert: zod
 		.boolean()
@@ -893,7 +1152,6 @@ export const Clickhouse = zod.object({
 			'Block until an async insert is flushed to disk. Costs throughput, buys\ndurability. Ignored when `async_insert` is false.'
 		),
 	write_timeout: zod
-		.number()
 		.int()
 		.min(clickhouseWriteTimeoutMin)
 		.default(clickhouseWriteTimeoutDefault)
@@ -917,7 +1175,7 @@ export const SnmpV2C = zod.object({
 	address: zod.string(),
 	community: zod.string(),
 	disable_bulk: zod.boolean().nullish(),
-	max_bulk_repetitions: zod.number().int().min(snmpV2CMaxBulkRepetitionsMin).optional()
+	max_bulk_repetitions: zod.int().min(snmpV2CMaxBulkRepetitionsMin).optional()
 })
 
 export type SnmpV2C = zod.input<typeof SnmpV2C>
@@ -945,9 +1203,9 @@ export type Privacy = zod.input<typeof Privacy>
 export type PrivacyOutput = zod.output<typeof Privacy>
 
 export const Usm = zod.object({
-	authentication: zod.union([zod.null(), Authentication]).optional(),
+	authentication: zod.union([Authentication, zod.null()]).optional(),
 	context_name: zod.string().nullish(),
-	privacy: zod.union([zod.null(), Privacy]).optional(),
+	privacy: zod.union([Privacy, zod.null()]).optional(),
 	username: zod.string()
 })
 
@@ -967,7 +1225,7 @@ export const snmpV3MaxBulkRepetitionsMin = 0
 export const SnmpV3 = zod.object({
 	address: zod.string(),
 	disable_bulk: zod.boolean().nullish(),
-	max_bulk_repetitions: zod.number().int().min(snmpV3MaxBulkRepetitionsMin).optional(),
+	max_bulk_repetitions: zod.int().min(snmpV3MaxBulkRepetitionsMin).optional(),
 	security_model: SecurityModel
 })
 
@@ -993,13 +1251,9 @@ export const httpConnectTimeoutDefault = 1000
 export const httpConnectTimeoutMin = 0
 
 export const Http = zod.object({
-	auth: zod.union([zod.null(), HttpAuth]).optional(),
-	connect_timeout: zod
-		.number()
-		.int()
-		.min(httpConnectTimeoutMin)
-		.default(httpConnectTimeoutDefault),
-	tls: zod.union([zod.null(), Tls]).optional(),
+	auth: zod.union([HttpAuth, zod.null()]).optional(),
+	connect_timeout: zod.int().min(httpConnectTimeoutMin).default(httpConnectTimeoutDefault),
+	tls: zod.union([Tls, zod.null()]).optional(),
 	url: zod.string()
 })
 
@@ -1031,9 +1285,9 @@ export type EndpointConfigOutput = zod.output<typeof EndpointConfig>
 export const createEndpointRequestAdmStatusDefault = 1
 
 export const CreateEndpointRequest = zod.object({
-	adm_status: zod.number().int().default(createEndpointRequestAdmStatusDefault),
+	adm_status: zod.int().default(createEndpointRequestAdmStatusDefault),
 	config: EndpointConfig,
-	host_id: zod.string().uuid(),
+	host_id: zod.uuid(),
 	name: zod.string()
 })
 
@@ -1041,11 +1295,11 @@ export type CreateEndpointRequest = zod.input<typeof CreateEndpointRequest>
 export type CreateEndpointRequestOutput = zod.output<typeof CreateEndpointRequest>
 
 export const CreateEndpointResponse = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	config: EndpointConfig,
-	endpoint_id: zod.string().uuid(),
-	host_id: zod.string().uuid(),
-	last_updated: zod.string().datetime({ offset: true }),
+	endpoint_id: zod.uuid(),
+	host_id: zod.uuid(),
+	last_updated: zod.iso.datetime({ offset: true }),
 	name: zod.string()
 })
 
@@ -1101,7 +1355,7 @@ export const OidChain: zod.ZodType<OidChain> = zod.object({
 	chain: zod.array(zod.lazy(() => OidChain)).optional(),
 	chain_strategy: ChainStrategy.optional(),
 	oid: zod.string()
-}) as any
+})
 
 export type OidChainOutput = zod.output<typeof OidChain>
 
@@ -1119,11 +1373,10 @@ export const snmpWalkRequestTimeoutDefault = 5000
 export const snmpWalkRequestTimeoutMin = 0
 
 export const SnmpWalk = zod.object({
-	chunk_size: zod.number().int().min(snmpWalkChunkSizeMin).optional(),
+	chunk_size: zod.int().min(snmpWalkChunkSizeMin).optional(),
 	disable_bulk: zod.boolean().nullish(),
-	max_results: zod.number().int().min(snmpWalkMaxResultsMin).optional(),
+	max_results: zod.int().min(snmpWalkMaxResultsMin).optional(),
 	max_unknown_oids_per_row: zod
-		.number()
 		.int()
 		.min(snmpWalkMaxUnknownOidsPerRowMin)
 		.nullish()
@@ -1131,10 +1384,9 @@ export const SnmpWalk = zod.object({
 			'How many of the configured OIDs may produce no value for a row before that\nrow is discarded instead of shipped incomplete.\n\nCounts every OID in the config forest, chained ones included, so `0` demands\nthat every one of them resolve. Omitted (`null`) disables the check and every\nrow is emitted whatever it holds. Only meaningful with `table_format`, which\nis the only mode that has rows.'
 		),
 	oids: zod.array(OidChain),
-	poll_worker_count: zod.number().int().min(snmpWalkPollWorkerCountMin).optional(),
-	request_retries: zod.number().int().min(snmpWalkRequestRetriesMin).optional(),
+	poll_worker_count: zod.int().min(snmpWalkPollWorkerCountMin).optional(),
+	request_retries: zod.int().min(snmpWalkRequestRetriesMin).optional(),
 	request_timeout: zod
-		.number()
 		.int()
 		.min(snmpWalkRequestTimeoutMin)
 		.default(snmpWalkRequestTimeoutDefault),
@@ -1204,227 +1456,263 @@ export const LogRowOwned = zod.object({
 	attrs: zod.array(
 		zod.tuple([
 			zod.union([
-				zod.object({
-					String: zod.string()
-				}),
-				zod.object({
-					SmolStr: zod.string()
-				})
+				zod
+					.object({
+						String: zod.string()
+					})
+					.strict(),
+				zod
+					.object({
+						SmolStr: zod.string()
+					})
+					.strict()
 			]),
 			zod.union([
 				zod.enum(['Null']),
-				zod.object({
-					Bool: zod.boolean()
-				}),
-				zod.object({
-					Int64: zod.number().int()
-				}),
-				zod.object({
-					Double: zod.number()
-				}),
-				zod.object({
-					String: zod.union([
-						zod.object({
-							String: zod.string()
-						}),
-						zod.object({
-							SmolStr: zod.string()
-						})
-					])
-				}),
-				zod.object({
-					Bytes: zod.array(
-						zod.number().int().min(logRowOwnedAttrsItem1ItemSixBytesItemMin)
-					)
-				}),
-				zod.object({
-					Array: zod.array(
-						zod.union([
-							zod.enum(['Null']),
-							zod.object({
-								Bool: zod.boolean()
-							}),
-							zod.object({
-								Int64: zod.number().int()
-							}),
-							zod.object({
-								Double: zod.number()
-							}),
-							zod.object({
-								String: zod.union([
+				zod
+					.object({
+						Bool: zod.boolean()
+					})
+					.strict(),
+				zod
+					.object({
+						Int64: zod.int()
+					})
+					.strict(),
+				zod
+					.object({
+						Double: zod.number()
+					})
+					.strict(),
+				zod
+					.object({
+						String: zod.union([
+							zod
+								.object({
+									String: zod.string()
+								})
+								.strict(),
+							zod
+								.object({
+									SmolStr: zod.string()
+								})
+								.strict()
+						])
+					})
+					.strict(),
+				zod
+					.object({
+						Bytes: zod.array(zod.int().min(logRowOwnedAttrsItem1ItemSixBytesItemMin))
+					})
+					.strict(),
+				zod
+					.object({
+						Array: zod.array(
+							zod.union([
+								zod.enum(['Null']),
+								zod
+									.object({
+										Bool: zod.boolean()
+									})
+									.strict(),
+								zod
+									.object({
+										Int64: zod.int()
+									})
+									.strict(),
+								zod
+									.object({
+										Double: zod.number()
+									})
+									.strict(),
+								zod
+									.object({
+										String: zod.union([
+											zod
+												.object({
+													String: zod.string()
+												})
+												.strict(),
+											zod
+												.object({
+													SmolStr: zod.string()
+												})
+												.strict()
+										])
+									})
+									.strict(),
+								zod
+									.object({
+										Bytes: zod.array(
+											zod
+												.int()
+												.min(
+													logRowOwnedAttrsItem1ItemSevenArrayItemSixBytesItemMin
+												)
+										)
+									})
+									.strict(),
+								zod
+									.object({
+										Array: zod.array(zod.unknown())
+									})
+									.strict(),
+								zod
+									.object({
+										KvList: zod.array(
+											zod.tuple([
+												zod.union([
+													zod.object({
+														String: zod.string()
+													}),
+													zod.object({
+														SmolStr: zod.string()
+													})
+												]),
+												zod.union([
+													zod.enum(['Null']),
+													zod.object({
+														Bool: zod.boolean()
+													}),
+													zod.object({
+														Int64: zod.int()
+													}),
+													zod.object({
+														Double: zod.number()
+													}),
+													zod.object({
+														String: zod.union([
+															zod.object({
+																String: zod.string()
+															}),
+															zod.object({
+																SmolStr: zod.string()
+															})
+														])
+													}),
+													zod.object({
+														Bytes: zod.array(
+															zod
+																.int()
+																.min(
+																	logRowOwnedAttrsItem1ItemSevenArrayItemEightKvListItem1ItemSixBytesItemMin
+																)
+														)
+													}),
+													zod.object({
+														Array: zod.array(zod.unknown())
+													}),
+													zod.object({
+														KvList: zod.array(zod.unknown())
+													})
+												])
+											])
+										)
+									})
+									.strict()
+							])
+						)
+					})
+					.strict(),
+				zod
+					.object({
+						KvList: zod.array(
+							zod.tuple([
+								zod.union([
 									zod.object({
 										String: zod.string()
 									}),
 									zod.object({
 										SmolStr: zod.string()
 									})
-								])
-							}),
-							zod.object({
-								Bytes: zod.array(
-									zod
-										.number()
-										.int()
-										.min(logRowOwnedAttrsItem1ItemSevenArrayItemSixBytesItemMin)
-								)
-							}),
-							zod.object({
-								Array: zod.array(zod.unknown())
-							}),
-							zod.object({
-								KvList: zod.array(
-									zod.tuple([
-										zod.union([
+								]),
+								zod.union([
+									zod.enum(['Null']),
+									zod.object({
+										Bool: zod.boolean()
+									}),
+									zod.object({
+										Int64: zod.int()
+									}),
+									zod.object({
+										Double: zod.number()
+									}),
+									zod.object({
+										String: zod.union([
 											zod.object({
 												String: zod.string()
 											}),
 											zod.object({
 												SmolStr: zod.string()
 											})
-										]),
-										zod.union([
-											zod.enum(['Null']),
-											zod.object({
-												Bool: zod.boolean()
-											}),
-											zod.object({
-												Int64: zod.number().int()
-											}),
-											zod.object({
-												Double: zod.number()
-											}),
-											zod.object({
-												String: zod.union([
-													zod.object({
-														String: zod.string()
-													}),
-													zod.object({
-														SmolStr: zod.string()
-													})
-												])
-											}),
-											zod.object({
-												Bytes: zod.array(
-													zod
-														.number()
-														.int()
-														.min(
-															logRowOwnedAttrsItem1ItemSevenArrayItemEightKvListItem1ItemSixBytesItemMin
-														)
-												)
-											}),
-											zod.object({
-												Array: zod.array(zod.unknown())
-											}),
-											zod.object({
-												KvList: zod.array(zod.unknown())
-											})
 										])
-									])
-								)
-							})
-						])
-					)
-				}),
-				zod.object({
-					KvList: zod.array(
-						zod.tuple([
-							zod.union([
-								zod.object({
-									String: zod.string()
-								}),
-								zod.object({
-									SmolStr: zod.string()
-								})
-							]),
-							zod.union([
-								zod.enum(['Null']),
-								zod.object({
-									Bool: zod.boolean()
-								}),
-								zod.object({
-									Int64: zod.number().int()
-								}),
-								zod.object({
-									Double: zod.number()
-								}),
-								zod.object({
-									String: zod.union([
-										zod.object({
-											String: zod.string()
-										}),
-										zod.object({
-											SmolStr: zod.string()
-										})
-									])
-								}),
-								zod.object({
-									Bytes: zod.array(
-										zod
-											.number()
-											.int()
-											.min(
-												logRowOwnedAttrsItem1ItemEightKvListItem1ItemSixBytesItemMin
-											)
-									)
-								}),
-								zod.object({
-									Array: zod.array(
-										zod.union([
-											zod.enum(['Null']),
-											zod.object({
-												Bool: zod.boolean()
-											}),
-											zod.object({
-												Int64: zod.number().int()
-											}),
-											zod.object({
-												Double: zod.number()
-											}),
-											zod.object({
-												String: zod.union([
-													zod.object({
-														String: zod.string()
-													}),
-													zod.object({
-														SmolStr: zod.string()
-													})
-												])
-											}),
-											zod.object({
-												Bytes: zod.array(
-													zod
-														.number()
-														.int()
-														.min(
-															logRowOwnedAttrsItem1ItemEightKvListItem1ItemSevenArrayItemSixBytesItemMin
-														)
+									}),
+									zod.object({
+										Bytes: zod.array(
+											zod
+												.int()
+												.min(
+													logRowOwnedAttrsItem1ItemEightKvListItem1ItemSixBytesItemMin
 												)
-											}),
-											zod.object({
-												Array: zod.array(zod.unknown())
-											}),
-											zod.object({
-												KvList: zod.array(zod.unknown())
-											})
-										])
-									)
-								}),
-								zod.object({
-									KvList: zod.array(zod.unknown())
-								})
+										)
+									}),
+									zod.object({
+										Array: zod.array(
+											zod.union([
+												zod.enum(['Null']),
+												zod.object({
+													Bool: zod.boolean()
+												}),
+												zod.object({
+													Int64: zod.int()
+												}),
+												zod.object({
+													Double: zod.number()
+												}),
+												zod.object({
+													String: zod.union([
+														zod.object({
+															String: zod.string()
+														}),
+														zod.object({
+															SmolStr: zod.string()
+														})
+													])
+												}),
+												zod.object({
+													Bytes: zod.array(
+														zod
+															.int()
+															.min(
+																logRowOwnedAttrsItem1ItemEightKvListItem1ItemSevenArrayItemSixBytesItemMin
+															)
+													)
+												}),
+												zod.object({
+													Array: zod.array(zod.unknown())
+												}),
+												zod.object({
+													KvList: zod.array(zod.unknown())
+												})
+											])
+										)
+									}),
+									zod.object({
+										KvList: zod.array(zod.unknown())
+									})
+								])
 							])
-						])
-					)
-				})
+						)
+					})
+					.strict()
 			])
 		])
 	),
-	body: zod.union([zod.null(), ZStringOwned]).optional(),
-	observed_time: zod.string().datetime({ offset: true }).nullish(),
-	severity: zod.union([zod.null(), SeverityNumberSchema]).optional(),
+	body: zod.union([ZStringOwned, zod.null()]).optional(),
+	observed_time: zod.iso.datetime({ offset: true }).nullish(),
+	severity: zod.union([SeverityNumberSchema, zod.null()]).optional(),
 	source_ip: zod.string().nullish(),
-	source_port: zod.number().int().min(logRowOwnedSourcePortMin).nullish()
+	source_port: zod.int().min(logRowOwnedSourcePortMin).nullish()
 })
 
 export type LogRowOwned = zod.input<typeof LogRowOwned>
@@ -1440,7 +1728,7 @@ export type DummyPayloadOutput = zod.output<typeof DummyPayload>
 export const dummyCountMin = 0
 
 export const Dummy = zod.object({
-	count: zod.number().int().min(dummyCountMin).optional(),
+	count: zod.int().min(dummyCountMin).optional(),
 	payload: DummyPayload
 })
 
@@ -1485,15 +1773,15 @@ export const createHostItemRequestAdmStatusDefault = 1
 export const createHostItemRequestFlagsDefault = 0
 
 export const CreateHostItemRequest = zod.object({
-	adm_status: zod.number().int().default(createHostItemRequestAdmStatusDefault),
+	adm_status: zod.int().default(createHostItemRequestAdmStatusDefault),
 	config: ItemConfig,
-	endpoint_id: zod.string().uuid().nullish(),
-	flags: zod.number().int().default(createHostItemRequestFlagsDefault),
+	endpoint_id: zod.uuid().nullish(),
+	flags: zod.int().default(createHostItemRequestFlagsDefault),
 	labels: zod.unknown(),
-	listener_id: zod.string().uuid().nullish(),
+	listener_id: zod.uuid().nullish(),
 	name: zod.string(),
 	schedule: zod.string(),
-	timeout_ms: zod.number().int()
+	timeout_ms: zod.int()
 })
 
 export type CreateHostItemRequest = zod.input<typeof CreateHostItemRequest>
@@ -1504,16 +1792,16 @@ export const createHostItemResponseFlagsDefault = 0
 export const createHostItemResponseTimeoutMsDefault = 0
 
 export const CreateHostItemResponse = zod.object({
-	adm_status: zod.number().int().default(createHostItemResponseAdmStatusDefault),
+	adm_status: zod.int().default(createHostItemResponseAdmStatusDefault),
 	config: ItemConfig,
-	endpoint_id: zod.string().uuid().nullish(),
-	flags: zod.number().int().default(createHostItemResponseFlagsDefault),
-	item_id: zod.string().uuid(),
+	endpoint_id: zod.uuid().nullish(),
+	flags: zod.int().default(createHostItemResponseFlagsDefault),
+	item_id: zod.uuid(),
 	labels: zod.unknown(),
-	listener_id: zod.string().uuid().nullish(),
+	listener_id: zod.uuid().nullish(),
 	name: zod.string(),
 	schedule: zod.string(),
-	timeout_ms: zod.number().int().default(createHostItemResponseTimeoutMsDefault)
+	timeout_ms: zod.int().default(createHostItemResponseTimeoutMsDefault)
 })
 
 export type CreateHostItemResponse = zod.input<typeof CreateHostItemResponse>
@@ -1522,7 +1810,7 @@ export type CreateHostItemResponseOutput = zod.output<typeof CreateHostItemRespo
 export const createHostRequestAdmStatusDefault = 1
 
 export const CreateHostRequest = zod.object({
-	adm_status: zod.number().int().default(createHostRequestAdmStatusDefault),
+	adm_status: zod.int().default(createHostRequestAdmStatusDefault),
 	labels: zod.unknown(),
 	name: zod.string()
 })
@@ -1533,11 +1821,11 @@ export type CreateHostRequestOutput = zod.output<typeof CreateHostRequest>
 export const createHostResponseAdmStatusDefault = 1
 
 export const CreateHostResponse = zod.object({
-	adm_status: zod.number().int().default(createHostResponseAdmStatusDefault),
-	host_id: zod.string().uuid(),
+	adm_status: zod.int().default(createHostResponseAdmStatusDefault),
+	host_id: zod.uuid(),
 	labels: zod.unknown(),
-	last_updated: zod.string().datetime({ offset: true }),
-	monitored_by: zod.string().uuid().nullish(),
+	last_updated: zod.iso.datetime({ offset: true }),
+	monitored_by: zod.uuid().nullish(),
 	name: zod.string()
 })
 
@@ -1552,11 +1840,10 @@ export const dummyListenerSpeedMin = 0
 
 export const DummyListener = zod.object({
 	messages_per_batch: zod
-		.number()
 		.int()
 		.min(dummyListenerMessagesPerBatchMin)
 		.default(dummyListenerMessagesPerBatchDefault),
-	speed: zod.number().int().min(dummyListenerSpeedMin).default(dummyListenerSpeedDefault)
+	speed: zod.int().min(dummyListenerSpeedMin).default(dummyListenerSpeedDefault)
 })
 
 export type DummyListener = zod.input<typeof DummyListener>
@@ -1574,12 +1861,11 @@ export const udpListenerWorkerCountMin = 0
 
 export const UdpListener = zod.object({
 	address: zod.string(),
-	buffer_cap: zod.number().int().min(udpListenerBufferCapMin).optional(),
+	buffer_cap: zod.int().min(udpListenerBufferCapMin).optional(),
 	ip_blacklist: zod.array(zod.string()).optional(),
 	ip_whitelist: zod.array(zod.string()).optional(),
-	max_packet_size: zod.number().int().min(udpListenerMaxPacketSizeMin).optional(),
+	max_packet_size: zod.int().min(udpListenerMaxPacketSizeMin).optional(),
 	recv_buffer_size: zod
-		.number()
 		.int()
 		.min(udpListenerRecvBufferSizeMin)
 		.optional()
@@ -1587,14 +1873,13 @@ export const UdpListener = zod.object({
 			'Kernel receive buffer (`SO_RCVBUF`) requested per socket, in bytes.\nGranted in full with `CAP_NET_ADMIN`, otherwise capped at\n`net.core.rmem_max`. The kernel doubles it for bookkeeping. 0 uses the\ndefault (32 MiB).'
 		),
 	spin_before_block_us: zod
-		.number()
 		.int()
 		.min(udpListenerSpinBeforeBlockUsMin)
 		.optional()
 		.describe(
 			'Microseconds the reader keeps polling an empty socket before it\nsleeps. Keeps the core out of deep idle states between back-to-back\ndatagrams, which only matters with a small `recv_buffer_size` and one\nsocket near 1M datagrams\/s; every polled gap costs CPU, and a busy\nsocket pins a core. 0 (the default) sleeps as soon as the socket is\nempty. At most 1000.'
 		),
-	worker_count: zod.number().int().min(udpListenerWorkerCountMin).optional()
+	worker_count: zod.int().min(udpListenerWorkerCountMin).optional()
 })
 
 export type UdpListener = zod.input<typeof UdpListener>
@@ -1609,7 +1894,6 @@ export const netflowPruneIntervalMin = 0
 export const Netflow = zod.object({
 	listener: UdpListener.optional(),
 	max_sources: zod
-		.number()
 		.int()
 		.min(netflowMaxSourcesMin)
 		.optional()
@@ -1617,13 +1901,11 @@ export const Netflow = zod.object({
 			'Exporter sources tracked for template state, per parser shard. The\nparser is sharded by source IP, so the process-wide ceiling is this\ntimes the shard count.'
 		),
 	prune_idle_after: zod
-		.number()
 		.int()
 		.min(netflowPruneIdleAfterMin)
 		.optional()
 		.describe('A source unseen for this long is dropped by the sweep.'),
 	prune_interval: zod
-		.number()
 		.int()
 		.min(netflowPruneIntervalMin)
 		.optional()
@@ -1650,22 +1932,13 @@ export type V3Output = zod.output<typeof V3>
 export const SnmpTrap = zod.object({
 	listener: UdpListener.optional(),
 	use_mib: zod.boolean().optional(),
-	v1: zod.union([zod.null(), V1v2c]).optional(),
-	v2c: zod.union([zod.null(), V1v2c]).optional(),
-	v3: zod.union([zod.null(), V3]).optional()
+	v1: zod.union([V1v2c, zod.null()]).optional(),
+	v2c: zod.union([V1v2c, zod.null()]).optional(),
+	v3: zod.union([V3, zod.null()]).optional()
 })
 
 export type SnmpTrap = zod.input<typeof SnmpTrap>
 export type SnmpTrapOutput = zod.output<typeof SnmpTrap>
-
-export const TcpListener = zod.object({
-	address: zod.string(),
-	ip_blacklist: zod.array(zod.string()).optional(),
-	ip_whitelist: zod.array(zod.string()).optional()
-})
-
-export type TcpListener = zod.input<typeof TcpListener>
-export type TcpListenerOutput = zod.output<typeof TcpListener>
 
 export const TlsListener = zod.object({
 	address: zod.string(),
@@ -1680,10 +1953,10 @@ export type TlsListenerOutput = zod.output<typeof TlsListener>
 export const syslogListenerIdleTimeoutMin = 0
 
 export const SyslogListener = zod.object({
-	idle_timeout: zod.number().int().min(syslogListenerIdleTimeoutMin).optional(),
-	tcp: zod.union([zod.null(), TcpListener]).optional(),
-	tls: zod.union([zod.null(), TlsListener]).optional(),
-	udp: zod.union([zod.null(), UdpListener]).optional()
+	idle_timeout: zod.int().min(syslogListenerIdleTimeoutMin).optional(),
+	tcp: zod.union([TcpListener, zod.null()]).optional(),
+	tls: zod.union([TlsListener, zod.null()]).optional(),
+	udp: zod.union([UdpListener, zod.null()]).optional()
 })
 
 export type SyslogListener = zod.input<typeof SyslogListener>
@@ -1705,17 +1978,17 @@ export type ListenerOtelMode = zod.input<typeof ListenerOtelMode>
 export type ListenerOtelModeOutput = zod.output<typeof ListenerOtelMode>
 
 export const openTelemetryListenerListenerDefault = {
-	address: '0.0.0.0:4317' as const,
+	address: '0.0.0.0:4317',
 	ip_blacklist: [],
 	ip_whitelist: []
 }
-export const openTelemetryListenerModeDefault = `otap`
+export const openTelemetryListenerModeDefault = 'otap'
 export const openTelemetryListenerTlsDefault = null
 
 export const OpenTelemetryListener = zod.object({
 	listener: TcpListener.default(openTelemetryListenerListenerDefault),
 	mode: ListenerOtelMode.default(openTelemetryListenerModeDefault),
-	tls: zod.union([zod.null(), Tls]).default(openTelemetryListenerTlsDefault)
+	tls: zod.union([Tls, zod.null()]).default(openTelemetryListenerTlsDefault)
 })
 
 export type OpenTelemetryListener = zod.input<typeof OpenTelemetryListener>
@@ -1739,12 +2012,11 @@ export const internalLogsListenerBufferSizeMin = 0
 
 export const internalLogsListenerExcludeDefault = []
 export const internalLogsListenerIncludeDefault = []
-export const internalLogsListenerLevelDefault = `info`
+export const internalLogsListenerLevelDefault = 'info'
 
 export const InternalLogsListener = zod
 	.object({
 		buffer_size: zod
-			.number()
 			.int()
 			.min(internalLogsListenerBufferSizeMin)
 			.default(internalLogsListenerBufferSizeDefault)
@@ -1763,8 +2035,8 @@ export const InternalLogsListener = zod
 			.describe(
 				'Modules to export, each at its own level. Empty exports `patrolli` at `level`.'
 			),
-		level: LogLevel.describe('Level for `patrolli` when `include` is empty.').default(
-			internalLogsListenerLevelDefault
+		level: LogLevel.default(internalLogsListenerLevelDefault).describe(
+			'Level for `patrolli` when `include` is empty.'
 		)
 	})
 	.describe(
@@ -1785,12 +2057,11 @@ export const internalMetricsListenerIntervalDefault = 60000
 export const internalMetricsListenerIntervalMin = 0
 
 export const internalMetricsListenerReportThroughputDefault = false
-export const internalMetricsListenerSignalDefault = `log`
+export const internalMetricsListenerSignalDefault = 'log'
 
 export const InternalMetricsListener = zod
 	.object({
 		interval: zod
-			.number()
 			.int()
 			.min(internalMetricsListenerIntervalMin)
 			.default(internalMetricsListenerIntervalDefault)
@@ -1840,6 +2111,10 @@ export const ListenerConfig = zod.union([
 	zod.object({
 		config: InternalMetricsListener,
 		type: zod.enum(['internal_metrics'])
+	}),
+	zod.object({
+		config: BgpListener,
+		type: zod.enum(['bgp'])
 	})
 ])
 
@@ -1850,13 +2125,13 @@ export const createListenerRequestAdmStatusDefault = 1
 export const createListenerRequestWorkerCountMin = 0
 
 export const CreateListenerRequest = zod.object({
-	adm_status: zod.number().int().default(createListenerRequestAdmStatusDefault),
+	adm_status: zod.int().default(createListenerRequestAdmStatusDefault),
 	batch: Batch.optional(),
 	config: ListenerConfig,
 	disable_cluster_forwarding: zod.boolean().optional(),
 	labels: zod.unknown(),
 	name: zod.string(),
-	worker_count: zod.number().int().min(createListenerRequestWorkerCountMin).optional()
+	worker_count: zod.int().min(createListenerRequestWorkerCountMin).optional()
 })
 
 export type CreateListenerRequest = zod.input<typeof CreateListenerRequest>
@@ -1865,15 +2140,15 @@ export type CreateListenerRequestOutput = zod.output<typeof CreateListenerReques
 export const createListenerResponseWorkerCountMin = 0
 
 export const CreateListenerResponse = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	batch: Batch,
 	config: ListenerConfig,
 	disable_cluster_forwarding: zod.boolean(),
 	labels: zod.unknown(),
-	last_updated: zod.string().datetime({ offset: true }),
-	listener_id: zod.string().uuid(),
+	last_updated: zod.iso.datetime({ offset: true }),
+	listener_id: zod.uuid(),
 	name: zod.string(),
-	worker_count: zod.number().int().min(createListenerResponseWorkerCountMin)
+	worker_count: zod.int().min(createListenerResponseWorkerCountMin)
 })
 
 export type CreateListenerResponse = zod.input<typeof CreateListenerResponse>
@@ -1883,14 +2158,11 @@ export const createPipelineRequestAdmStatusDefault = 1
 export const createPipelineRequestVisibilityDefault = 0
 
 export const CreatePipelineRequest = zod.object({
-	adm_status: zod.number().int().default(createPipelineRequestAdmStatusDefault),
-	host_ids: zod
-		.array(zod.string().uuid())
-		.optional()
-		.describe('Hosts whose items the canvas may use.'),
+	adm_status: zod.int().default(createPipelineRequestAdmStatusDefault),
+	host_ids: zod.array(zod.uuid()).optional().describe('Hosts whose items the canvas may use.'),
 	name: zod.string(),
-	sink_ids: zod.array(zod.string().uuid()).optional().describe('Sinks the canvas may use.'),
-	visibility: zod.number().int().default(createPipelineRequestVisibilityDefault)
+	sink_ids: zod.array(zod.uuid()).optional().describe('Sinks the canvas may use.'),
+	visibility: zod.int().default(createPipelineRequestVisibilityDefault)
 })
 
 export type CreatePipelineRequest = zod.input<typeof CreatePipelineRequest>
@@ -1928,6 +2200,68 @@ export const Transform = zod
 export type Transform = zod.input<typeof Transform>
 export type TransformOutput = zod.output<typeof Transform>
 
+export const DnsRecordType = zod.enum(['ptr']).describe('DNS record types a rule can ask for.')
+
+export type DnsRecordType = zod.input<typeof DnsRecordType>
+export type DnsRecordTypeOutput = zod.output<typeof DnsRecordType>
+
+export const DnsLookupRule = zod
+	.object({
+		input: AttributeLookupInput.describe(
+			'The attribute holding the address: one key, fallback keys tried in\norder, or a regex capture of the value. Always read as an IP (text, or\nthe bare-integer form), so `cast` may be left out; if set it must be\n`ip`. A record rule may read a resource attribute.'
+		),
+		output: zod
+			.string()
+			.describe('Destination attribute key; the answer is written as a string.'),
+		record: DnsRecordType.describe('What is asked about the input.'),
+		table: AttributeTable.describe(
+			'Destination attribute table and default location of the input\nattribute. `record` means log, span or metric attributes.'
+		),
+		when: zod
+			.union([
+				AttributeFilter.describe(
+					'Further record-selection predicate, ANDed with the top-level `when`.'
+				),
+				zod.null()
+			])
+			.optional()
+	})
+	.describe('One question per record and the attribute its answer is written to.')
+
+export type DnsLookupRule = zod.input<typeof DnsLookupRule>
+export type DnsLookupRuleOutput = zod.output<typeof DnsLookupRule>
+
+export const dnsLookupOverwriteDefault = false
+
+export const DnsLookup = zod
+	.object({
+		lookups: zod
+			.array(DnsLookupRule)
+			.describe(
+				'Independent lookups; must not be empty. Destination keys must not\noverlap within an attribute table.'
+			),
+		overwrite: zod
+			.boolean()
+			.default(dnsLookupOverwriteDefault)
+			.describe(
+				'Replace existing destination values. Defaults to insert-only: a key\nalready present for the destination parent is left unchanged.'
+			),
+		when: zod
+			.union([
+				AttributeFilter.describe(
+					"Record-selection predicate over incoming attributes, evaluated once for\nall rules and ANDed with each rule's own `when`. Omitted means every\nrecord is eligible; unselected records pass through unchanged.\n\nFor a resource or scope destination every predicate leaf must reference\nthat same table; a record destination may reference any table."
+				),
+				zod.null()
+			])
+			.optional()
+	})
+	.describe(
+		"Enrich attributes with DNS answers.\n\nA lookup never waits for DNS: it reads the node's DNS cache, and an address\nthat is not cached yet (or whose answer has expired) is queued for the\nresolver and left unenriched until a later record finds the answer. The\nfirst records of a new address therefore pass through unchanged.\n\nMissing inputs, values that are not addresses, cache misses and negative\nanswers leave the destination unchanged. Every rule reads the incoming\nattributes: another rule's output is not visible as an input."
+	)
+
+export type DnsLookup = zod.input<typeof DnsLookup>
+export type DnsLookupOutput = zod.output<typeof DnsLookup>
+
 export const ProcessorConfig = zod.union([
 	zod.object({
 		type: zod.enum(['null'])
@@ -1959,6 +2293,10 @@ export const ProcessorConfig = zod.union([
 	zod.object({
 		config: Transform,
 		type: zod.enum(['transform'])
+	}),
+	zod.object({
+		config: DnsLookup,
+		type: zod.enum(['dns_lookup'])
 	})
 ])
 
@@ -1968,10 +2306,10 @@ export type ProcessorConfigOutput = zod.output<typeof ProcessorConfig>
 export const createProcessorRequestAdmStatusDefault = 1
 
 export const CreateProcessorRequest = zod.object({
-	adm_status: zod.number().int().default(createProcessorRequestAdmStatusDefault),
+	adm_status: zod.int().default(createProcessorRequestAdmStatusDefault),
 	config: ProcessorConfig,
-	input_items: zod.array(zod.string().uuid()).optional(),
-	input_processors: zod.array(zod.string().uuid()).optional(),
+	input_items: zod.array(zod.uuid()).optional(),
+	input_processors: zod.array(zod.uuid()).optional(),
 	name: zod.string()
 })
 
@@ -1979,13 +2317,13 @@ export type CreateProcessorRequest = zod.input<typeof CreateProcessorRequest>
 export type CreateProcessorRequestOutput = zod.output<typeof CreateProcessorRequest>
 
 export const CreateProcessorResponse = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	config: ProcessorConfig,
-	input_items: zod.array(zod.string().uuid()),
-	input_processors: zod.array(zod.string().uuid()),
-	last_updated: zod.string().datetime({ offset: true }),
+	input_items: zod.array(zod.uuid()),
+	input_processors: zod.array(zod.uuid()),
+	last_updated: zod.iso.datetime({ offset: true }),
 	name: zod.string(),
-	processor_id: zod.string().uuid()
+	processor_id: zod.uuid()
 })
 
 export type CreateProcessorResponse = zod.input<typeof CreateProcessorResponse>
@@ -2007,7 +2345,7 @@ export const fileThrottleMin = 0
 export const File = zod.object({
 	format: Format.optional(),
 	path: zod.string(),
-	throttle: zod.number().int().min(fileThrottleMin).optional()
+	throttle: zod.int().min(fileThrottleMin).optional()
 })
 
 export type File = zod.input<typeof File>
@@ -2085,21 +2423,19 @@ export const Kafka = zod.object({
 	compression: KafkaCompression.optional(),
 	enable_producer_stats: zod.boolean().optional(),
 	format: Format,
-	global_queue_size: zod.number().int().min(kafkaGlobalQueueSizeMin).optional(),
+	global_queue_size: zod.int().min(kafkaGlobalQueueSizeMin).optional(),
 	hosts: zod.array(zod.string()),
 	key_strategy: KafkaKeyStrategy.optional(),
 	max_message_size: zod
-		.number()
 		.int()
 		.min(kafkaMaxMessageSizeMin)
 		.optional()
 		.describe(
 			"Largest message the producer sends, in bytes (librdkafka's\n`message.max.bytes`), checked before compression; a bigger one is\nrejected without being sent. The broker checks its own\n`max.message.bytes` against the compressed batch, so raising this lets a\ncompressible message past librdkafka for the broker to judge. 0 takes\nlibrdkafka's default of 1000000."
 		),
-	partition_batch_count: zod.number().int().min(kafkaPartitionBatchCountMin).optional(),
-	partition_batch_size: zod.number().int().min(kafkaPartitionBatchSizeMin).optional(),
+	partition_batch_count: zod.int().min(kafkaPartitionBatchCountMin).optional(),
+	partition_batch_size: zod.int().min(kafkaPartitionBatchSizeMin).optional(),
 	producer_count: zod
-		.number()
 		.int()
 		.min(kafkaProducerCountMin)
 		.optional()
@@ -2107,12 +2443,11 @@ export const Kafka = zod.object({
 			"How many librdkafka producers the sink's workers share, taken\nround-robin per batch. Each worker has one batch in flight, so\n`worker_count` is the write concurrency; this only sets how many clients\n(each with its own queue, broker threads and connections) carry it."
 		),
 	required_acks: KafkaRequiredAcks.optional(),
-	sasl: zod.union([zod.null(), KafkaSasl]).optional(),
+	sasl: zod.union([KafkaSasl, zod.null()]).optional(),
 	security: KafkaSecurity,
-	ssl: zod.union([zod.null(), Tls]).optional(),
+	ssl: zod.union([Tls, zod.null()]).optional(),
 	topic: zod.string(),
 	write_timeout_seconds: zod
-		.number()
 		.int()
 		.min(kafkaWriteTimeoutSecondsMin)
 		.optional()
@@ -2165,12 +2500,12 @@ export const openTelemetryWriteTimeoutMin = 0
 
 export const OpenTelemetry = zod.object({
 	compression: OtapCompression.optional(),
-	connection_count: zod.number().int().min(openTelemetryConnectionCountMin).optional(),
+	connection_count: zod.int().min(openTelemetryConnectionCountMin).optional(),
 	destinations: zod.array(zod.string()),
 	distribution: OtelDistribution.optional(),
 	mode: OtelSinkMode.optional(),
-	tls: zod.union([zod.null(), Tls]).optional(),
-	write_timeout: zod.number().int().min(openTelemetryWriteTimeoutMin).optional()
+	tls: zod.union([Tls, zod.null()]).optional(),
+	write_timeout: zod.int().min(openTelemetryWriteTimeoutMin).optional()
 })
 
 export type OpenTelemetry = zod.input<typeof OpenTelemetry>
@@ -2212,7 +2547,6 @@ export const retryMultiplierDefault = 2
 export const Retry = zod
 	.object({
 		initial_interval: zod
-			.number()
 			.int()
 			.min(retryInitialIntervalMin)
 			.default(retryInitialIntervalDefault)
@@ -2220,7 +2554,6 @@ export const Retry = zod
 				'Milliseconds before the first retry. Omitted or 0 takes the default of 1000.'
 			),
 		max_elapsed: zod
-			.number()
 			.int()
 			.min(retryMaxElapsedMin)
 			.default(retryMaxElapsedDefault)
@@ -2228,7 +2561,6 @@ export const Retry = zod
 				'Milliseconds a batch is retried for before it is dropped. 0 (the\ndefault) retries until it lands.'
 			),
 		max_interval: zod
-			.number()
 			.int()
 			.min(retryMaxIntervalMin)
 			.default(retryMaxIntervalDefault)
@@ -2253,18 +2585,18 @@ export const createSinkRequestAdmStatusDefault = 1
 export const createSinkRequestWorkerCountMin = 0
 
 export const CreateSinkRequest = zod.object({
-	adm_status: zod.number().int().default(createSinkRequestAdmStatusDefault),
+	adm_status: zod.int().default(createSinkRequestAdmStatusDefault),
 	batch: Batch,
 	channel: Channel,
 	config: SinkConfig,
 	inputs: zod
-		.array(zod.string().uuid())
+		.array(zod.uuid())
 		.optional()
 		.describe('List of processor IDs that are inputs to this sink.'),
 	labels: zod.unknown(),
 	name: zod.string(),
 	retry: Retry.optional().describe('Omitted takes every default.'),
-	worker_count: zod.number().int().min(createSinkRequestWorkerCountMin).optional()
+	worker_count: zod.int().min(createSinkRequestWorkerCountMin).optional()
 })
 
 export type CreateSinkRequest = zod.input<typeof CreateSinkRequest>
@@ -2273,17 +2605,17 @@ export type CreateSinkRequestOutput = zod.output<typeof CreateSinkRequest>
 export const createSinkResponseWorkerCountMin = 0
 
 export const CreateSinkResponse = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	batch: Batch,
 	channel: Channel,
 	config: SinkConfig,
-	inputs: zod.array(zod.string().uuid()),
+	inputs: zod.array(zod.uuid()),
 	labels: zod.unknown(),
-	last_updated: zod.string().datetime({ offset: true }),
+	last_updated: zod.iso.datetime({ offset: true }),
 	name: zod.string(),
 	retry: Retry,
-	sink_id: zod.string().uuid(),
-	worker_count: zod.number().int().min(createSinkResponseWorkerCountMin)
+	sink_id: zod.uuid(),
+	worker_count: zod.int().min(createSinkResponseWorkerCountMin)
 })
 
 export type CreateSinkResponse = zod.input<typeof CreateSinkResponse>
@@ -2294,13 +2626,13 @@ export const createTemplateItemRequestFlagsDefault = 0
 export const createTemplateItemRequestTimeoutMsDefault = 0
 
 export const CreateTemplateItemRequest = zod.object({
-	adm_status: zod.number().int().default(createTemplateItemRequestAdmStatusDefault),
+	adm_status: zod.int().default(createTemplateItemRequestAdmStatusDefault),
 	config: ItemConfig,
-	flags: zod.number().int().default(createTemplateItemRequestFlagsDefault),
+	flags: zod.int().default(createTemplateItemRequestFlagsDefault),
 	labels: zod.unknown(),
 	name: zod.string(),
 	schedule: zod.string(),
-	timeout_ms: zod.number().int().default(createTemplateItemRequestTimeoutMsDefault)
+	timeout_ms: zod.int().default(createTemplateItemRequestTimeoutMsDefault)
 })
 
 export type CreateTemplateItemRequest = zod.input<typeof CreateTemplateItemRequest>
@@ -2311,14 +2643,14 @@ export const createTemplateItemResponseFlagsDefault = 0
 export const createTemplateItemResponseTimeoutMsDefault = 0
 
 export const CreateTemplateItemResponse = zod.object({
-	adm_status: zod.number().int().default(createTemplateItemResponseAdmStatusDefault),
+	adm_status: zod.int().default(createTemplateItemResponseAdmStatusDefault),
 	config: ItemConfig,
-	flags: zod.number().int().default(createTemplateItemResponseFlagsDefault),
-	item_id: zod.string().uuid(),
+	flags: zod.int().default(createTemplateItemResponseFlagsDefault),
+	item_id: zod.uuid(),
 	labels: zod.unknown(),
 	name: zod.string(),
 	schedule: zod.string(),
-	timeout_ms: zod.number().int().default(createTemplateItemResponseTimeoutMsDefault)
+	timeout_ms: zod.int().default(createTemplateItemResponseTimeoutMsDefault)
 })
 
 export type CreateTemplateItemResponse = zod.input<typeof CreateTemplateItemResponse>
@@ -2335,7 +2667,7 @@ export type CreateTemplateRequestOutput = zod.output<typeof CreateTemplateReques
 export const CreateTemplateResponse = zod.object({
 	labels: zod.unknown(),
 	name: zod.string(),
-	template_id: zod.string().uuid()
+	template_id: zod.uuid()
 })
 
 export type CreateTemplateResponse = zod.input<typeof CreateTemplateResponse>
@@ -2344,7 +2676,7 @@ export type CreateTemplateResponseOutput = zod.output<typeof CreateTemplateRespo
 export const createUserRequestAdmStatusDefault = 1
 
 export const CreateUserRequest = zod.object({
-	adm_status: zod.number().int().default(createUserRequestAdmStatusDefault),
+	adm_status: zod.int().default(createUserRequestAdmStatusDefault),
 	allow_sso: zod.boolean().optional(),
 	display_name: zod.string().nullish(),
 	email: zod.string().nullish(),
@@ -2356,13 +2688,13 @@ export type CreateUserRequest = zod.input<typeof CreateUserRequest>
 export type CreateUserRequestOutput = zod.output<typeof CreateUserRequest>
 
 export const CreateUserResponse = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	allow_sso: zod.boolean(),
 	display_name: zod.string().nullish(),
 	email: zod.string().nullish(),
-	last_updated: zod.string().datetime({ offset: true }),
+	last_updated: zod.iso.datetime({ offset: true }),
 	sso_linked: zod.boolean(),
-	user_id: zod.string().uuid(),
+	user_id: zod.uuid(),
 	username: zod.string()
 })
 
@@ -2370,7 +2702,7 @@ export type CreateUserResponse = zod.input<typeof CreateUserResponse>
 export type CreateUserResponseOutput = zod.output<typeof CreateUserResponse>
 
 export const ItemsToProcessorEdgeKey = zod.object({
-	processor_id: zod.string().uuid()
+	processor_id: zod.uuid()
 })
 
 export type ItemsToProcessorEdgeKey = zod.input<typeof ItemsToProcessorEdgeKey>
@@ -2381,8 +2713,8 @@ export const itemsToProcessorEdgeEnabledCountMin = 0
 export const itemsToProcessorEdgeItemCountMin = 0
 
 export const ItemsToProcessorEdge = zod.object({
-	enabled_count: zod.number().int().min(itemsToProcessorEdgeEnabledCountMin),
-	item_count: zod.number().int().min(itemsToProcessorEdgeItemCountMin),
+	enabled_count: zod.int().min(itemsToProcessorEdgeEnabledCountMin),
+	item_count: zod.int().min(itemsToProcessorEdgeItemCountMin),
 	key: ItemsToProcessorEdgeKey
 })
 
@@ -2411,7 +2743,7 @@ export type EndpointKindOutput = zod.output<typeof EndpointKind>
 
 export const EndpointNode = zod.object({
 	enabled: zod.boolean(),
-	endpoint_id: zod.string().uuid(),
+	endpoint_id: zod.uuid(),
 	name: zod.string()
 })
 
@@ -2450,7 +2782,7 @@ export type FailureKindOutput = zod.output<typeof FailureKind>
 
 export const Failure = zod
 	.object({
-		at: zod.string().datetime({ offset: true }),
+		at: zod.iso.datetime({ offset: true }),
 		detail: zod.unknown().optional(),
 		kind: FailureKind,
 		reason: zod.string()
@@ -2465,7 +2797,7 @@ export type FailureOutput = zod.output<typeof Failure>
 export const graphSourceNodeItemCountMin = 0
 
 export const GraphSourceNode = zod.object({
-	item_count: zod.number().int().min(graphSourceNodeItemCountMin)
+	item_count: zod.int().min(graphSourceNodeItemCountMin)
 })
 
 export type GraphSourceNode = zod.input<typeof GraphSourceNode>
@@ -2480,7 +2812,8 @@ export const ProcessorKind = zod
 		'rename_attributes',
 		'attribute_lookup',
 		'attribute_collect',
-		'transform'
+		'transform',
+		'dns_lookup'
 	])
 	.describe('Auto-generated discriminant enum variants')
 
@@ -2488,9 +2821,9 @@ export type ProcessorKind = zod.input<typeof ProcessorKind>
 export type ProcessorKindOutput = zod.output<typeof ProcessorKind>
 
 export const GraphProcessorSummary = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	name: zod.string(),
-	processor_id: zod.string().uuid(),
+	processor_id: zod.uuid(),
 	type: ProcessorKind
 })
 
@@ -2505,7 +2838,7 @@ export type GraphProcessorGroupNode = zod.input<typeof GraphProcessorGroupNode>
 export type GraphProcessorGroupNodeOutput = zod.output<typeof GraphProcessorGroupNode>
 
 export const GraphSinkNode = zod.object({
-	sink_id: zod.string().uuid()
+	sink_id: zod.uuid()
 })
 
 export type GraphSinkNode = zod.input<typeof GraphSinkNode>
@@ -2523,8 +2856,8 @@ export const GraphNodeData = zod.union([
 	zod
 		.object({
 			data: zod.union([
-				zod.null(),
-				GraphSinkNode.describe('Null until a sink is chosen for the node.')
+				GraphSinkNode.describe('Null until a sink is chosen for the node.'),
+				zod.null()
 			]),
 			kind: zod.enum(['sink'])
 		})
@@ -2536,9 +2869,9 @@ export type GraphNodeDataOutput = zod.output<typeof GraphNodeData>
 
 export const GraphNode = GraphNodeData.and(
 	zod.object({
-		node_id: zod.string().uuid(),
-		position_x: zod.number().int(),
-		position_y: zod.number().int()
+		node_id: zod.uuid(),
+		position_x: zod.int(),
+		position_y: zod.int()
 	})
 )
 
@@ -2546,8 +2879,8 @@ export type GraphNode = zod.input<typeof GraphNode>
 export type GraphNodeOutput = zod.output<typeof GraphNode>
 
 export const GraphRelation = zod.object({
-	from_node_id: zod.string().uuid(),
-	to_node_id: zod.string().uuid()
+	from_node_id: zod.uuid(),
+	to_node_id: zod.uuid()
 })
 
 export type GraphRelation = zod.input<typeof GraphRelation>
@@ -2566,13 +2899,12 @@ export type PipelineGraph = zod.input<typeof PipelineGraph>
 export type PipelineGraphOutput = zod.output<typeof PipelineGraph>
 
 export const GetPipelineGraphResponse = zod.object({
-	canvas_id: zod.string().uuid(),
+	canvas_id: zod.uuid(),
 	graph: PipelineGraph,
-	last_updated: zod
-		.string()
+	last_updated: zod.iso
 		.datetime({ offset: true })
 		.describe('Send it back when saving the graph.'),
-	pipeline_id: zod.string().uuid()
+	pipeline_id: zod.uuid()
 })
 
 export type GetPipelineGraphResponse = zod.input<typeof GetPipelineGraphResponse>
@@ -2586,10 +2918,10 @@ export type ItemKind = zod.input<typeof ItemKind>
 export type ItemKindOutput = zod.output<typeof ItemKind>
 
 export const GraphSourceItem = zod.object({
-	adm_status: zod.number().int(),
-	host_id: zod.string().uuid(),
+	adm_status: zod.int(),
+	host_id: zod.uuid(),
 	host_name: zod.string(),
-	item_id: zod.string().uuid(),
+	item_id: zod.uuid(),
 	name: zod
 		.string()
 		.nullish()
@@ -2605,7 +2937,6 @@ export const graphSourceContentTotalMin = 0
 export const GraphSourceContent = zod.object({
 	items: zod.array(GraphSourceItem).describe('One page, ordered by name.'),
 	total: zod
-		.number()
 		.int()
 		.min(graphSourceContentTotalMin)
 		.describe('All matching items, ignoring limit and offset.')
@@ -2615,10 +2946,10 @@ export type GraphSourceContent = zod.input<typeof GraphSourceContent>
 export type GraphSourceContentOutput = zod.output<typeof GraphSourceContent>
 
 export const GraphProcessor = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	config: ProcessorConfig,
 	name: zod.string(),
-	processor_id: zod.string().uuid()
+	processor_id: zod.uuid()
 })
 
 export type GraphProcessor = zod.input<typeof GraphProcessor>
@@ -2639,9 +2970,9 @@ export type SinkKind = zod.input<typeof SinkKind>
 export type SinkKindOutput = zod.output<typeof SinkKind>
 
 export const GraphSinkContent = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	name: zod.string(),
-	sink_id: zod.string().uuid(),
+	sink_id: zod.uuid(),
 	type: SinkKind
 })
 
@@ -2660,8 +2991,8 @@ export const GraphNodeContent = zod.union([
 	zod
 		.object({
 			data: zod.union([
-				zod.null(),
-				GraphSinkContent.describe('Null until a sink is chosen for the node.')
+				GraphSinkContent.describe('Null until a sink is chosen for the node.'),
+				zod.null()
 			]),
 			kind: zod.enum(['sink'])
 		})
@@ -2673,13 +3004,12 @@ export type GraphNodeContentOutput = zod.output<typeof GraphNodeContent>
 
 export const GetPipelineNodeResponse = GraphNodeContent.and(
 	zod.object({
-		canvas_id: zod.string().uuid(),
-		last_updated: zod
-			.string()
+		canvas_id: zod.uuid(),
+		last_updated: zod.iso
 			.datetime({ offset: true })
 			.describe("Send it back when saving the node's content."),
-		node_id: zod.string().uuid(),
-		pipeline_id: zod.string().uuid()
+		node_id: zod.uuid(),
+		pipeline_id: zod.uuid()
 	})
 )
 
@@ -2690,17 +3020,17 @@ export const getSinkResponseAdmStatusDefault = 1
 export const getSinkResponseWorkerCountMin = 0
 
 export const GetSinkResponse = zod.object({
-	adm_status: zod.number().int().default(getSinkResponseAdmStatusDefault),
+	adm_status: zod.int().default(getSinkResponseAdmStatusDefault),
 	batch: Batch,
 	channel: Channel,
 	config: SinkConfig,
-	inputs: zod.array(zod.string().uuid()),
+	inputs: zod.array(zod.uuid()),
 	labels: zod.unknown(),
-	last_updated: zod.string().datetime({ offset: true }),
+	last_updated: zod.iso.datetime({ offset: true }),
 	name: zod.string(),
 	retry: Retry,
-	sink_id: zod.string().uuid(),
-	worker_count: zod.number().int().min(getSinkResponseWorkerCountMin)
+	sink_id: zod.uuid(),
+	worker_count: zod.int().min(getSinkResponseWorkerCountMin)
 })
 
 export type GetSinkResponse = zod.input<typeof GetSinkResponse>
@@ -2708,31 +3038,31 @@ export type GetSinkResponseOutput = zod.output<typeof GetSinkResponse>
 
 export const InnerTemplate = zod.object({
 	name: zod.string(),
-	template_id: zod.string().uuid()
+	template_id: zod.uuid()
 })
 
 export type InnerTemplate = zod.input<typeof InnerTemplate>
 export type InnerTemplateOutput = zod.output<typeof InnerTemplate>
 
 export const GetTemplateResponse = zod.object({
-	item_count: zod.number().int(),
+	item_count: zod.int(),
 	labels: zod.unknown(),
 	links_to_templates: zod.array(InnerTemplate),
 	name: zod.string(),
-	template_id: zod.string().uuid()
+	template_id: zod.uuid()
 })
 
 export type GetTemplateResponse = zod.input<typeof GetTemplateResponse>
 export type GetTemplateResponseOutput = zod.output<typeof GetTemplateResponse>
 
 export const GetUserResponse = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	allow_sso: zod.boolean(),
 	display_name: zod.string().nullish(),
 	email: zod.string().nullish(),
-	last_updated: zod.string().datetime({ offset: true }),
+	last_updated: zod.iso.datetime({ offset: true }),
 	sso_linked: zod.boolean(),
-	user_id: zod.string().uuid(),
+	user_id: zod.uuid(),
 	username: zod.string()
 })
 
@@ -2741,7 +3071,7 @@ export type GetUserResponseOutput = zod.output<typeof GetUserResponse>
 
 export const HostNode = zod.object({
 	enabled: zod.boolean(),
-	host_id: zod.string().uuid(),
+	host_id: zod.uuid(),
 	name: zod.string()
 })
 
@@ -2753,8 +3083,8 @@ export const itemsNodeEnabledCountMin = 0
 export const itemsNodeItemCountMin = 0
 
 export const ItemsNode = zod.object({
-	enabled_count: zod.number().int().min(itemsNodeEnabledCountMin),
-	item_count: zod.number().int().min(itemsNodeItemCountMin),
+	enabled_count: zod.int().min(itemsNodeEnabledCountMin),
+	item_count: zod.int().min(itemsNodeItemCountMin),
 	name: zod.string()
 })
 
@@ -2763,7 +3093,7 @@ export type ItemsNodeOutput = zod.output<typeof ItemsNode>
 
 export const ListenerNode = zod.object({
 	enabled: zod.boolean(),
-	listener_id: zod.string().uuid(),
+	listener_id: zod.uuid(),
 	name: zod.string()
 })
 
@@ -2773,7 +3103,7 @@ export type ListenerNodeOutput = zod.output<typeof ListenerNode>
 export const ProcessorNode = zod.object({
 	enabled: zod.boolean(),
 	name: zod.string(),
-	processor_id: zod.string().uuid()
+	processor_id: zod.uuid()
 })
 
 export type ProcessorNode = zod.input<typeof ProcessorNode>
@@ -2782,7 +3112,7 @@ export type ProcessorNodeOutput = zod.output<typeof ProcessorNode>
 export const SinkNode = zod.object({
 	enabled: zod.boolean(),
 	name: zod.string(),
-	sink_id: zod.string().uuid()
+	sink_id: zod.uuid()
 })
 
 export type SinkNode = zod.input<typeof SinkNode>
@@ -2822,7 +3152,7 @@ export const nodeTwoIdMin = 0
 
 export const Node = NodeData.and(
 	zod.object({
-		id: zod.number().int().min(nodeTwoIdMin)
+		id: zod.int().min(nodeTwoIdMin)
 	})
 )
 
@@ -2843,8 +3173,8 @@ export const graphEdgeDtoTargetMin = 0
 
 export const GraphEdgeDto = zod.object({
 	data: EdgeData,
-	source: zod.number().int().min(graphEdgeDtoSourceMin),
-	target: zod.number().int().min(graphEdgeDtoTargetMin)
+	source: zod.int().min(graphEdgeDtoSourceMin),
+	target: zod.int().min(graphEdgeDtoTargetMin)
 })
 
 export type GraphEdgeDto = zod.input<typeof GraphEdgeDto>
@@ -2860,11 +3190,11 @@ export type GraphDtoOutput = zod.output<typeof GraphDto>
 
 export const GraphSourceContentInput = zod.object({
 	add: zod
-		.array(zod.string().uuid())
+		.array(zod.uuid())
 		.optional()
 		.describe('Items to add. Items already in the source are skipped.'),
 	remove: zod
-		.array(zod.string().uuid())
+		.array(zod.uuid())
 		.optional()
 		.describe('Items to remove. Items not in the source are skipped.')
 })
@@ -2875,11 +3205,10 @@ export type GraphSourceContentInputOutput = zod.output<typeof GraphSourceContent
 export const graphProcessorInputAdmStatusDefault = 1
 
 export const GraphProcessorInput = zod.object({
-	adm_status: zod.number().int().default(graphProcessorInputAdmStatusDefault),
+	adm_status: zod.int().default(graphProcessorInputAdmStatusDefault),
 	config: ProcessorConfig.describe('Read with [`parse_processor`].'),
 	name: zod.string(),
 	processor_id: zod
-		.string()
 		.uuid()
 		.describe('A new id creates the processor, an id of this group updates it.')
 })
@@ -2899,7 +3228,7 @@ export type GraphProcessorGroupContentInputOutput = zod.output<
 >
 
 export const GraphSinkContentInput = zod.object({
-	sink_id: zod.string().uuid().describe("Must be in the pipeline's sink subset.")
+	sink_id: zod.uuid().describe("Must be in the pipeline's sink subset.")
 })
 
 export type GraphSinkContentInput = zod.input<typeof GraphSinkContentInput>
@@ -2918,8 +3247,8 @@ export const GraphNodeContentInput = zod
 		zod
 			.object({
 				data: zod.union([
-					zod.null(),
-					GraphSinkContentInput.describe('Null empties the node.')
+					GraphSinkContentInput.describe('Null empties the node.'),
+					zod.null()
 				]),
 				kind: zod.enum(['sink'])
 			})
@@ -2939,9 +3268,9 @@ export type GraphNodeKindOutput = zod.output<typeof GraphNodeKind>
 
 export const GraphNodeInput = zod.object({
 	kind: GraphNodeKind,
-	node_id: zod.string().uuid(),
-	position_x: zod.number().int(),
-	position_y: zod.number().int()
+	node_id: zod.uuid(),
+	position_x: zod.int(),
+	position_y: zod.int()
 })
 
 export type GraphNodeInput = zod.input<typeof GraphNodeInput>
@@ -2951,7 +3280,7 @@ export const healthResponseUptimeSecondsMin = 0
 
 export const HealthResponse = zod.object({
 	status: zod.string(),
-	uptime_seconds: zod.number().int().min(healthResponseUptimeSecondsMin)
+	uptime_seconds: zod.int().min(healthResponseUptimeSecondsMin)
 })
 
 export type HealthResponse = zod.input<typeof HealthResponse>
@@ -3005,47 +3334,44 @@ export const statsSnapshotTotalRecordsMin = 0
 
 export const StatsSnapshot = zod
 	.object({
-		activity_fail: zod.array(zod.number().int().min(statsSnapshotActivityFailItemMin)),
+		activity_fail: zod.array(zod.int().min(statsSnapshotActivityFailItemMin)),
 		activity_ok: zod
-			.array(zod.number().int().min(statsSnapshotActivityOkItemMin))
+			.array(zod.int().min(statsSnapshotActivityOkItemMin))
 			.describe(
 				"The trailing 24 hours as 288 five-minute buckets, ending at\n`activity_window_end`. [`ACTIVITY_PLANE_BYTES`] each, LSB-first — bucket `i`\nis bit `i % 8` of byte `i \/ 8` — or empty when the item recorded nothing in\nthe window.\n\nBuckets address absolute time by tick modulo 288, so bucket 0 is always\n00:00–00:05 UTC and every node agrees on what a position means; see\n[`ActivityWindow`]. Buckets the item has not reached yet are already masked\noff, so what is here is what is true.\n\nA bucket set in neither plane had no result at all — a young item, a bucket\nit wasn't due in, or one it went silent through. That is \*\*not\*\* a failure,\nand for anything on a schedule slower than five minutes it is most buckets."
 			),
-		activity_window_end: zod
-			.string()
+		activity_window_end: zod.iso
 			.datetime({ offset: true })
 			.describe(
 				'Start of the newest bucket in the window: the 5-minute boundary at or\nbefore the read. The window covers the 288 buckets ending here, so bucket\n`i` is the most recent tick `t <= end` with `t % 288 == i`.'
 			),
-		consecutive_failures: zod.number().int().min(statsSnapshotConsecutiveFailuresMin),
-		last_attempt: zod
-			.string()
+		consecutive_failures: zod.int().min(statsSnapshotConsecutiveFailuresMin),
+		last_attempt: zod.iso
 			.datetime({ offset: true })
 			.nullish()
 			.describe(
 				'`None` where the event hasn\'t happened yet, so callers can tell \"never\nsucceeded\" from \"succeeded at the epoch\".'
 			),
 		last_duration_ms: zod
-			.number()
 			.int()
 			.min(statsSnapshotLastDurationMsMin)
 			.nullish()
 			.describe(
 				'`None` until the first check completes. A `Some(0)` record count is\nmeaningful: the check ran and returned nothing.'
 			),
-		last_failure: zod.union([zod.null(), Failure]).optional(),
-		last_lag_ms: zod.number().int().min(statsSnapshotLastLagMsMin).nullish(),
-		last_nonempty: zod.string().datetime({ offset: true }).nullish(),
-		last_record_count: zod.number().int().min(statsSnapshotLastRecordCountMin).nullish(),
-		last_success: zod.string().datetime({ offset: true }).nullish(),
-		next_check: zod.string().datetime({ offset: true }).nullish(),
+		last_failure: zod.union([Failure, zod.null()]).optional(),
+		last_lag_ms: zod.int().min(statsSnapshotLastLagMsMin).nullish(),
+		last_nonempty: zod.iso.datetime({ offset: true }).nullish(),
+		last_record_count: zod.int().min(statsSnapshotLastRecordCountMin).nullish(),
+		last_success: zod.iso.datetime({ offset: true }).nullish(),
+		next_check: zod.iso.datetime({ offset: true }).nullish(),
 		recent_failures: zod.array(Failure).nullish(),
-		retries: zod.number().int().min(statsSnapshotRetriesMin),
+		retries: zod.int().min(statsSnapshotRetriesMin),
 		state: ItemState,
-		total_checks: zod.number().int().min(statsSnapshotTotalChecksMin),
-		total_dropped: zod.number().int().min(statsSnapshotTotalDroppedMin),
-		total_failures: zod.number().int().min(statsSnapshotTotalFailuresMin),
-		total_records: zod.number().int().min(statsSnapshotTotalRecordsMin)
+		total_checks: zod.int().min(statsSnapshotTotalChecksMin),
+		total_dropped: zod.int().min(statsSnapshotTotalDroppedMin),
+		total_failures: zod.int().min(statsSnapshotTotalFailuresMin),
+		total_records: zod.int().min(statsSnapshotTotalRecordsMin)
 	})
 	.describe(
 		"One read of a [`Stats`], flattened for transport.\n\nCheap to produce: the failure fields are `Arc` clones, not deep copies, so a\nsnapshot of an item with a full ring costs two atomic increments.\n\nEverything here is in its final consumable form, because a snapshot is read far\nmore often than it is produced and every consumer would otherwise repeat the\nsame conversions. Timestamps are `DateTime<FixedOffset>` carrying the offset the\ncaller passed to [`Stats::snapshot_at`] — the same shape and offset as\n[`Failure::at`], so the fields are directly comparable — and the activity planes\nare packed bytes with the stale tail already masked off. The atomics behind all\nof this are still millis and words; that's a storage detail, not an interface."
@@ -3055,7 +3381,7 @@ export type StatsSnapshot = zod.input<typeof StatsSnapshot>
 export type StatsSnapshotOutput = zod.output<typeof StatsSnapshot>
 
 export const ItemsStatsResponse = zod.object({
-	since: zod.string().datetime({ offset: true }),
+	since: zod.iso.datetime({ offset: true }),
 	snapshot: StatsSnapshot
 })
 
@@ -3065,39 +3391,39 @@ export type ItemsStatsResponseOutput = zod.output<typeof ItemsStatsResponse>
 export const itemSchemaAdmStatusDefault = 1
 
 export const ItemSchema = zod.object({
-	adm_status: zod.number().int().default(itemSchemaAdmStatusDefault),
+	adm_status: zod.int().default(itemSchemaAdmStatusDefault),
 	config: zod.unknown().optional(),
 	config_embed: zod.unknown(),
-	endpoint_id: zod.string().uuid().nullish(),
+	endpoint_id: zod.uuid().nullish(),
 	endpoint_name: zod.string().nullish(),
-	flags: zod.number().int(),
-	host_id: zod.string().uuid().nullish(),
+	flags: zod.int(),
+	host_id: zod.uuid().nullish(),
 	host_name: zod.string().nullish(),
-	host_template_id: zod.string().uuid(),
-	item_id: zod.string().uuid(),
+	host_template_id: zod.uuid(),
+	item_id: zod.uuid(),
 	labels: zod.unknown().optional(),
-	last_updated: zod.string().datetime({ offset: true }),
-	listener_id: zod.string().uuid().nullish(),
+	last_updated: zod.iso.datetime({ offset: true }),
+	listener_id: zod.uuid().nullish(),
 	listener_name: zod.string().nullish(),
-	monitored_by: zod.string().uuid().nullish(),
+	monitored_by: zod.uuid().nullish(),
 	name: zod.string().nullish(),
-	outputs: zod.array(zod.string().uuid().nullable()),
-	resolved_adm_status: zod.number().int().nullish(),
+	outputs: zod.array(zod.uuid().nullable()),
+	resolved_adm_status: zod.int().nullish(),
 	resolved_config: zod.unknown().optional(),
 	resolved_config_embed: zod.unknown().optional(),
 	resolved_name: zod.string().nullish(),
-	resolved_outputs: zod.array(zod.string().uuid().nullable()).nullish(),
+	resolved_outputs: zod.array(zod.uuid().nullable()).nullish(),
 	resolved_schedule: zod.string().nullish(),
-	resolved_timeout_ms: zod.number().int().nullish(),
-	root_item_id: zod.string().uuid(),
-	root_template_id: zod.string().uuid().nullish(),
+	resolved_timeout_ms: zod.int().nullish(),
+	root_item_id: zod.uuid(),
+	root_template_id: zod.uuid().nullish(),
 	root_template_name: zod.string().nullish(),
 	schedule: zod.string().nullish(),
-	stats: zod.union([zod.null(), ItemsStatsResponse]).optional(),
-	template_id: zod.string().uuid().nullish(),
-	template_item_id: zod.string().uuid().nullish(),
+	stats: zod.union([ItemsStatsResponse, zod.null()]).optional(),
+	template_id: zod.uuid().nullish(),
+	template_item_id: zod.uuid().nullish(),
 	template_name: zod.string().nullish(),
-	timeout_ms: zod.number().int().nullish(),
+	timeout_ms: zod.int().nullish(),
 	type: ItemKind
 })
 
@@ -3116,212 +3442,247 @@ export const kvPair1ItemEightKvListItem1ItemSevenArrayItemSixBytesItemMin = 0
 
 export const KvPair = zod.tuple([
 	zod.union([
-		zod.object({
-			String: zod.string()
-		}),
-		zod.object({
-			SmolStr: zod.string()
-		})
+		zod
+			.object({
+				String: zod.string()
+			})
+			.strict(),
+		zod
+			.object({
+				SmolStr: zod.string()
+			})
+			.strict()
 	]),
 	zod.union([
 		zod.enum(['Null']),
-		zod.object({
-			Bool: zod.boolean()
-		}),
-		zod.object({
-			Int64: zod.number().int()
-		}),
-		zod.object({
-			Double: zod.number()
-		}),
-		zod.object({
-			String: zod.union([
-				zod.object({
-					String: zod.string()
-				}),
-				zod.object({
-					SmolStr: zod.string()
-				})
-			])
-		}),
-		zod.object({
-			Bytes: zod.array(zod.number().int().min(kvPair1ItemSixBytesItemMin))
-		}),
-		zod.object({
-			Array: zod.array(
-				zod.union([
-					zod.enum(['Null']),
-					zod.object({
-						Bool: zod.boolean()
-					}),
-					zod.object({
-						Int64: zod.number().int()
-					}),
-					zod.object({
-						Double: zod.number()
-					}),
-					zod.object({
-						String: zod.union([
+		zod
+			.object({
+				Bool: zod.boolean()
+			})
+			.strict(),
+		zod
+			.object({
+				Int64: zod.int()
+			})
+			.strict(),
+		zod
+			.object({
+				Double: zod.number()
+			})
+			.strict(),
+		zod
+			.object({
+				String: zod.union([
+					zod
+						.object({
+							String: zod.string()
+						})
+						.strict(),
+					zod
+						.object({
+							SmolStr: zod.string()
+						})
+						.strict()
+				])
+			})
+			.strict(),
+		zod
+			.object({
+				Bytes: zod.array(zod.int().min(kvPair1ItemSixBytesItemMin))
+			})
+			.strict(),
+		zod
+			.object({
+				Array: zod.array(
+					zod.union([
+						zod.enum(['Null']),
+						zod
+							.object({
+								Bool: zod.boolean()
+							})
+							.strict(),
+						zod
+							.object({
+								Int64: zod.int()
+							})
+							.strict(),
+						zod
+							.object({
+								Double: zod.number()
+							})
+							.strict(),
+						zod
+							.object({
+								String: zod.union([
+									zod
+										.object({
+											String: zod.string()
+										})
+										.strict(),
+									zod
+										.object({
+											SmolStr: zod.string()
+										})
+										.strict()
+								])
+							})
+							.strict(),
+						zod
+							.object({
+								Bytes: zod.array(
+									zod.int().min(kvPair1ItemSevenArrayItemSixBytesItemMin)
+								)
+							})
+							.strict(),
+						zod
+							.object({
+								Array: zod.array(zod.unknown())
+							})
+							.strict(),
+						zod
+							.object({
+								KvList: zod.array(
+									zod.tuple([
+										zod.union([
+											zod.object({
+												String: zod.string()
+											}),
+											zod.object({
+												SmolStr: zod.string()
+											})
+										]),
+										zod.union([
+											zod.enum(['Null']),
+											zod.object({
+												Bool: zod.boolean()
+											}),
+											zod.object({
+												Int64: zod.int()
+											}),
+											zod.object({
+												Double: zod.number()
+											}),
+											zod.object({
+												String: zod.union([
+													zod.object({
+														String: zod.string()
+													}),
+													zod.object({
+														SmolStr: zod.string()
+													})
+												])
+											}),
+											zod.object({
+												Bytes: zod.array(
+													zod
+														.int()
+														.min(
+															kvPair1ItemSevenArrayItemEightKvListItem1ItemSixBytesItemMin
+														)
+												)
+											}),
+											zod.object({
+												Array: zod.array(zod.unknown())
+											}),
+											zod.object({
+												KvList: zod.array(zod.unknown())
+											})
+										])
+									])
+								)
+							})
+							.strict()
+					])
+				)
+			})
+			.strict(),
+		zod
+			.object({
+				KvList: zod.array(
+					zod.tuple([
+						zod.union([
 							zod.object({
 								String: zod.string()
 							}),
 							zod.object({
 								SmolStr: zod.string()
 							})
-						])
-					}),
-					zod.object({
-						Bytes: zod.array(
-							zod.number().int().min(kvPair1ItemSevenArrayItemSixBytesItemMin)
-						)
-					}),
-					zod.object({
-						Array: zod.array(zod.unknown())
-					}),
-					zod.object({
-						KvList: zod.array(
-							zod.tuple([
-								zod.union([
+						]),
+						zod.union([
+							zod.enum(['Null']),
+							zod.object({
+								Bool: zod.boolean()
+							}),
+							zod.object({
+								Int64: zod.int()
+							}),
+							zod.object({
+								Double: zod.number()
+							}),
+							zod.object({
+								String: zod.union([
 									zod.object({
 										String: zod.string()
 									}),
 									zod.object({
 										SmolStr: zod.string()
 									})
-								]),
-								zod.union([
-									zod.enum(['Null']),
-									zod.object({
-										Bool: zod.boolean()
-									}),
-									zod.object({
-										Int64: zod.number().int()
-									}),
-									zod.object({
-										Double: zod.number()
-									}),
-									zod.object({
-										String: zod.union([
-											zod.object({
-												String: zod.string()
-											}),
-											zod.object({
-												SmolStr: zod.string()
-											})
-										])
-									}),
-									zod.object({
-										Bytes: zod.array(
-											zod
-												.number()
-												.int()
-												.min(
-													kvPair1ItemSevenArrayItemEightKvListItem1ItemSixBytesItemMin
-												)
-										)
-									}),
-									zod.object({
-										Array: zod.array(zod.unknown())
-									}),
-									zod.object({
-										KvList: zod.array(zod.unknown())
-									})
 								])
-							])
-						)
-					})
-				])
-			)
-		}),
-		zod.object({
-			KvList: zod.array(
-				zod.tuple([
-					zod.union([
-						zod.object({
-							String: zod.string()
-						}),
-						zod.object({
-							SmolStr: zod.string()
-						})
-					]),
-					zod.union([
-						zod.enum(['Null']),
-						zod.object({
-							Bool: zod.boolean()
-						}),
-						zod.object({
-							Int64: zod.number().int()
-						}),
-						zod.object({
-							Double: zod.number()
-						}),
-						zod.object({
-							String: zod.union([
-								zod.object({
-									String: zod.string()
-								}),
-								zod.object({
-									SmolStr: zod.string()
-								})
-							])
-						}),
-						zod.object({
-							Bytes: zod.array(
-								zod
-									.number()
-									.int()
-									.min(kvPair1ItemEightKvListItem1ItemSixBytesItemMin)
-							)
-						}),
-						zod.object({
-							Array: zod.array(
-								zod.union([
-									zod.enum(['Null']),
-									zod.object({
-										Bool: zod.boolean()
-									}),
-									zod.object({
-										Int64: zod.number().int()
-									}),
-									zod.object({
-										Double: zod.number()
-									}),
-									zod.object({
-										String: zod.union([
-											zod.object({
-												String: zod.string()
-											}),
-											zod.object({
-												SmolStr: zod.string()
-											})
-										])
-									}),
-									zod.object({
-										Bytes: zod.array(
-											zod
-												.number()
-												.int()
-												.min(
-													kvPair1ItemEightKvListItem1ItemSevenArrayItemSixBytesItemMin
-												)
-										)
-									}),
-									zod.object({
-										Array: zod.array(zod.unknown())
-									}),
-									zod.object({
-										KvList: zod.array(zod.unknown())
-									})
-								])
-							)
-						}),
-						zod.object({
-							KvList: zod.array(zod.unknown())
-						})
+							}),
+							zod.object({
+								Bytes: zod.array(
+									zod.int().min(kvPair1ItemEightKvListItem1ItemSixBytesItemMin)
+								)
+							}),
+							zod.object({
+								Array: zod.array(
+									zod.union([
+										zod.enum(['Null']),
+										zod.object({
+											Bool: zod.boolean()
+										}),
+										zod.object({
+											Int64: zod.int()
+										}),
+										zod.object({
+											Double: zod.number()
+										}),
+										zod.object({
+											String: zod.union([
+												zod.object({
+													String: zod.string()
+												}),
+												zod.object({
+													SmolStr: zod.string()
+												})
+											])
+										}),
+										zod.object({
+											Bytes: zod.array(
+												zod
+													.int()
+													.min(
+														kvPair1ItemEightKvListItem1ItemSevenArrayItemSixBytesItemMin
+													)
+											)
+										}),
+										zod.object({
+											Array: zod.array(zod.unknown())
+										}),
+										zod.object({
+											KvList: zod.array(zod.unknown())
+										})
+									])
+								)
+							}),
+							zod.object({
+								KvList: zod.array(zod.unknown())
+							})
+						])
 					])
-				])
-			)
-		})
+				)
+			})
+			.strict()
 	])
 ])
 
@@ -3329,19 +3690,19 @@ export type KvPair = zod.input<typeof KvPair>
 export type KvPairOutput = zod.output<typeof KvPair>
 
 export const LinkTemplateRequest = zod.object({
-	link_to_template_id: zod.string().uuid()
+	link_to_template_id: zod.uuid()
 })
 
 export type LinkTemplateRequest = zod.input<typeof LinkTemplateRequest>
 export type LinkTemplateRequestOutput = zod.output<typeof LinkTemplateRequest>
 
 export const ListEndpointResponseInner = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	config: EndpointConfig,
-	endpoint_id: zod.string().uuid(),
-	host_id: zod.string().uuid(),
+	endpoint_id: zod.uuid(),
+	host_id: zod.uuid(),
 	host_name: zod.string(),
-	last_updated: zod.string().datetime({ offset: true }),
+	last_updated: zod.iso.datetime({ offset: true }),
 	name: zod.string()
 })
 
@@ -3352,16 +3713,16 @@ export const listEndpointResponseTotalMin = 0
 
 export const ListEndpointResponse = zod.object({
 	endpoints: zod.array(ListEndpointResponseInner),
-	total: zod.number().int().min(listEndpointResponseTotalMin)
+	total: zod.int().min(listEndpointResponseTotalMin)
 })
 
 export type ListEndpointResponse = zod.input<typeof ListEndpointResponse>
 export type ListEndpointResponseOutput = zod.output<typeof ListEndpointResponse>
 
 export const ResponseHostTemplate = zod.object({
-	host_template_id: zod.string().uuid(),
+	host_template_id: zod.uuid(),
 	name: zod.string(),
-	template_id: zod.string().uuid()
+	template_id: zod.uuid()
 })
 
 export type ResponseHostTemplate = zod.input<typeof ResponseHostTemplate>
@@ -3370,13 +3731,13 @@ export type ResponseHostTemplateOutput = zod.output<typeof ResponseHostTemplate>
 export const responseHostAdmStatusDefault = 1
 
 export const ResponseHost = zod.object({
-	adm_status: zod.number().int().default(responseHostAdmStatusDefault),
-	host_id: zod.string().uuid(),
-	host_template_id: zod.string().uuid(),
-	item_count: zod.number().int().optional(),
+	adm_status: zod.int().default(responseHostAdmStatusDefault),
+	host_id: zod.uuid(),
+	host_template_id: zod.uuid(),
+	item_count: zod.int().optional(),
 	labels: zod.unknown(),
-	last_updated: zod.string().datetime({ offset: true }),
-	monitored_by: zod.string().uuid().nullish(),
+	last_updated: zod.iso.datetime({ offset: true }),
+	monitored_by: zod.uuid().nullish(),
 	monitored_by_node_name: zod.string().nullish(),
 	name: zod.string(),
 	templates: zod.array(ResponseHostTemplate)
@@ -3389,7 +3750,7 @@ export const listHostResponseTotalMin = 0
 
 export const ListHostResponse = zod.object({
 	hosts: zod.array(ResponseHost),
-	total: zod.number().int().min(listHostResponseTotalMin)
+	total: zod.int().min(listHostResponseTotalMin)
 })
 
 export type ListHostResponse = zod.input<typeof ListHostResponse>
@@ -3398,36 +3759,36 @@ export type ListHostResponseOutput = zod.output<typeof ListHostResponse>
 export const listItemResponseInnerAdmStatusDefault = 1
 
 export const ListItemResponseInner = zod.object({
-	adm_status: zod.number().int().default(listItemResponseInnerAdmStatusDefault),
-	endpoint_id: zod.string().uuid().nullish(),
+	adm_status: zod.int().default(listItemResponseInnerAdmStatusDefault),
+	endpoint_id: zod.uuid().nullish(),
 	endpoint_name: zod.string().nullish(),
-	flags: zod.number().int(),
-	host_id: zod.string().uuid().nullish(),
+	flags: zod.int(),
+	host_id: zod.uuid().nullish(),
 	host_name: zod.string().nullish(),
-	host_template_id: zod.string().uuid(),
-	item_id: zod.string().uuid(),
+	host_template_id: zod.uuid(),
+	item_id: zod.uuid(),
 	labels: zod.unknown().optional(),
-	last_updated: zod.string().datetime({ offset: true }),
-	listener_id: zod.string().uuid().nullish(),
+	last_updated: zod.iso.datetime({ offset: true }),
+	listener_id: zod.uuid().nullish(),
 	listener_name: zod.string().nullish(),
-	monitored_by: zod.string().uuid().nullish(),
+	monitored_by: zod.uuid().nullish(),
 	name: zod.string().nullish(),
-	outputs: zod.array(zod.string().uuid().nullable()),
-	resolved_adm_status: zod.number().int().nullish(),
+	outputs: zod.array(zod.uuid().nullable()),
+	resolved_adm_status: zod.int().nullish(),
 	resolved_name: zod.string().nullish(),
-	resolved_outputs: zod.array(zod.string().uuid().nullable()).nullish(),
+	resolved_outputs: zod.array(zod.uuid().nullable()).nullish(),
 	resolved_schedule: zod.string().nullish(),
-	resolved_timeout_ms: zod.number().int().nullish(),
-	root_item_id: zod.string().uuid(),
-	root_template_id: zod.string().uuid().nullish(),
+	resolved_timeout_ms: zod.int().nullish(),
+	root_item_id: zod.uuid(),
+	root_template_id: zod.uuid().nullish(),
 	root_template_name: zod.string().nullish(),
 	schedule: zod.string().nullish(),
-	stats: zod.union([zod.null(), ItemsStatsResponse]).optional(),
-	template_id: zod.string().uuid().nullish(),
-	template_item_id: zod.string().uuid().nullish(),
+	stats: zod.union([ItemsStatsResponse, zod.null()]).optional(),
+	template_id: zod.uuid().nullish(),
+	template_item_id: zod.uuid().nullish(),
 	template_item_name: zod.string().nullish(),
 	template_name: zod.string().nullish(),
-	timeout_ms: zod.number().int().nullish(),
+	timeout_ms: zod.int().nullish(),
 	type: ItemKind
 })
 
@@ -3438,7 +3799,7 @@ export const listItemResponseTotalMin = 0
 
 export const ListItemResponse = zod.object({
 	items: zod.array(ListItemResponseInner),
-	total: zod.number().int().min(listItemResponseTotalMin)
+	total: zod.int().min(listItemResponseTotalMin)
 })
 
 export type ListItemResponse = zod.input<typeof ListItemResponse>
@@ -3447,15 +3808,15 @@ export type ListItemResponseOutput = zod.output<typeof ListItemResponse>
 export const listListenerResponseInnerWorkerCountMin = 0
 
 export const ListListenerResponseInner = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	batch: Batch,
 	config: ListenerConfig,
 	disable_cluster_forwarding: zod.boolean(),
 	labels: zod.unknown(),
-	last_updated: zod.string().datetime({ offset: true }),
-	listener_id: zod.string().uuid(),
+	last_updated: zod.iso.datetime({ offset: true }),
+	listener_id: zod.uuid(),
 	name: zod.string(),
-	worker_count: zod.number().int().min(listListenerResponseInnerWorkerCountMin)
+	worker_count: zod.int().min(listListenerResponseInnerWorkerCountMin)
 })
 
 export type ListListenerResponseInner = zod.input<typeof ListListenerResponseInner>
@@ -3465,7 +3826,7 @@ export const listListenerResponseTotalMin = 0
 
 export const ListListenerResponse = zod.object({
 	listeners: zod.array(ListListenerResponseInner),
-	total: zod.number().int().min(listListenerResponseTotalMin)
+	total: zod.int().min(listListenerResponseTotalMin)
 })
 
 export type ListListenerResponse = zod.input<typeof ListListenerResponse>
@@ -3484,12 +3845,12 @@ export type NodeStatus = zod.input<typeof NodeStatus>
 export type NodeStatusOutput = zod.output<typeof NodeStatus>
 
 export const ResponseClusterNode = zod.object({
-	host_count: zod.number().int(),
+	host_count: zod.int(),
 	is_leader: zod.boolean(),
-	last_heartbeat: zod.string().datetime({ offset: true }),
+	last_heartbeat: zod.iso.datetime({ offset: true }),
 	metadata: NodeMetadata,
 	name: zod.string(),
-	node_id: zod.string().uuid(),
+	node_id: zod.uuid(),
 	op_status: NodeStatus
 })
 
@@ -3504,13 +3865,13 @@ export type ListNodesResponse = zod.input<typeof ListNodesResponse>
 export type ListNodesResponseOutput = zod.output<typeof ListNodesResponse>
 
 export const ListPipelineResponseInner = zod.object({
-	adm_status: zod.number().int(),
-	created_at: zod.string().datetime({ offset: true }),
-	last_updated: zod.string().datetime({ offset: true }),
+	adm_status: zod.int(),
+	created_at: zod.iso.datetime({ offset: true }),
+	last_updated: zod.iso.datetime({ offset: true }),
 	name: zod.string(),
-	owner_user_id: zod.string().uuid().nullish(),
-	pipeline_id: zod.string().uuid(),
-	visibility: zod.number().int()
+	owner_user_id: zod.uuid().nullish(),
+	pipeline_id: zod.uuid(),
+	visibility: zod.int()
 })
 
 export type ListPipelineResponseInner = zod.input<typeof ListPipelineResponseInner>
@@ -3520,20 +3881,20 @@ export const listPipelineResponseTotalMin = 0
 
 export const ListPipelineResponse = zod.object({
 	pipelines: zod.array(ListPipelineResponseInner),
-	total: zod.number().int().min(listPipelineResponseTotalMin)
+	total: zod.int().min(listPipelineResponseTotalMin)
 })
 
 export type ListPipelineResponse = zod.input<typeof ListPipelineResponse>
 export type ListPipelineResponseOutput = zod.output<typeof ListPipelineResponse>
 
 export const ListProcessorResponseInner = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	config: ProcessorConfig,
-	input_items: zod.array(zod.string().uuid()),
-	input_processors: zod.array(zod.string().uuid()),
-	last_updated: zod.string().datetime({ offset: true }),
+	input_items: zod.array(zod.uuid()),
+	input_processors: zod.array(zod.uuid()),
+	last_updated: zod.iso.datetime({ offset: true }),
 	name: zod.string(),
-	processor_id: zod.string().uuid()
+	processor_id: zod.uuid()
 })
 
 export type ListProcessorResponseInner = zod.input<typeof ListProcessorResponseInner>
@@ -3543,7 +3904,7 @@ export const listProcessorResponseTotalMin = 0
 
 export const ListProcessorResponse = zod.object({
 	processors: zod.array(ListProcessorResponseInner),
-	total: zod.number().int().min(listProcessorResponseTotalMin)
+	total: zod.int().min(listProcessorResponseTotalMin)
 })
 
 export type ListProcessorResponse = zod.input<typeof ListProcessorResponse>
@@ -3554,17 +3915,17 @@ export const listSinkResponseInnerInputCountMin = 0
 export const listSinkResponseInnerWorkerCountMin = 0
 
 export const ListSinkResponseInner = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	batch: Batch,
 	channel: Channel,
 	config: SinkConfig,
-	input_count: zod.number().int().min(listSinkResponseInnerInputCountMin),
+	input_count: zod.int().min(listSinkResponseInnerInputCountMin),
 	labels: zod.unknown(),
-	last_updated: zod.string().datetime({ offset: true }),
+	last_updated: zod.iso.datetime({ offset: true }),
 	name: zod.string(),
 	retry: Retry,
-	sink_id: zod.string().uuid(),
-	worker_count: zod.number().int().min(listSinkResponseInnerWorkerCountMin)
+	sink_id: zod.uuid(),
+	worker_count: zod.int().min(listSinkResponseInnerWorkerCountMin)
 })
 
 export type ListSinkResponseInner = zod.input<typeof ListSinkResponseInner>
@@ -3574,18 +3935,18 @@ export const listSinkResponseTotalMin = 0
 
 export const ListSinkResponse = zod.object({
 	sinks: zod.array(ListSinkResponseInner),
-	total: zod.number().int().min(listSinkResponseTotalMin)
+	total: zod.int().min(listSinkResponseTotalMin)
 })
 
 export type ListSinkResponse = zod.input<typeof ListSinkResponse>
 export type ListSinkResponseOutput = zod.output<typeof ListSinkResponse>
 
 export const Template = zod.object({
-	item_count: zod.number().int(),
+	item_count: zod.int(),
 	labels: zod.unknown(),
 	links_to_templates: zod.array(InnerTemplate),
 	name: zod.string(),
-	template_id: zod.string().uuid()
+	template_id: zod.uuid()
 })
 
 export type Template = zod.input<typeof Template>
@@ -3595,20 +3956,20 @@ export const listTemplateResponseTotalMin = 0
 
 export const ListTemplateResponse = zod.object({
 	templates: zod.array(Template),
-	total: zod.number().int().min(listTemplateResponseTotalMin)
+	total: zod.int().min(listTemplateResponseTotalMin)
 })
 
 export type ListTemplateResponse = zod.input<typeof ListTemplateResponse>
 export type ListTemplateResponseOutput = zod.output<typeof ListTemplateResponse>
 
 export const ListUserResponseInner = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	allow_sso: zod.boolean(),
 	display_name: zod.string().nullish(),
 	email: zod.string().nullish(),
-	last_updated: zod.string().datetime({ offset: true }),
+	last_updated: zod.iso.datetime({ offset: true }),
 	sso_linked: zod.boolean(),
-	user_id: zod.string().uuid(),
+	user_id: zod.uuid(),
 	username: zod.string()
 })
 
@@ -3618,7 +3979,7 @@ export type ListUserResponseInnerOutput = zod.output<typeof ListUserResponseInne
 export const listUserResponseTotalMin = 0
 
 export const ListUserResponse = zod.object({
-	total: zod.number().int().min(listUserResponseTotalMin),
+	total: zod.int().min(listUserResponseTotalMin),
 	users: zod.array(ListUserResponseInner)
 })
 
@@ -3633,7 +3994,8 @@ export const ListenerKind = zod
 		'syslog',
 		'open_telemetry',
 		'internal_logs',
-		'internal_metrics'
+		'internal_metrics',
+		'bgp'
 	])
 	.describe('Auto-generated discriminant enum variants')
 
@@ -3678,28 +4040,27 @@ export type OrderByDirection = zod.input<typeof OrderByDirection>
 export type OrderByDirectionOutput = zod.output<typeof OrderByDirection>
 
 export const PipelineCanvas = zod.object({
-	canvas_id: zod.string().uuid(),
-	last_updated: zod.string().datetime({ offset: true })
+	canvas_id: zod.uuid(),
+	last_updated: zod.iso.datetime({ offset: true })
 })
 
 export type PipelineCanvas = zod.input<typeof PipelineCanvas>
 export type PipelineCanvasOutput = zod.output<typeof PipelineCanvas>
 
 export const PipelineDetail = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	canvases: zod.array(PipelineCanvas),
-	created_at: zod.string().datetime({ offset: true }),
-	host_ids: zod.array(zod.string().uuid()),
-	last_updated: zod.string().datetime({ offset: true }),
+	created_at: zod.iso.datetime({ offset: true }),
+	host_ids: zod.array(zod.uuid()),
+	last_updated: zod.iso.datetime({ offset: true }),
 	name: zod.string(),
 	owner_user_id: zod
-		.string()
 		.uuid()
 		.nullish()
 		.describe('Null when the owner was deleted. Such a pipeline is always public.'),
-	pipeline_id: zod.string().uuid(),
-	sink_ids: zod.array(zod.string().uuid()),
-	visibility: zod.number().int()
+	pipeline_id: zod.uuid(),
+	sink_ids: zod.array(zod.uuid()),
+	visibility: zod.int()
 })
 
 export type PipelineDetail = zod.input<typeof PipelineDetail>
@@ -3726,12 +4087,10 @@ export const pipelineSubsetInUseItemCountMin = 0
 
 export const PipelineSubsetInUse = zod
 	.object({
-		item_count: zod.number().int().min(pipelineSubsetInUseItemCountMin),
-		item_ids: zod
-			.array(zod.string().uuid())
-			.describe('The first items of dropped hosts, at most 100.'),
+		item_count: zod.int().min(pipelineSubsetInUseItemCountMin),
+		item_ids: zod.array(zod.uuid()).describe('The first items of dropped hosts, at most 100.'),
 		node_ids: zod
-			.array(zod.string().uuid())
+			.array(zod.uuid())
 			.describe(
 				'Source nodes holding items of dropped hosts, and sink nodes of dropped sinks.'
 			)
@@ -3759,15 +4118,15 @@ export const ResponseDataCreateEndpointResponse = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod.number().int(),
+				adm_status: zod.int(),
 				config: EndpointConfig,
-				endpoint_id: zod.string().uuid(),
-				host_id: zod.string().uuid(),
-				last_updated: zod.string().datetime({ offset: true }),
+				endpoint_id: zod.uuid(),
+				host_id: zod.uuid(),
+				last_updated: zod.iso.datetime({ offset: true }),
 				name: zod.string()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataCreateEndpointResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataCreateEndpointResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -3789,27 +4148,22 @@ export const ResponseDataCreateHostItemResponse = zod
 		data: zod
 			.object({
 				adm_status: zod
-					.number()
 					.int()
 					.default(responseDataCreateHostItemResponseDataAdmStatusDefault),
 				config: ItemConfig,
-				endpoint_id: zod.string().uuid().nullish(),
-				flags: zod
-					.number()
-					.int()
-					.default(responseDataCreateHostItemResponseDataFlagsDefault),
-				item_id: zod.string().uuid(),
+				endpoint_id: zod.uuid().nullish(),
+				flags: zod.int().default(responseDataCreateHostItemResponseDataFlagsDefault),
+				item_id: zod.uuid(),
 				labels: zod.unknown(),
-				listener_id: zod.string().uuid().nullish(),
+				listener_id: zod.uuid().nullish(),
 				name: zod.string(),
 				schedule: zod.string(),
 				timeout_ms: zod
-					.number()
 					.int()
 					.default(responseDataCreateHostItemResponseDataTimeoutMsDefault)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataCreateHostItemResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataCreateHostItemResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -3828,18 +4182,15 @@ export const ResponseDataCreateHostResponse = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod
-					.number()
-					.int()
-					.default(responseDataCreateHostResponseDataAdmStatusDefault),
-				host_id: zod.string().uuid(),
+				adm_status: zod.int().default(responseDataCreateHostResponseDataAdmStatusDefault),
+				host_id: zod.uuid(),
 				labels: zod.unknown(),
-				last_updated: zod.string().datetime({ offset: true }),
-				monitored_by: zod.string().uuid().nullish(),
+				last_updated: zod.iso.datetime({ offset: true }),
+				monitored_by: zod.uuid().nullish(),
 				name: zod.string()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataCreateHostResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataCreateHostResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -3855,21 +4206,18 @@ export const ResponseDataCreateListenerResponse = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod.number().int(),
+				adm_status: zod.int(),
 				batch: Batch,
 				config: ListenerConfig,
 				disable_cluster_forwarding: zod.boolean(),
 				labels: zod.unknown(),
-				last_updated: zod.string().datetime({ offset: true }),
-				listener_id: zod.string().uuid(),
+				last_updated: zod.iso.datetime({ offset: true }),
+				listener_id: zod.uuid(),
 				name: zod.string(),
-				worker_count: zod
-					.number()
-					.int()
-					.min(responseDataCreateListenerResponseDataWorkerCountMin)
+				worker_count: zod.int().min(responseDataCreateListenerResponseDataWorkerCountMin)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataCreateListenerResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataCreateListenerResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -3887,16 +4235,16 @@ export const ResponseDataCreateProcessorResponse = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod.number().int(),
+				adm_status: zod.int(),
 				config: ProcessorConfig,
-				input_items: zod.array(zod.string().uuid()),
-				input_processors: zod.array(zod.string().uuid()),
-				last_updated: zod.string().datetime({ offset: true }),
+				input_items: zod.array(zod.uuid()),
+				input_processors: zod.array(zod.uuid()),
+				last_updated: zod.iso.datetime({ offset: true }),
 				name: zod.string(),
-				processor_id: zod.string().uuid()
+				processor_id: zod.uuid()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataCreateProcessorResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataCreateProcessorResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -3916,23 +4264,20 @@ export const ResponseDataCreateSinkResponse = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod.number().int(),
+				adm_status: zod.int(),
 				batch: Batch,
 				channel: Channel,
 				config: SinkConfig,
-				inputs: zod.array(zod.string().uuid()),
+				inputs: zod.array(zod.uuid()),
 				labels: zod.unknown(),
-				last_updated: zod.string().datetime({ offset: true }),
+				last_updated: zod.iso.datetime({ offset: true }),
 				name: zod.string(),
 				retry: Retry,
-				sink_id: zod.string().uuid(),
-				worker_count: zod
-					.number()
-					.int()
-					.min(responseDataCreateSinkResponseDataWorkerCountMin)
+				sink_id: zod.uuid(),
+				worker_count: zod.int().min(responseDataCreateSinkResponseDataWorkerCountMin)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataCreateSinkResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataCreateSinkResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -3950,25 +4295,20 @@ export const ResponseDataCreateTemplateItemResponse = zod
 		data: zod
 			.object({
 				adm_status: zod
-					.number()
 					.int()
 					.default(responseDataCreateTemplateItemResponseDataAdmStatusDefault),
 				config: ItemConfig,
-				flags: zod
-					.number()
-					.int()
-					.default(responseDataCreateTemplateItemResponseDataFlagsDefault),
-				item_id: zod.string().uuid(),
+				flags: zod.int().default(responseDataCreateTemplateItemResponseDataFlagsDefault),
+				item_id: zod.uuid(),
 				labels: zod.unknown(),
 				name: zod.string(),
 				schedule: zod.string(),
 				timeout_ms: zod
-					.number()
 					.int()
 					.default(responseDataCreateTemplateItemResponseDataTimeoutMsDefault)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataCreateTemplateItemResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataCreateTemplateItemResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -3988,10 +4328,10 @@ export const ResponseDataCreateTemplateResponse = zod
 			.object({
 				labels: zod.unknown(),
 				name: zod.string(),
-				template_id: zod.string().uuid()
+				template_id: zod.uuid()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataCreateTemplateResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataCreateTemplateResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4009,17 +4349,17 @@ export const ResponseDataCreateUserResponse = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod.number().int(),
+				adm_status: zod.int(),
 				allow_sso: zod.boolean(),
 				display_name: zod.string().nullish(),
 				email: zod.string().nullish(),
-				last_updated: zod.string().datetime({ offset: true }),
+				last_updated: zod.iso.datetime({ offset: true }),
 				sso_linked: zod.boolean(),
-				user_id: zod.string().uuid(),
+				user_id: zod.uuid(),
 				username: zod.string()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataCreateUserResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataCreateUserResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4033,16 +4373,15 @@ export const ResponseDataGetPipelineGraphResponse = zod
 	.object({
 		data: zod
 			.object({
-				canvas_id: zod.string().uuid(),
+				canvas_id: zod.uuid(),
 				graph: PipelineGraph,
-				last_updated: zod
-					.string()
+				last_updated: zod.iso
 					.datetime({ offset: true })
 					.describe('Send it back when saving the graph.'),
-				pipeline_id: zod.string().uuid()
+				pipeline_id: zod.uuid()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataGetPipelineGraphResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataGetPipelineGraphResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4060,16 +4399,15 @@ export const ResponseDataGetPipelineNodeResponse = zod
 	.object({
 		data: GraphNodeContent.and(
 			zod.object({
-				canvas_id: zod.string().uuid(),
-				last_updated: zod
-					.string()
+				canvas_id: zod.uuid(),
+				last_updated: zod.iso
 					.datetime({ offset: true })
 					.describe("Send it back when saving the node's content."),
-				node_id: zod.string().uuid(),
-				pipeline_id: zod.string().uuid()
+				node_id: zod.uuid(),
+				pipeline_id: zod.uuid()
 			})
 		).optional(),
-		status_code: zod.number().int().min(responseDataGetPipelineNodeResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataGetPipelineNodeResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4090,23 +4428,20 @@ export const ResponseDataGetSinkResponse = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod
-					.number()
-					.int()
-					.default(responseDataGetSinkResponseDataAdmStatusDefault),
+				adm_status: zod.int().default(responseDataGetSinkResponseDataAdmStatusDefault),
 				batch: Batch,
 				channel: Channel,
 				config: SinkConfig,
-				inputs: zod.array(zod.string().uuid()),
+				inputs: zod.array(zod.uuid()),
 				labels: zod.unknown(),
-				last_updated: zod.string().datetime({ offset: true }),
+				last_updated: zod.iso.datetime({ offset: true }),
 				name: zod.string(),
 				retry: Retry,
-				sink_id: zod.string().uuid(),
-				worker_count: zod.number().int().min(responseDataGetSinkResponseDataWorkerCountMin)
+				sink_id: zod.uuid(),
+				worker_count: zod.int().min(responseDataGetSinkResponseDataWorkerCountMin)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataGetSinkResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataGetSinkResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4120,14 +4455,14 @@ export const ResponseDataGetTemplateResponse = zod
 	.object({
 		data: zod
 			.object({
-				item_count: zod.number().int(),
+				item_count: zod.int(),
 				labels: zod.unknown(),
 				links_to_templates: zod.array(InnerTemplate),
 				name: zod.string(),
-				template_id: zod.string().uuid()
+				template_id: zod.uuid()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataGetTemplateResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataGetTemplateResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4143,17 +4478,17 @@ export const ResponseDataGetUserResponse = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod.number().int(),
+				adm_status: zod.int(),
 				allow_sso: zod.boolean(),
 				display_name: zod.string().nullish(),
 				email: zod.string().nullish(),
-				last_updated: zod.string().datetime({ offset: true }),
+				last_updated: zod.iso.datetime({ offset: true }),
 				sso_linked: zod.boolean(),
-				user_id: zod.string().uuid(),
+				user_id: zod.uuid(),
 				username: zod.string()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataGetUserResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataGetUserResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4171,7 +4506,7 @@ export const ResponseDataGraph = zod
 				nodes: zod.record(zod.string(), Node)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataGraphStatusCodeMin),
+		status_code: zod.int().min(responseDataGraphStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4188,13 +4523,10 @@ export const ResponseDataHealthResponse = zod
 		data: zod
 			.object({
 				status: zod.string(),
-				uptime_seconds: zod
-					.number()
-					.int()
-					.min(responseDataHealthResponseDataUptimeSecondsMin)
+				uptime_seconds: zod.int().min(responseDataHealthResponseDataUptimeSecondsMin)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataHealthResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataHealthResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4209,43 +4541,43 @@ export const ResponseDataItemSchema = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod.number().int().default(responseDataItemSchemaDataAdmStatusDefault),
+				adm_status: zod.int().default(responseDataItemSchemaDataAdmStatusDefault),
 				config: zod.unknown().optional(),
 				config_embed: zod.unknown(),
-				endpoint_id: zod.string().uuid().nullish(),
+				endpoint_id: zod.uuid().nullish(),
 				endpoint_name: zod.string().nullish(),
-				flags: zod.number().int(),
-				host_id: zod.string().uuid().nullish(),
+				flags: zod.int(),
+				host_id: zod.uuid().nullish(),
 				host_name: zod.string().nullish(),
-				host_template_id: zod.string().uuid(),
-				item_id: zod.string().uuid(),
+				host_template_id: zod.uuid(),
+				item_id: zod.uuid(),
 				labels: zod.unknown().optional(),
-				last_updated: zod.string().datetime({ offset: true }),
-				listener_id: zod.string().uuid().nullish(),
+				last_updated: zod.iso.datetime({ offset: true }),
+				listener_id: zod.uuid().nullish(),
 				listener_name: zod.string().nullish(),
-				monitored_by: zod.string().uuid().nullish(),
+				monitored_by: zod.uuid().nullish(),
 				name: zod.string().nullish(),
-				outputs: zod.array(zod.string().uuid().nullable()),
-				resolved_adm_status: zod.number().int().nullish(),
+				outputs: zod.array(zod.uuid().nullable()),
+				resolved_adm_status: zod.int().nullish(),
 				resolved_config: zod.unknown().optional(),
 				resolved_config_embed: zod.unknown().optional(),
 				resolved_name: zod.string().nullish(),
-				resolved_outputs: zod.array(zod.string().uuid().nullable()).nullish(),
+				resolved_outputs: zod.array(zod.uuid().nullable()).nullish(),
 				resolved_schedule: zod.string().nullish(),
-				resolved_timeout_ms: zod.number().int().nullish(),
-				root_item_id: zod.string().uuid(),
-				root_template_id: zod.string().uuid().nullish(),
+				resolved_timeout_ms: zod.int().nullish(),
+				root_item_id: zod.uuid(),
+				root_template_id: zod.uuid().nullish(),
 				root_template_name: zod.string().nullish(),
 				schedule: zod.string().nullish(),
-				stats: zod.union([zod.null(), ItemsStatsResponse]).optional(),
-				template_id: zod.string().uuid().nullish(),
-				template_item_id: zod.string().uuid().nullish(),
+				stats: zod.union([ItemsStatsResponse, zod.null()]).optional(),
+				template_id: zod.uuid().nullish(),
+				template_item_id: zod.uuid().nullish(),
 				template_name: zod.string().nullish(),
-				timeout_ms: zod.number().int().nullish(),
+				timeout_ms: zod.int().nullish(),
 				type: ItemKind
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataItemSchemaStatusCodeMin),
+		status_code: zod.int().min(responseDataItemSchemaStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4262,10 +4594,10 @@ export const ResponseDataListEndpointResponse = zod
 		data: zod
 			.object({
 				endpoints: zod.array(ListEndpointResponseInner),
-				total: zod.number().int().min(responseDataListEndpointResponseDataTotalMin)
+				total: zod.int().min(responseDataListEndpointResponseDataTotalMin)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataListEndpointResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataListEndpointResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4284,10 +4616,10 @@ export const ResponseDataListItemResponse = zod
 		data: zod
 			.object({
 				items: zod.array(ListItemResponseInner),
-				total: zod.number().int().min(responseDataListItemResponseDataTotalMin)
+				total: zod.int().min(responseDataListItemResponseDataTotalMin)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataListItemResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataListItemResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4304,10 +4636,10 @@ export const ResponseDataListListenerResponse = zod
 		data: zod
 			.object({
 				listeners: zod.array(ListListenerResponseInner),
-				total: zod.number().int().min(responseDataListListenerResponseDataTotalMin)
+				total: zod.int().min(responseDataListListenerResponseDataTotalMin)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataListListenerResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataListListenerResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4326,7 +4658,7 @@ export const ResponseDataListNodesResponse = zod
 				nodes: zod.array(ResponseClusterNode)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataListNodesResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataListNodesResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4343,10 +4675,10 @@ export const ResponseDataListPipelineResponse = zod
 		data: zod
 			.object({
 				pipelines: zod.array(ListPipelineResponseInner),
-				total: zod.number().int().min(responseDataListPipelineResponseDataTotalMin)
+				total: zod.int().min(responseDataListPipelineResponseDataTotalMin)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataListPipelineResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataListPipelineResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4365,10 +4697,10 @@ export const ResponseDataListProcessorResponse = zod
 		data: zod
 			.object({
 				processors: zod.array(ListProcessorResponseInner),
-				total: zod.number().int().min(responseDataListProcessorResponseDataTotalMin)
+				total: zod.int().min(responseDataListProcessorResponseDataTotalMin)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataListProcessorResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataListProcessorResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4387,10 +4719,10 @@ export const ResponseDataListSinkResponse = zod
 		data: zod
 			.object({
 				sinks: zod.array(ListSinkResponseInner),
-				total: zod.number().int().min(responseDataListSinkResponseDataTotalMin)
+				total: zod.int().min(responseDataListSinkResponseDataTotalMin)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataListSinkResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataListSinkResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4407,10 +4739,10 @@ export const ResponseDataListTemplateResponse = zod
 		data: zod
 			.object({
 				templates: zod.array(Template),
-				total: zod.number().int().min(responseDataListTemplateResponseDataTotalMin)
+				total: zod.int().min(responseDataListTemplateResponseDataTotalMin)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataListTemplateResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataListTemplateResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4428,11 +4760,11 @@ export const ResponseDataListUserResponse = zod
 	.object({
 		data: zod
 			.object({
-				total: zod.number().int().min(responseDataListUserResponseDataTotalMin),
+				total: zod.int().min(responseDataListUserResponseDataTotalMin),
 				users: zod.array(ListUserResponseInner)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataListUserResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataListUserResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4449,7 +4781,7 @@ export const ResponseDataLogoutResponse = zod
 				message: zod.string()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataLogoutResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataLogoutResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4463,23 +4795,22 @@ export const ResponseDataPipelineDetail = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod.number().int(),
+				adm_status: zod.int(),
 				canvases: zod.array(PipelineCanvas),
-				created_at: zod.string().datetime({ offset: true }),
-				host_ids: zod.array(zod.string().uuid()),
-				last_updated: zod.string().datetime({ offset: true }),
+				created_at: zod.iso.datetime({ offset: true }),
+				host_ids: zod.array(zod.uuid()),
+				last_updated: zod.iso.datetime({ offset: true }),
 				name: zod.string(),
 				owner_user_id: zod
-					.string()
 					.uuid()
 					.nullish()
 					.describe('Null when the owner was deleted. Such a pipeline is always public.'),
-				pipeline_id: zod.string().uuid(),
-				sink_ids: zod.array(zod.string().uuid()),
-				visibility: zod.number().int()
+				pipeline_id: zod.uuid(),
+				sink_ids: zod.array(zod.uuid()),
+				visibility: zod.int()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataPipelineDetailStatusCodeMin),
+		status_code: zod.int().min(responseDataPipelineDetailStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4494,13 +4825,13 @@ export const ResponseDataTokenResponse = zod
 		data: zod
 			.object({
 				access_token: zod.string(),
-				expires_in: zod.number().int().describe('Access token lifetime in seconds.'),
+				expires_in: zod.int().describe('Access token lifetime in seconds.'),
 				refresh_token: zod
 					.string()
 					.describe('Unchanged by a refresh; reuse it until it expires.')
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataTokenResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataTokenResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4514,7 +4845,7 @@ export const responseDataTupleUnitStatusCodeMin = 0
 export const ResponseDataTupleUnit = zod
 	.object({
 		data: zod.unknown().default(responseDataTupleUnitDataDefault),
-		status_code: zod.number().int().min(responseDataTupleUnitStatusCodeMin),
+		status_code: zod.int().min(responseDataTupleUnitStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4531,29 +4862,24 @@ export const ResponseDataUpdateAppliedTemplateItemRequest = zod
 		data: zod
 			.object({
 				adm_status: zod
-					.number()
 					.int()
 					.default(responseDataUpdateAppliedTemplateItemRequestDataAdmStatusDefault),
-				config: zod.union([zod.null(), ItemConfig]).optional(),
-				endpoint_id: zod.string().uuid().nullish(),
+				config: zod.union([ItemConfig, zod.null()]).optional(),
+				endpoint_id: zod.uuid().nullish(),
 				flags: zod
-					.number()
 					.int()
 					.default(responseDataUpdateAppliedTemplateItemRequestDataFlagsDefault),
 				labels: zod.unknown(),
-				listener_id: zod.string().uuid().nullish(),
+				listener_id: zod.uuid().nullish(),
 				name: zod.string().nullish(),
 				schedule: zod.string().nullish(),
-				timeout_ms: zod.number().int().nullish()
+				timeout_ms: zod.int().nullish()
 			})
 			.optional()
 			.describe(
 				'An applied template item inherits name, schedule, timeout_ms and config from\nthe template item it is derived from. Any of those fields that is provided\noverrides the inherited value, and any field left null keeps inheriting.'
 			),
-		status_code: zod
-			.number()
-			.int()
-			.min(responseDataUpdateAppliedTemplateItemRequestStatusCodeMin),
+		status_code: zod.int().min(responseDataUpdateAppliedTemplateItemRequestStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4571,15 +4897,15 @@ export const ResponseDataUpdateEndpointResponse = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod.number().int(),
+				adm_status: zod.int(),
 				config: EndpointConfig,
-				endpoint_id: zod.string().uuid(),
-				host_id: zod.string().uuid(),
-				last_updated: zod.string().datetime({ offset: true }),
+				endpoint_id: zod.uuid(),
+				host_id: zod.uuid(),
+				last_updated: zod.iso.datetime({ offset: true }),
 				name: zod.string()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataUpdateEndpointResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataUpdateEndpointResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4600,23 +4926,19 @@ export const ResponseDataUpdateHostItemRequest = zod
 		data: zod
 			.object({
 				adm_status: zod
-					.number()
 					.int()
 					.default(responseDataUpdateHostItemRequestDataAdmStatusDefault),
 				config: ItemConfig,
-				endpoint_id: zod.string().uuid().nullish(),
-				flags: zod
-					.number()
-					.int()
-					.default(responseDataUpdateHostItemRequestDataFlagsDefault),
+				endpoint_id: zod.uuid().nullish(),
+				flags: zod.int().default(responseDataUpdateHostItemRequestDataFlagsDefault),
 				labels: zod.unknown(),
-				listener_id: zod.string().uuid().nullish(),
+				listener_id: zod.uuid().nullish(),
 				name: zod.string(),
 				schedule: zod.string(),
-				timeout_ms: zod.number().int()
+				timeout_ms: zod.int()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataUpdateHostItemRequestStatusCodeMin),
+		status_code: zod.int().min(responseDataUpdateHostItemRequestStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4633,18 +4955,15 @@ export const ResponseDataUpdateHostResponse = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod
-					.number()
-					.int()
-					.default(responseDataUpdateHostResponseDataAdmStatusDefault),
-				host_id: zod.string().uuid(),
+				adm_status: zod.int().default(responseDataUpdateHostResponseDataAdmStatusDefault),
+				host_id: zod.uuid(),
 				labels: zod.unknown(),
-				last_updated: zod.string().datetime({ offset: true }),
-				monitored_by: zod.string().uuid().nullish(),
+				last_updated: zod.iso.datetime({ offset: true }),
+				monitored_by: zod.uuid().nullish(),
 				name: zod.string()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataUpdateHostResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataUpdateHostResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4660,21 +4979,18 @@ export const ResponseDataUpdateItemRequest = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod
-					.number()
-					.int()
-					.default(responseDataUpdateItemRequestDataAdmStatusDefault),
+				adm_status: zod.int().default(responseDataUpdateItemRequestDataAdmStatusDefault),
 				config: ItemConfig,
-				endpoint_id: zod.string().uuid().nullish(),
-				flags: zod.number().int().default(responseDataUpdateItemRequestDataFlagsDefault),
+				endpoint_id: zod.uuid().nullish(),
+				flags: zod.int().default(responseDataUpdateItemRequestDataFlagsDefault),
 				labels: zod.unknown(),
-				listener_id: zod.string().uuid().nullish(),
+				listener_id: zod.uuid().nullish(),
 				name: zod.string().nullish(),
 				schedule: zod.string().nullish(),
-				timeout_ms: zod.number().int().nullish()
+				timeout_ms: zod.int().nullish()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataUpdateItemRequestStatusCodeMin),
+		status_code: zod.int().min(responseDataUpdateItemRequestStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4690,21 +5006,18 @@ export const ResponseDataUpdateListenerResponse = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod.number().int(),
+				adm_status: zod.int(),
 				batch: Batch,
 				config: ListenerConfig,
 				disable_cluster_forwarding: zod.boolean(),
 				labels: zod.unknown(),
-				last_updated: zod.string().datetime({ offset: true }),
-				listener_id: zod.string().uuid(),
+				last_updated: zod.iso.datetime({ offset: true }),
+				listener_id: zod.uuid(),
 				name: zod.string(),
-				worker_count: zod
-					.number()
-					.int()
-					.min(responseDataUpdateListenerResponseDataWorkerCountMin)
+				worker_count: zod.int().min(responseDataUpdateListenerResponseDataWorkerCountMin)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataUpdateListenerResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataUpdateListenerResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4722,16 +5035,16 @@ export const ResponseDataUpdateProcessorResponse = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod.number().int(),
+				adm_status: zod.int(),
 				config: ProcessorConfig,
-				input_items: zod.array(zod.string().uuid()),
-				input_processors: zod.array(zod.string().uuid()),
-				last_updated: zod.string().datetime({ offset: true }),
+				input_items: zod.array(zod.uuid()),
+				input_processors: zod.array(zod.uuid()),
+				last_updated: zod.iso.datetime({ offset: true }),
 				name: zod.string(),
-				processor_id: zod.string().uuid()
+				processor_id: zod.uuid()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataUpdateProcessorResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataUpdateProcessorResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4751,23 +5064,20 @@ export const ResponseDataUpdateSinkResponse = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod.number().int(),
+				adm_status: zod.int(),
 				batch: Batch,
 				channel: Channel,
 				config: SinkConfig,
-				inputs: zod.array(zod.string().uuid()),
+				inputs: zod.array(zod.uuid()),
 				labels: zod.unknown(),
-				last_updated: zod.string().datetime({ offset: true }),
+				last_updated: zod.iso.datetime({ offset: true }),
 				name: zod.string(),
 				retry: Retry,
-				sink_id: zod.string().uuid(),
-				worker_count: zod
-					.number()
-					.int()
-					.min(responseDataUpdateSinkResponseDataWorkerCountMin)
+				sink_id: zod.uuid(),
+				worker_count: zod.int().min(responseDataUpdateSinkResponseDataWorkerCountMin)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataUpdateSinkResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataUpdateSinkResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4784,24 +5094,20 @@ export const ResponseDataUpdateTemplateItemRequest = zod
 		data: zod
 			.object({
 				adm_status: zod
-					.number()
 					.int()
 					.default(responseDataUpdateTemplateItemRequestDataAdmStatusDefault),
-				config: zod.union([zod.null(), ItemConfig]).optional(),
-				flags: zod
-					.number()
-					.int()
-					.default(responseDataUpdateTemplateItemRequestDataFlagsDefault),
+				config: zod.union([ItemConfig, zod.null()]).optional(),
+				flags: zod.int().default(responseDataUpdateTemplateItemRequestDataFlagsDefault),
 				labels: zod.unknown(),
 				name: zod.string().nullish(),
 				schedule: zod.string().nullish(),
-				timeout_ms: zod.number().int().nullish()
+				timeout_ms: zod.int().nullish()
 			})
 			.optional()
 			.describe(
 				'A root template item owns its values, so name, schedule, timeout_ms and\nconfig are mandatory. A template item linked from another template inherits\nthem, so they are optional there and only need to be set to override.'
 			),
-		status_code: zod.number().int().min(responseDataUpdateTemplateItemRequestStatusCodeMin),
+		status_code: zod.int().min(responseDataUpdateTemplateItemRequestStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4821,10 +5127,10 @@ export const ResponseDataUpdateTemplateResponse = zod
 			.object({
 				labels: zod.unknown(),
 				name: zod.string(),
-				template_id: zod.string().uuid()
+				template_id: zod.uuid()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataUpdateTemplateResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataUpdateTemplateResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4842,17 +5148,17 @@ export const ResponseDataUpdateUserResponse = zod
 	.object({
 		data: zod
 			.object({
-				adm_status: zod.number().int(),
+				adm_status: zod.int(),
 				allow_sso: zod.boolean(),
 				display_name: zod.string().nullish(),
 				email: zod.string().nullish(),
-				last_updated: zod.string().datetime({ offset: true }),
+				last_updated: zod.iso.datetime({ offset: true }),
 				sso_linked: zod.boolean(),
-				user_id: zod.string().uuid(),
+				user_id: zod.uuid(),
 				username: zod.string()
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataUpdateUserResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataUpdateUserResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4872,12 +5178,12 @@ export const ResponseDataUserSummaryResponse = zod
 	.object({
 		data: zod
 			.object({
-				allow_sso: zod.number().int().min(responseDataUserSummaryResponseDataAllowSsoMin),
-				disabled: zod.number().int().min(responseDataUserSummaryResponseDataDisabledMin),
-				total: zod.number().int().min(responseDataUserSummaryResponseDataTotalMin)
+				allow_sso: zod.int().min(responseDataUserSummaryResponseDataAllowSsoMin),
+				disabled: zod.int().min(responseDataUserSummaryResponseDataDisabledMin),
+				total: zod.int().min(responseDataUserSummaryResponseDataTotalMin)
 			})
 			.optional(),
-		status_code: zod.number().int().min(responseDataUserSummaryResponseStatusCodeMin),
+		status_code: zod.int().min(responseDataUserSummaryResponseStatusCodeMin),
 		success: zod.boolean()
 	})
 	.describe('Successful response')
@@ -4891,7 +5197,7 @@ export const responseErrorStatusCodeMin = 0
 
 export const ResponseError = zod.object({
 	error: ErrorBody,
-	status_code: zod.number().int().min(responseErrorStatusCodeMin),
+	status_code: zod.int().min(responseErrorStatusCodeMin),
 	success: zod.boolean()
 })
 
@@ -4910,7 +5216,7 @@ export type TemplateOrderByOutput = zod.output<typeof TemplateOrderBy>
 
 export const TokenResponse = zod.object({
 	access_token: zod.string(),
-	expires_in: zod.number().int().describe('Access token lifetime in seconds.'),
+	expires_in: zod.int().describe('Access token lifetime in seconds.'),
 	refresh_token: zod.string().describe('Unchanged by a refresh; reuse it until it expires.')
 })
 
@@ -4925,9 +5231,9 @@ export type TupleUnit = zod.input<typeof TupleUnit>
 export type TupleUnitOutput = zod.output<typeof TupleUnit>
 
 export const UnapplyTemplatesRequestInner = zod.object({
-	host_id: zod.string().uuid(),
+	host_id: zod.uuid(),
 	keep_items: zod.boolean(),
-	template_id: zod.string().uuid()
+	template_id: zod.uuid()
 })
 
 export type UnapplyTemplatesRequestInner = zod.input<typeof UnapplyTemplatesRequestInner>
@@ -4942,7 +5248,7 @@ export type UnapplyTemplatesRequestOutput = zod.output<typeof UnapplyTemplatesRe
 
 export const UnlinkTemplateRequest = zod.object({
 	keep_items: zod.boolean(),
-	unlink_from_template_id: zod.string().uuid()
+	unlink_from_template_id: zod.uuid()
 })
 
 export type UnlinkTemplateRequest = zod.input<typeof UnlinkTemplateRequest>
@@ -4953,15 +5259,15 @@ export const updateAppliedTemplateItemRequestFlagsDefault = 0
 
 export const UpdateAppliedTemplateItemRequest = zod
 	.object({
-		adm_status: zod.number().int().default(updateAppliedTemplateItemRequestAdmStatusDefault),
-		config: zod.union([zod.null(), ItemConfig]).optional(),
-		endpoint_id: zod.string().uuid().nullish(),
-		flags: zod.number().int().default(updateAppliedTemplateItemRequestFlagsDefault),
+		adm_status: zod.int().default(updateAppliedTemplateItemRequestAdmStatusDefault),
+		config: zod.union([ItemConfig, zod.null()]).optional(),
+		endpoint_id: zod.uuid().nullish(),
+		flags: zod.int().default(updateAppliedTemplateItemRequestFlagsDefault),
 		labels: zod.unknown(),
-		listener_id: zod.string().uuid().nullish(),
+		listener_id: zod.uuid().nullish(),
 		name: zod.string().nullish(),
 		schedule: zod.string().nullish(),
-		timeout_ms: zod.number().int().nullish()
+		timeout_ms: zod.int().nullish()
 	})
 	.describe(
 		'An applied template item inherits name, schedule, timeout_ms and config from\nthe template item it is derived from. Any of those fields that is provided\noverrides the inherited value, and any field left null keeps inheriting.'
@@ -4975,9 +5281,9 @@ export type UpdateAppliedTemplateItemRequestOutput = zod.output<
 export const updateEndpointRequestAdmStatusDefault = 1
 
 export const UpdateEndpointRequest = zod.object({
-	adm_status: zod.number().int().default(updateEndpointRequestAdmStatusDefault),
+	adm_status: zod.int().default(updateEndpointRequestAdmStatusDefault),
 	config: EndpointConfig,
-	host_id: zod.string().uuid(),
+	host_id: zod.uuid(),
 	name: zod.string()
 })
 
@@ -4985,11 +5291,11 @@ export type UpdateEndpointRequest = zod.input<typeof UpdateEndpointRequest>
 export type UpdateEndpointRequestOutput = zod.output<typeof UpdateEndpointRequest>
 
 export const UpdateEndpointResponse = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	config: EndpointConfig,
-	endpoint_id: zod.string().uuid(),
-	host_id: zod.string().uuid(),
-	last_updated: zod.string().datetime({ offset: true }),
+	endpoint_id: zod.uuid(),
+	host_id: zod.uuid(),
+	last_updated: zod.iso.datetime({ offset: true }),
 	name: zod.string()
 })
 
@@ -5000,22 +5306,22 @@ export const updateHostItemRequestAdmStatusDefault = 1
 export const updateHostItemRequestFlagsDefault = 0
 
 export const UpdateHostItemRequest = zod.object({
-	adm_status: zod.number().int().default(updateHostItemRequestAdmStatusDefault),
+	adm_status: zod.int().default(updateHostItemRequestAdmStatusDefault),
 	config: ItemConfig,
-	endpoint_id: zod.string().uuid().nullish(),
-	flags: zod.number().int().default(updateHostItemRequestFlagsDefault),
+	endpoint_id: zod.uuid().nullish(),
+	flags: zod.int().default(updateHostItemRequestFlagsDefault),
 	labels: zod.unknown(),
-	listener_id: zod.string().uuid().nullish(),
+	listener_id: zod.uuid().nullish(),
 	name: zod.string(),
 	schedule: zod.string(),
-	timeout_ms: zod.number().int()
+	timeout_ms: zod.int()
 })
 
 export type UpdateHostItemRequest = zod.input<typeof UpdateHostItemRequest>
 export type UpdateHostItemRequestOutput = zod.output<typeof UpdateHostItemRequest>
 
 export const UpdateHostRequest = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	labels: zod.unknown(),
 	name: zod.string()
 })
@@ -5026,11 +5332,11 @@ export type UpdateHostRequestOutput = zod.output<typeof UpdateHostRequest>
 export const updateHostResponseAdmStatusDefault = 1
 
 export const UpdateHostResponse = zod.object({
-	adm_status: zod.number().int().default(updateHostResponseAdmStatusDefault),
-	host_id: zod.string().uuid(),
+	adm_status: zod.int().default(updateHostResponseAdmStatusDefault),
+	host_id: zod.uuid(),
 	labels: zod.unknown(),
-	last_updated: zod.string().datetime({ offset: true }),
-	monitored_by: zod.string().uuid().nullish(),
+	last_updated: zod.iso.datetime({ offset: true }),
+	monitored_by: zod.uuid().nullish(),
 	name: zod.string()
 })
 
@@ -5041,15 +5347,15 @@ export const updateItemRequestAdmStatusDefault = 1
 export const updateItemRequestFlagsDefault = 0
 
 export const UpdateItemRequest = zod.object({
-	adm_status: zod.number().int().default(updateItemRequestAdmStatusDefault),
+	adm_status: zod.int().default(updateItemRequestAdmStatusDefault),
 	config: ItemConfig,
-	endpoint_id: zod.string().uuid().nullish(),
-	flags: zod.number().int().default(updateItemRequestFlagsDefault),
+	endpoint_id: zod.uuid().nullish(),
+	flags: zod.int().default(updateItemRequestFlagsDefault),
 	labels: zod.unknown(),
-	listener_id: zod.string().uuid().nullish(),
+	listener_id: zod.uuid().nullish(),
 	name: zod.string().nullish(),
 	schedule: zod.string().nullish(),
-	timeout_ms: zod.number().int().nullish()
+	timeout_ms: zod.int().nullish()
 })
 
 export type UpdateItemRequest = zod.input<typeof UpdateItemRequest>
@@ -5059,13 +5365,13 @@ export const updateListenerRequestAdmStatusDefault = 1
 export const updateListenerRequestWorkerCountMin = 0
 
 export const UpdateListenerRequest = zod.object({
-	adm_status: zod.number().int().default(updateListenerRequestAdmStatusDefault),
+	adm_status: zod.int().default(updateListenerRequestAdmStatusDefault),
 	batch: Batch.optional(),
 	config: ListenerConfig,
 	disable_cluster_forwarding: zod.boolean().optional(),
 	labels: zod.unknown(),
 	name: zod.string(),
-	worker_count: zod.number().int().min(updateListenerRequestWorkerCountMin).optional()
+	worker_count: zod.int().min(updateListenerRequestWorkerCountMin).optional()
 })
 
 export type UpdateListenerRequest = zod.input<typeof UpdateListenerRequest>
@@ -5074,15 +5380,15 @@ export type UpdateListenerRequestOutput = zod.output<typeof UpdateListenerReques
 export const updateListenerResponseWorkerCountMin = 0
 
 export const UpdateListenerResponse = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	batch: Batch,
 	config: ListenerConfig,
 	disable_cluster_forwarding: zod.boolean(),
 	labels: zod.unknown(),
-	last_updated: zod.string().datetime({ offset: true }),
-	listener_id: zod.string().uuid(),
+	last_updated: zod.iso.datetime({ offset: true }),
+	listener_id: zod.uuid(),
 	name: zod.string(),
-	worker_count: zod.number().int().min(updateListenerResponseWorkerCountMin)
+	worker_count: zod.int().min(updateListenerResponseWorkerCountMin)
 })
 
 export type UpdateListenerResponse = zod.input<typeof UpdateListenerResponse>
@@ -5090,8 +5396,7 @@ export type UpdateListenerResponseOutput = zod.output<typeof UpdateListenerRespo
 
 export const UpdatePipelineGraphRequest = zod.object({
 	graph: PipelineGraphInput,
-	last_updated: zod
-		.string()
+	last_updated: zod.iso
 		.datetime({ offset: true })
 		.describe('The `last_updated` of the canvas when it was read.')
 })
@@ -5101,8 +5406,7 @@ export type UpdatePipelineGraphRequestOutput = zod.output<typeof UpdatePipelineG
 
 export const UpdatePipelineNodeRequest = GraphNodeContentInput.and(
 	zod.object({
-		last_updated: zod
-			.string()
+		last_updated: zod.iso
 			.datetime({ offset: true })
 			.describe('The `last_updated` of the node when it was read.')
 	})
@@ -5112,21 +5416,20 @@ export type UpdatePipelineNodeRequest = zod.input<typeof UpdatePipelineNodeReque
 export type UpdatePipelineNodeRequestOutput = zod.output<typeof UpdatePipelineNodeRequest>
 
 export const UpdatePipelineRequest = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	force: zod
 		.boolean()
 		.optional()
 		.describe(
 			'Take items of a dropped host off their sources and empty the sink\nnodes of a dropped sink, instead of answering 409.'
 		),
-	host_ids: zod.array(zod.string().uuid()),
-	last_updated: zod
-		.string()
+	host_ids: zod.array(zod.uuid()),
+	last_updated: zod.iso
 		.datetime({ offset: true })
 		.describe('The `last_updated` of the pipeline when it was read.'),
 	name: zod.string(),
-	sink_ids: zod.array(zod.string().uuid()),
-	visibility: zod.number().int().describe('Only the owner can change it.')
+	sink_ids: zod.array(zod.uuid()),
+	visibility: zod.int().describe('Only the owner can change it.')
 })
 
 export type UpdatePipelineRequest = zod.input<typeof UpdatePipelineRequest>
@@ -5135,10 +5438,10 @@ export type UpdatePipelineRequestOutput = zod.output<typeof UpdatePipelineReques
 export const updateProcessorRequestAdmStatusDefault = 1
 
 export const UpdateProcessorRequest = zod.object({
-	adm_status: zod.number().int().default(updateProcessorRequestAdmStatusDefault),
+	adm_status: zod.int().default(updateProcessorRequestAdmStatusDefault),
 	config: ProcessorConfig,
-	input_items: zod.array(zod.string().uuid()).optional(),
-	input_processors: zod.array(zod.string().uuid()).optional(),
+	input_items: zod.array(zod.uuid()).optional(),
+	input_processors: zod.array(zod.uuid()).optional(),
 	name: zod.string()
 })
 
@@ -5146,13 +5449,13 @@ export type UpdateProcessorRequest = zod.input<typeof UpdateProcessorRequest>
 export type UpdateProcessorRequestOutput = zod.output<typeof UpdateProcessorRequest>
 
 export const UpdateProcessorResponse = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	config: ProcessorConfig,
-	input_items: zod.array(zod.string().uuid()),
-	input_processors: zod.array(zod.string().uuid()),
-	last_updated: zod.string().datetime({ offset: true }),
+	input_items: zod.array(zod.uuid()),
+	input_processors: zod.array(zod.uuid()),
+	last_updated: zod.iso.datetime({ offset: true }),
 	name: zod.string(),
-	processor_id: zod.string().uuid()
+	processor_id: zod.uuid()
 })
 
 export type UpdateProcessorResponse = zod.input<typeof UpdateProcessorResponse>
@@ -5162,12 +5465,12 @@ export const updateSinkRequestAdmStatusDefault = 1
 export const updateSinkRequestWorkerCountMin = 0
 
 export const UpdateSinkRequest = zod.object({
-	adm_status: zod.number().int().default(updateSinkRequestAdmStatusDefault),
+	adm_status: zod.int().default(updateSinkRequestAdmStatusDefault),
 	batch: Batch,
 	channel: Channel,
 	config: SinkConfig,
 	inputs: zod
-		.array(zod.string().uuid())
+		.array(zod.uuid())
 		.optional()
 		.describe(
 			'List of processor IDs that are inputs to this sink.\nIf empty, the sink will have no inputs and will not receive any data.'
@@ -5175,7 +5478,7 @@ export const UpdateSinkRequest = zod.object({
 	labels: zod.unknown(),
 	name: zod.string(),
 	retry: Retry.optional().describe('Omitted takes every default.'),
-	worker_count: zod.number().int().min(updateSinkRequestWorkerCountMin).optional()
+	worker_count: zod.int().min(updateSinkRequestWorkerCountMin).optional()
 })
 
 export type UpdateSinkRequest = zod.input<typeof UpdateSinkRequest>
@@ -5184,17 +5487,17 @@ export type UpdateSinkRequestOutput = zod.output<typeof UpdateSinkRequest>
 export const updateSinkResponseWorkerCountMin = 0
 
 export const UpdateSinkResponse = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	batch: Batch,
 	channel: Channel,
 	config: SinkConfig,
-	inputs: zod.array(zod.string().uuid()),
+	inputs: zod.array(zod.uuid()),
 	labels: zod.unknown(),
-	last_updated: zod.string().datetime({ offset: true }),
+	last_updated: zod.iso.datetime({ offset: true }),
 	name: zod.string(),
 	retry: Retry,
-	sink_id: zod.string().uuid(),
-	worker_count: zod.number().int().min(updateSinkResponseWorkerCountMin)
+	sink_id: zod.uuid(),
+	worker_count: zod.int().min(updateSinkResponseWorkerCountMin)
 })
 
 export type UpdateSinkResponse = zod.input<typeof UpdateSinkResponse>
@@ -5205,13 +5508,13 @@ export const updateTemplateItemRequestFlagsDefault = 0
 
 export const UpdateTemplateItemRequest = zod
 	.object({
-		adm_status: zod.number().int().default(updateTemplateItemRequestAdmStatusDefault),
-		config: zod.union([zod.null(), ItemConfig]).optional(),
-		flags: zod.number().int().default(updateTemplateItemRequestFlagsDefault),
+		adm_status: zod.int().default(updateTemplateItemRequestAdmStatusDefault),
+		config: zod.union([ItemConfig, zod.null()]).optional(),
+		flags: zod.int().default(updateTemplateItemRequestFlagsDefault),
 		labels: zod.unknown(),
 		name: zod.string().nullish(),
 		schedule: zod.string().nullish(),
-		timeout_ms: zod.number().int().nullish()
+		timeout_ms: zod.int().nullish()
 	})
 	.describe(
 		'A root template item owns its values, so name, schedule, timeout_ms and\nconfig are mandatory. A template item linked from another template inherits\nthem, so they are optional there and only need to be set to override.'
@@ -5231,7 +5534,7 @@ export type UpdateTemplateRequestOutput = zod.output<typeof UpdateTemplateReques
 export const UpdateTemplateResponse = zod.object({
 	labels: zod.unknown(),
 	name: zod.string(),
-	template_id: zod.string().uuid()
+	template_id: zod.uuid()
 })
 
 export type UpdateTemplateResponse = zod.input<typeof UpdateTemplateResponse>
@@ -5239,7 +5542,7 @@ export type UpdateTemplateResponseOutput = zod.output<typeof UpdateTemplateRespo
 
 export const UpdateUserRequest = zod
 	.object({
-		adm_status: zod.number().int(),
+		adm_status: zod.int(),
 		allow_sso: zod.boolean().nullish(),
 		display_name: zod.string().nullish(),
 		email: zod.string().nullish(),
@@ -5252,13 +5555,13 @@ export type UpdateUserRequest = zod.input<typeof UpdateUserRequest>
 export type UpdateUserRequestOutput = zod.output<typeof UpdateUserRequest>
 
 export const UpdateUserResponse = zod.object({
-	adm_status: zod.number().int(),
+	adm_status: zod.int(),
 	allow_sso: zod.boolean(),
 	display_name: zod.string().nullish(),
 	email: zod.string().nullish(),
-	last_updated: zod.string().datetime({ offset: true }),
+	last_updated: zod.iso.datetime({ offset: true }),
 	sso_linked: zod.boolean(),
-	user_id: zod.string().uuid(),
+	user_id: zod.uuid(),
 	username: zod.string()
 })
 
@@ -5277,9 +5580,9 @@ export const userSummaryResponseDisabledMin = 0
 export const userSummaryResponseTotalMin = 0
 
 export const UserSummaryResponse = zod.object({
-	allow_sso: zod.number().int().min(userSummaryResponseAllowSsoMin),
-	disabled: zod.number().int().min(userSummaryResponseDisabledMin),
-	total: zod.number().int().min(userSummaryResponseTotalMin)
+	allow_sso: zod.int().min(userSummaryResponseAllowSsoMin),
+	disabled: zod.int().min(userSummaryResponseDisabledMin),
+	total: zod.int().min(userSummaryResponseTotalMin)
 })
 
 export type UserSummaryResponse = zod.input<typeof UserSummaryResponse>
@@ -5318,7 +5621,7 @@ export const ValueOwned: zod.ZodType<ValueOwned> = zod.union([
 		Bool: zod.boolean()
 	}),
 	zod.object({
-		Int64: zod.number().int()
+		Int64: zod.int()
 	}),
 	zod.object({
 		Double: zod.number()
@@ -5327,7 +5630,7 @@ export const ValueOwned: zod.ZodType<ValueOwned> = zod.union([
 		String: ZStringOwned
 	}),
 	zod.object({
-		Bytes: zod.array(zod.number().int().min(valueOwnedSixBytesItemMin))
+		Bytes: zod.array(zod.int().min(valueOwnedSixBytesItemMin))
 	}),
 	zod.object({
 		Array: zod.array(zod.lazy(() => ValueOwned))
@@ -5335,6 +5638,6 @@ export const ValueOwned: zod.ZodType<ValueOwned> = zod.union([
 	zod.object({
 		KvList: zod.array(KvPair)
 	})
-]) as any
+]) as unknown as zod.ZodType<ValueOwned>
 
 export type ValueOwnedOutput = zod.output<typeof ValueOwned>

@@ -13,7 +13,7 @@ import ModalProcessorForm from '@/components/configuration/processor/ModalForm.v
 
 import ModalConfirmationDelete from '@/components/modal/ModalConfirmationDelete.vue'
 
-import { useProcessorStore } from '@/stores/processor.store'
+import { useProcessorStore } from '@/stores/processors.store'
 import { FormMode } from '@@/shared/types/app.type'
 import type { IProcessor } from '@@/shared/types/processor.type'
 import { watchDebounced } from '@vueuse/core'

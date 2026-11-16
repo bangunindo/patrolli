@@ -61,7 +61,7 @@ No TLS private keys or static secrets are stored in Git:
     - If `GITHUB_ENV` is active (in GitHub Actions), masks passwords (`::add-mask::`) and exports `E2E_USERNAME=admin` and `E2E_PASSWORD=${E2E_ADMIN_PASSWORD}`.
 3. **`playwright.config.ts`**:
     - Locally, if `E2E_PASSWORD` is not already set in the shell, `playwright.config.ts` reads only `E2E_ADMIN_PASSWORD` from `dev/.env` (using `node:util` `parseEnv`) without loading other backend secrets into the Playwright environment.
-    - The frontend config file can be pointed via the `FRONTEND_CONFIG` env var (or `CONFIG_PATH` / `CONFIG_FILE`), falling back to `src/web/config-fe.yaml` by default.
+    - The frontend config file can be pointed via the `CONFIG_FILE` env var, falling back to `src/web/config-fe.yaml` by default.
 
 ---
 
@@ -143,7 +143,7 @@ The GHCR packages must stay **public** so forks can pull without logging in. `tr
 2. Resolves the core image as described above and exports `PATROLLI_CORE_IMAGE` and `PATROLLI_CORE_PULL_POLICY` for Compose.
 3. Runs `npm ci` and `./dev/setup.sh --force`.
 4. Starts the stack with `docker compose up -d --wait`, then polls the two core `/health` endpoints and the Keycloak realm. Only Postgres has a healthcheck, so `--wait` alone returns too early.
-5. Installs Chromium with `npx playwright install chromium --with-deps` and runs `npm run test:e2e` with `FRONTEND_CONFIG=dev/.generated/config-fe.yaml`. `CI=true` makes Playwright use one worker and two retries.
+5. Installs Chromium with `npx playwright install chromium --with-deps` and runs `npm run test:e2e` with `CONFIG_FILE=dev/.generated/config-fe.yaml`. `CI=true` makes Playwright use one worker and two retries.
 6. On failure, prints the backend logs and uploads `test-results` (traces and screenshots) as the `playwright-report` artifact, kept for 7 days.
 
 Reference timings on a 22-core machine with nothing cached: `npm ci` 45s, Chromium download 25s, stack start 45s, e2e run 3 minutes (including a 20s Nuxt build).

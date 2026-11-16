@@ -4,7 +4,7 @@
 
 import type { ICluster } from '@@/shared/types/cluster.type'
 import { forwardToCluster } from '@@/server/services/cluster.service'
-import type { IProxyRequestOptions } from './proxy.type'
+import type { IProxyRequestOptions } from '@@/shared/types/proxy.type'
 
 /**
  * Forwards an HTTP request to a target cluster node

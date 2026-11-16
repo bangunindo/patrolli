@@ -5,215 +5,166 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
-import { computed, inject, type ComputedRef } from 'vue'
-import { rendererProps, useJsonFormsControl, DispatchRenderer } from '@jsonforms/vue'
-import type { ControlElement, UISchemaElement } from '@jsonforms/core'
+import { computed, watch } from 'vue'
+import type { FieldDescriptor } from '@@/shared/types/dynamic-form.type'
 import AppInputText from '@/components/app/input/AppInputText.vue'
 import AppInputError from '@/components/app/input/AppInputError.vue'
 import CustomSlotRenderer from './CustomSlotRenderer.vue'
-import { createControlElement, resolveHintForPath } from '@/app/services/forms/hints-to-uischema'
-import type { UiHint } from '@@/shared/types/dynamic-form.type'
-import { formatFieldLabel } from '@/app/services/forms/path-helper'
+import DynamicFieldRenderer from '../DynamicFieldRenderer.vue'
+import { formatFieldLabel, safeClone } from '@/app/services/forms/path-helper'
+import { useDynamicField } from '../useDynamicField'
 
-const props = defineProps({
-	...rendererProps<ControlElement>()
-})
+const props = defineProps<{
+	descriptor: FieldDescriptor
+	path: string
+}>()
 
-const { control, handleChange } = useJsonFormsControl(props)
-const slots = inject<Record<string, any>>('dynamicZodFormSlots', {})
-const formHintsRef = inject<ComputedRef<Record<string, UiHint>> | undefined>('formHints', undefined)
-const formHints = computed(() => formHintsRef?.value || {})
+const {
+	ctx,
+	fieldApi,
+	value,
+	setValue,
+	error,
+	hint,
+	label,
+	required,
+	disabled,
+	leafName,
+	customSlot,
+	slotProps
+} = useDynamicField(props, { mode: 'array' })
 
-const leafName = computed(() => {
-	const p = control.value.path || ''
-	const parts = p.split('.')
-	return parts[parts.length - 1] || p
-})
-
-const selfHint = computed(() => {
-	return resolveHintForPath(control.value.path, formHints.value, (control.value as any).rootData)
-})
+const arrayFieldApi = fieldApi as any
 
 const fieldLabel = computed(() => {
-	if (selfHint.value?.label) return selfHint.value.label
-	if (control.value.label) return control.value.label
+	if (hint.value.label) return hint.value.label
+	if (label.value) return label.value
 	return leafName.value ? formatFieldLabel(leafName.value) : ''
 })
 
 const placeholder = computed(() => {
-	return (control.value.uischema?.options?.placeholder ||
-		selfHint.value?.placeholder ||
-		'') as string
+	return (hint.value.placeholder || props.descriptor.placeholder || '') as string
 })
-
-const customSlot = computed(() => {
-	const pathKey = control.value.path
-	return slots[`field:${pathKey}`] || slots[`field:${leafName.value}`] || null
-})
-
-const onInput = (val: any) => {
-	handleChange(control.value.path, val)
-}
-
-const slotProps = computed(() => ({
-	value: control.value.data,
-	modelValue: control.value.data,
-	'model-value': control.value.data,
-	error: control.value.errors,
-	updateModelValue: onInput,
-	'update-model-value': onInput,
-	handleChange: onInput,
-	'handle-change': onInput
-}))
 
 const items = computed<any[]>(() => {
-	return Array.isArray(control.value.data) ? control.value.data : []
+	return Array.isArray(value.value) ? value.value : []
 })
 
-const itemsSchema = computed<any>(() => {
-	return (control.value.schema as any)?.items || {}
-})
+const childDescriptors = computed<FieldDescriptor[]>(() => props.descriptor.children || [])
 
 const isPrimitive = computed(() => {
-	const type = itemsSchema.value.type
-	if (type === 'string' || type === 'number' || type === 'integer' || type === 'boolean') {
-		return true
-	}
-	if (
-		!type &&
-		!itemsSchema.value.properties &&
-		!itemsSchema.value.anyOf &&
-		!itemsSchema.value.oneOf
-	) {
-		return true
-	}
-	return false
+	return props.descriptor.widget === 'array-string' || childDescriptors.value.length === 0
 })
 
-// Primitive Array Handlers
+let keyCounter = 0
+const nextKey = () => `arr-item-${++keyCounter}`
+let objectKeys: string[] = []
+let primitiveKeys: string[] = []
+
+const getItemKey = (keys: string[], idx: number): string => {
+	while (keys.length <= idx) {
+		keys.push(nextKey())
+	}
+	return keys[idx]
+}
+
+const getObjectItemKey = (idx: number): string => getItemKey(objectKeys, idx)
+const getPrimitiveItemKey = (idx: number): string => getItemKey(primitiveKeys, idx)
+
+watch(
+	() => items.value.length,
+	(len) => {
+		if (primitiveKeys.length > len) {
+			primitiveKeys.length = len
+		}
+		if (objectKeys.length > len) {
+			objectKeys.length = len
+		}
+	}
+)
+
 const updatePrimitiveItem = (idx: number, val: string | number) => {
-	const current = [...items.value]
-	current[idx] =
-		itemsSchema.value.type === 'number' || itemsSchema.value.type === 'integer'
-			? Number(val)
-			: String(val)
-	handleChange(control.value.path, current)
+	ctx.form.setFieldValue(`${props.path}.${idx}`, val)
+	ctx.syncModelFromForm(props.path)
 }
 
 const addPrimitiveItem = () => {
-	if (!control.value.enabled) return
-	const current = [...items.value]
-	const defVal =
-		itemsSchema.value.type === 'number' || itemsSchema.value.type === 'integer' ? 0 : ''
-	current.push(defVal)
-	handleChange(control.value.path, current)
+	if (disabled.value) return
+	if (!Array.isArray(value.value)) {
+		primitiveKeys = [nextKey()]
+		setValue([''])
+		return
+	}
+	primitiveKeys.push(nextKey())
+	arrayFieldApi.pushValue('')
+	ctx.syncModelFromForm(props.path)
 }
 
 const removePrimitiveItem = (idx: number) => {
-	if (!control.value.enabled) return
-	const current = [...items.value]
-	current.splice(idx, 1)
-	handleChange(control.value.path, current)
+	if (disabled.value) return
+	primitiveKeys.splice(idx, 1)
+	arrayFieldApi.removeValue(idx)
+	ctx.syncModelFromForm(props.path)
 }
 
-// Object Array Handlers
-const createDefaultItemFromSchema = (schema: any): any => {
-	if (!schema) return {}
-	if (schema.default !== undefined) return structuredClone(schema.default)
-	if (schema.type === 'string') return ''
-	if (schema.type === 'number' || schema.type === 'integer') return 0
-	if (schema.type === 'boolean') return false
-	if (schema.type === 'array') return []
-	if (schema.type === 'object' || schema.properties) {
-		const obj: Record<string, any> = {}
-		const props = schema.properties || {}
-		for (const [key, propSchema] of Object.entries<any>(props)) {
-			if (propSchema.enum && propSchema.enum.length === 1) {
-				obj[key] = propSchema.enum[0]
-			} else if (propSchema.default !== undefined) {
-				obj[key] = structuredClone(propSchema.default)
-			} else if (propSchema.type === 'string') {
-				obj[key] = ''
-			} else if (propSchema.type === 'number' || propSchema.type === 'integer') {
-				obj[key] = 0
-			} else if (propSchema.type === 'boolean') {
-				obj[key] = false
-			} else if (propSchema.type === 'array') {
-				obj[key] = []
-			} else if (propSchema.type === 'object' || propSchema.properties) {
-				obj[key] = createDefaultItemFromSchema(propSchema)
-			}
+const createDefaultObject = (children: FieldDescriptor[]): Record<string, any> => {
+	const obj: Record<string, any> = {}
+	for (const child of children) {
+		if (child.defaultValue !== undefined) {
+			obj[child.name] = safeClone(child.defaultValue)
+		} else if (child.zodType === 'array') {
+			obj[child.name] = []
+		} else if (child.zodType === 'boolean') {
+			obj[child.name] = false
+		} else if (child.zodType === 'object' && child.children) {
+			obj[child.name] = createDefaultObject(child.children)
 		}
-		return obj
 	}
-	return {}
+	return obj
 }
 
 const addObjectItem = () => {
-	if (!control.value.enabled) return
-	const current = [...items.value]
-	const newItem = createDefaultItemFromSchema(itemsSchema.value)
-	current.push(newItem)
-	handleChange(control.value.path, current)
+	if (disabled.value) return
+	const newObj = createDefaultObject(childDescriptors.value)
+	if (!Array.isArray(value.value)) {
+		objectKeys = [nextKey()]
+		setValue([newObj])
+		return
+	}
+	objectKeys.push(nextKey())
+	arrayFieldApi.pushValue(newObj)
+	ctx.syncModelFromForm(props.path)
 }
 
 const removeObjectItem = (idx: number) => {
-	if (!control.value.enabled) return
-	const current = [...items.value]
-	current.splice(idx, 1)
-	handleChange(control.value.path, current)
-}
-
-const getItemUiSchema = (idx: number): UISchemaElement => {
-	if (itemsSchema.value.properties) {
-		const props = itemsSchema.value.properties
-		const elements: ControlElement[] = []
-		const itemPath = `${control.value.path}.${idx}`
-		for (const propName of Object.keys(props)) {
-			const fullPath = `${itemPath}.${propName}`
-			const ctrl = createControlElement(
-				propName,
-				fullPath,
-				formHints.value,
-				(control.value as any).rootData
-			)
-			elements.push(ctrl)
-		}
-		return {
-			type: 'VerticalLayout',
-			elements
-		} as any
-	}
-	return {
-		type: 'Control',
-		scope: '#'
-	}
+	if (disabled.value) return
+	objectKeys.splice(idx, 1)
+	arrayFieldApi.removeValue(idx)
+	ctx.syncModelFromForm(props.path)
 }
 </script>
 
 <template>
-	<div
-		v-if="control.visible"
-		:data-invalid="!!control.errors"
-		:class="{ 'has-error': !!control.errors }"
-		class="w-full"
-	>
-		<!-- Custom Slot Fallback (e.g. #field:input_items, #field:input_pipelines) -->
+	<div :data-invalid="!!error" :class="{ 'has-error': !!error }" class="w-full">
 		<CustomSlotRenderer v-if="customSlot" :render-fn="customSlot" :slot-props="slotProps" />
 
-		<!-- Primitive Array Mode (string, number, etc.) -->
+		<!-- Primitive Array Mode -->
 		<div v-else-if="isPrimitive" class="flex flex-col gap-2 p-1">
 			<label v-if="fieldLabel" class="font-semibold block text-sm">
 				{{ fieldLabel }}
-				<span v-if="control.required" class="text-destructive">*</span>
+				<span v-if="required" class="text-destructive">*</span>
 			</label>
 
-			<div v-for="(_item, idx) in items" :key="idx" class="flex items-center gap-2">
+			<div
+				v-for="(_item, idx) in items"
+				:key="getPrimitiveItemKey(idx)"
+				class="flex items-center gap-2"
+			>
 				<AppInputText
 					:model-value="items[idx]"
 					class="flex-1"
 					:placeholder="placeholder || `Item #${idx + 1}`"
-					:disabled="!control.enabled"
+					:disabled="disabled"
 					@update:model-value="updatePrimitiveItem(idx, $event)"
 				/>
 				<UiButton
@@ -221,7 +172,7 @@ const getItemUiSchema = (idx: number): UISchemaElement => {
 					variant="outline"
 					size="icon"
 					class="h-8 w-8 text-destructive border-destructive/30 hover:bg-destructive/10 shrink-0"
-					:disabled="!control.enabled"
+					:disabled="disabled"
 					@click="removePrimitiveItem(idx)"
 				>
 					<UiIcon name="minus" size="14px" />
@@ -230,7 +181,7 @@ const getItemUiSchema = (idx: number): UISchemaElement => {
 
 			<div>
 				<button
-					v-if="control.enabled"
+					v-if="!disabled"
 					type="button"
 					class="text-xs font-semibold text-primary hover:underline flex items-center gap-1 cursor-pointer"
 					@click="addPrimitiveItem"
@@ -240,7 +191,7 @@ const getItemUiSchema = (idx: number): UISchemaElement => {
 				</button>
 			</div>
 
-			<AppInputError :messages="control.errors" />
+			<AppInputError :error="error" />
 		</div>
 
 		<!-- Object Array Mode -->
@@ -248,7 +199,7 @@ const getItemUiSchema = (idx: number): UISchemaElement => {
 			<div class="flex justify-between items-center">
 				<label v-if="fieldLabel" class="font-semibold text-sm text-foreground">
 					{{ fieldLabel }}
-					<span v-if="control.required" class="text-destructive">*</span>
+					<span v-if="required" class="text-destructive">*</span>
 				</label>
 				<span class="text-xs text-muted-foreground">
 					{{ items.length }} item{{ items.length !== 1 ? 's' : '' }}
@@ -257,16 +208,15 @@ const getItemUiSchema = (idx: number): UISchemaElement => {
 
 			<div
 				v-for="(_item, idx) in items"
-				:key="idx"
+				:key="getObjectItemKey(idx)"
 				class="flex items-start gap-2 p-3 bg-muted/30 rounded-md border border-border"
 			>
-				<div class="flex-1">
-					<dispatch-renderer
-						:schema="itemsSchema"
-						:uischema="getItemUiSchema(idx)"
-						:path="`${control.path}.${idx}`"
-						:enabled="control.enabled"
-						:renderers="control.renderers"
+				<div class="flex-1 flex flex-col gap-3">
+					<DynamicFieldRenderer
+						v-for="child in childDescriptors"
+						:key="`${path}.${idx}.${child.name}`"
+						:descriptor="child"
+						:path="`${path}.${idx}.${child.name}`"
 					/>
 				</div>
 				<UiButton
@@ -274,7 +224,7 @@ const getItemUiSchema = (idx: number): UISchemaElement => {
 					variant="outline"
 					size="icon"
 					class="h-8 w-8 text-destructive border-destructive/30 hover:bg-destructive/10 shrink-0"
-					:disabled="!control.enabled"
+					:disabled="disabled"
 					@click="removeObjectItem(idx)"
 				>
 					<UiIcon name="minus" size="14px" />
@@ -283,7 +233,7 @@ const getItemUiSchema = (idx: number): UISchemaElement => {
 
 			<div>
 				<button
-					v-if="control.enabled"
+					v-if="!disabled"
 					type="button"
 					class="text-xs font-semibold text-primary hover:underline flex items-center gap-1 cursor-pointer"
 					@click="addObjectItem"
@@ -293,7 +243,7 @@ const getItemUiSchema = (idx: number): UISchemaElement => {
 				</button>
 			</div>
 
-			<AppInputError :messages="control.errors" />
+			<AppInputError :error="error" />
 		</div>
 	</div>
 </template>

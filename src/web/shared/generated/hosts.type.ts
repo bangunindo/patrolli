@@ -3,7 +3,7 @@
  * Do not edit manually.
  * Patrolli API
  * RESTful API for Patrolli monitoring system
- * OpenAPI spec version: 0.1.0-beta.1
+ * OpenAPI spec version: 0.1.0-beta.5
  */
 import * as zod from 'zod'
 
@@ -25,11 +25,11 @@ export const listHostsQueryLimitMin = 0
 export const listHostsQueryOffsetMin = 0
 
 export const ListHostsQueryParams = zod.object({
-	host_ids: zod.array(zod.string().uuid()).optional(),
+	host_ids: zod.array(zod.uuid()).optional(),
 	name: zod.string().optional(),
-	monitored_by: zod.string().uuid().optional(),
-	limit: zod.number().int().min(listHostsQueryLimitMin).optional(),
-	offset: zod.number().int().min(listHostsQueryOffsetMin).optional(),
+	monitored_by: zod.uuid().optional(),
+	limit: zod.int().min(listHostsQueryLimitMin).optional(),
+	offset: zod.int().min(listHostsQueryOffsetMin).optional(),
 	order_by: zod.enum(['host_id', 'name']).optional(),
 	order_dir: zod.enum(['asc', 'desc']).optional()
 })
@@ -49,7 +49,7 @@ export const CreateHostResponse = ResponseDataCreateHostResponse
  * @summary Update a host
  */
 export const UpdateHostParams = zod.object({
-	id: zod.string().uuid().describe('Host UUID')
+	id: zod.uuid().describe('Host UUID')
 })
 
 export const UpdateHostBody = UpdateHostRequest
@@ -61,7 +61,7 @@ export const UpdateHostResponse = ResponseDataUpdateHostResponse
  * @summary Delete a host
  */
 export const DeleteHostParams = zod.object({
-	id: zod.string().uuid().describe('Host UUID')
+	id: zod.uuid().describe('Host UUID')
 })
 
 export const DeleteHostResponse = ResponseDataTupleUnit

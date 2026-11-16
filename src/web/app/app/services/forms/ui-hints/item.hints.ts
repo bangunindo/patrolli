@@ -19,7 +19,25 @@ export const itemHints: Record<string, UiHint> = {
 		discriminatorLabel: 'Collector Module',
 		discriminatorPlaceholder: 'Select collector module...',
 		discriminatorDefault: 'snmp',
-		optionsOrder: ['snmp', 'snmp_walk', 'prometheus_scrape', 'listener', 'dummy']
+		optionsOrder: ['snmp', 'snmp_walk', 'prometheus_scrape', 'listener', 'dummy'],
+		branchDefaults: {
+			snmp: { oid: '' },
+			snmp_walk: { oids: [] },
+			prometheus_scrape: { accept_protobuf: false, stream: false },
+			dummy: {
+				count: 1,
+				payload: {
+					row: {
+						observed_time: null,
+						severity: 'info',
+						source_ip: null,
+						source_port: null,
+						body: null,
+						attrs: []
+					}
+				}
+			}
+		}
 	},
 
 	// Hide double-nested config borders on union branches

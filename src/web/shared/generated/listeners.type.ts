@@ -3,7 +3,7 @@
  * Do not edit manually.
  * Patrolli API
  * RESTful API for Patrolli monitoring system
- * OpenAPI spec version: 0.1.0-beta.1
+ * OpenAPI spec version: 0.1.0-beta.5
  */
 import * as zod from 'zod'
 
@@ -25,10 +25,10 @@ export const listListenersQueryLimitMin = 0
 export const listListenersQueryOffsetMin = 0
 
 export const ListListenersQueryParams = zod.object({
-	listener_ids: zod.array(zod.string().uuid()).optional(),
+	listener_ids: zod.array(zod.uuid()).optional(),
 	name: zod.string().optional(),
-	limit: zod.number().int().min(listListenersQueryLimitMin).optional(),
-	offset: zod.number().int().min(listListenersQueryOffsetMin).optional(),
+	limit: zod.int().min(listListenersQueryLimitMin).optional(),
+	offset: zod.int().min(listListenersQueryOffsetMin).optional(),
 	order_by: zod.enum(['name', 'last_updated']).optional(),
 	order_dir: zod.enum(['asc', 'desc']).optional(),
 	types: zod.array(ListenerKind).optional()
@@ -47,7 +47,7 @@ export const CreateListenerResponse = ResponseDataCreateListenerResponse
  * @summary Update a listener
  */
 export const UpdateListenerParams = zod.object({
-	listener_id: zod.string().uuid().describe('Listener UUID')
+	listener_id: zod.uuid().describe('Listener UUID')
 })
 
 export const UpdateListenerBody = UpdateListenerRequest
@@ -58,7 +58,7 @@ export const UpdateListenerResponse = ResponseDataUpdateListenerResponse
  * @summary Delete a listener
  */
 export const DeleteListenerParams = zod.object({
-	listener_id: zod.string().uuid().describe('Listener UUID')
+	listener_id: zod.uuid().describe('Listener UUID')
 })
 
 export const DeleteListenerResponse = ResponseDataTupleUnit

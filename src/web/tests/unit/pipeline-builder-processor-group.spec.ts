@@ -2,13 +2,13 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import '@@/shared/types/string.type'
-import '@@/shared/types/array.type'
+import '@/prototypes/string.prototype'
+import '@/prototypes/array.prototype'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import { usePipelineBuildStore } from '@/stores/pipeline.builder.store'
-import { useProcessorStore } from '@/stores/processor.store'
+import { useProcessorStore } from '@/stores/processors.store'
 import { FormMode } from '@@/shared/types/app.type'
 import pipelinesApi from '@/app/api/pipelines.api'
 import processorsApi from '@/app/api/processors.api'

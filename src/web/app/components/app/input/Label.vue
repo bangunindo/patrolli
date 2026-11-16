@@ -23,12 +23,14 @@ const props = withDefaults(
 		modelValue: string
 		label?: string
 		required?: boolean
+		disabled?: boolean
 		error?: string | string[]
 		rules?: string[]
 	}>(),
 	{
 		label: 'Labels',
 		required: false,
+		disabled: false,
 		error: '',
 		rules: () => []
 	}
@@ -69,6 +71,7 @@ const composeModelValueFromItems = () => {
 }
 
 const addItem = () => {
+	if (props.disabled) return
 	items.value.push({
 		key: '',
 		value: ''
@@ -78,6 +81,7 @@ const addItem = () => {
 }
 
 const removeItem = (_item: any, idx: number) => {
+	if (props.disabled) return
 	items.value.splice(idx, 1)
 
 	composeModelValueFromItems()
@@ -117,6 +121,7 @@ watchOnce(
 						v-model="item.key"
 						placeholder="Key"
 						required
+						:disabled="props.disabled"
 						class="h-8 text-xs flex-1"
 						@input="composeModelValueFromItems"
 					/>
@@ -125,6 +130,7 @@ watchOnce(
 						v-model="item.value"
 						placeholder="Value"
 						required
+						:disabled="props.disabled"
 						class="h-8 text-xs flex-1"
 						@input="composeModelValueFromItems"
 					/>
@@ -132,6 +138,7 @@ watchOnce(
 						type="button"
 						size="icon"
 						variant="outline"
+						:disabled="props.disabled"
 						class="h-8 w-8 text-destructive border-destructive/30 hover:bg-destructive/10 shrink-0"
 						@click="removeItem(item, idx)"
 					>
@@ -142,6 +149,7 @@ watchOnce(
 		</div>
 
 		<button
+			v-if="!props.disabled"
 			type="button"
 			class="mt-2 flex items-center gap-1 text-xs font-semibold text-primary hover:underline cursor-pointer"
 			@click="addItem"

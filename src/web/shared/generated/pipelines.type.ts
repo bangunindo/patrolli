@@ -3,7 +3,7 @@
  * Do not edit manually.
  * Patrolli API
  * RESTful API for Patrolli monitoring system
- * OpenAPI spec version: 0.1.0-beta.1
+ * OpenAPI spec version: 0.1.0-beta.5
  */
 import * as zod from 'zod'
 
@@ -29,8 +29,8 @@ export const listPipelinesQueryOffsetMin = 0
 
 export const ListPipelinesQueryParams = zod.object({
 	name: zod.string().optional(),
-	limit: zod.number().int().min(listPipelinesQueryLimitMin).optional(),
-	offset: zod.number().int().min(listPipelinesQueryOffsetMin).optional(),
+	limit: zod.int().min(listPipelinesQueryLimitMin).optional(),
+	offset: zod.int().min(listPipelinesQueryOffsetMin).optional(),
 	order_by: zod.enum(['name', 'created_at', 'last_updated']).optional(),
 	order_dir: zod.enum(['asc', 'desc']).optional()
 })
@@ -49,7 +49,7 @@ export const CreatePipelineResponse = ResponseDataPipelineDetail
  * @summary Get a pipeline by ID
  */
 export const GetPipelineParams = zod.object({
-	pipeline_id: zod.string().uuid().describe('Pipeline UUID')
+	pipeline_id: zod.uuid().describe('Pipeline UUID')
 })
 
 export const GetPipelineResponse = ResponseDataPipelineDetail
@@ -61,7 +61,7 @@ export const GetPipelineResponse = ResponseDataPipelineDetail
  * @summary Update a pipeline
  */
 export const UpdatePipelineParams = zod.object({
-	pipeline_id: zod.string().uuid().describe('Pipeline UUID')
+	pipeline_id: zod.uuid().describe('Pipeline UUID')
 })
 
 export const UpdatePipelineBody = UpdatePipelineRequest
@@ -74,7 +74,7 @@ export const UpdatePipelineResponse = ResponseDataPipelineDetail
  * @summary Delete a pipeline
  */
 export const DeletePipelineParams = zod.object({
-	pipeline_id: zod.string().uuid().describe('Pipeline UUID')
+	pipeline_id: zod.uuid().describe('Pipeline UUID')
 })
 
 export const DeletePipelineResponse = ResponseDataTupleUnit
@@ -85,8 +85,8 @@ export const DeletePipelineResponse = ResponseDataTupleUnit
  * @summary Get the graph of a canvas
  */
 export const GetPipelineGraphParams = zod.object({
-	pipeline_id: zod.string().uuid().describe('Pipeline UUID'),
-	canvas_id: zod.string().uuid().describe('Canvas UUID')
+	pipeline_id: zod.uuid().describe('Pipeline UUID'),
+	canvas_id: zod.uuid().describe('Canvas UUID')
 })
 
 export const GetPipelineGraphResponse = ResponseDataGetPipelineGraphResponse
@@ -98,8 +98,8 @@ export const GetPipelineGraphResponse = ResponseDataGetPipelineGraphResponse
  * @summary Save the graph of a canvas
  */
 export const UpdatePipelineGraphParams = zod.object({
-	pipeline_id: zod.string().uuid().describe('Pipeline UUID'),
-	canvas_id: zod.string().uuid().describe('Canvas UUID')
+	pipeline_id: zod.uuid().describe('Pipeline UUID'),
+	canvas_id: zod.uuid().describe('Canvas UUID')
 })
 
 export const UpdatePipelineGraphBody = UpdatePipelineGraphRequest
@@ -112,9 +112,9 @@ export const UpdatePipelineGraphResponse = ResponseDataGetPipelineGraphResponse
  * @summary Get the content of a node
  */
 export const GetPipelineNodeParams = zod.object({
-	pipeline_id: zod.string().uuid().describe('Pipeline UUID'),
-	canvas_id: zod.string().uuid().describe('Canvas UUID'),
-	node_id: zod.string().uuid().describe('Node UUID')
+	pipeline_id: zod.uuid().describe('Pipeline UUID'),
+	canvas_id: zod.uuid().describe('Canvas UUID'),
+	node_id: zod.uuid().describe('Node UUID')
 })
 
 export const getPipelineNodeQueryLimitMin = 0
@@ -126,18 +126,8 @@ export const GetPipelineNodeQueryParams = zod.object({
 		.string()
 		.optional()
 		.describe('Source nodes only: keep items whose name contains this, ignoring case.'),
-	limit: zod
-		.number()
-		.int()
-		.min(getPipelineNodeQueryLimitMin)
-		.optional()
-		.describe('Source nodes only.'),
-	offset: zod
-		.number()
-		.int()
-		.min(getPipelineNodeQueryOffsetMin)
-		.optional()
-		.describe('Source nodes only.')
+	limit: zod.int().min(getPipelineNodeQueryLimitMin).optional().describe('Source nodes only.'),
+	offset: zod.int().min(getPipelineNodeQueryOffsetMin).optional().describe('Source nodes only.')
 })
 
 export const GetPipelineNodeResponse = ResponseDataGetPipelineNodeResponse
@@ -149,9 +139,9 @@ export const GetPipelineNodeResponse = ResponseDataGetPipelineNodeResponse
  * @summary Save the content of a node
  */
 export const UpdatePipelineNodeParams = zod.object({
-	pipeline_id: zod.string().uuid().describe('Pipeline UUID'),
-	canvas_id: zod.string().uuid().describe('Canvas UUID'),
-	node_id: zod.string().uuid().describe('Node UUID')
+	pipeline_id: zod.uuid().describe('Pipeline UUID'),
+	canvas_id: zod.uuid().describe('Canvas UUID'),
+	node_id: zod.uuid().describe('Node UUID')
 })
 
 export const UpdatePipelineNodeBody = UpdatePipelineNodeRequest

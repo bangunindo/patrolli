@@ -28,7 +28,7 @@ import {
 import UiIcon from '@/components/ui/icon/Icon.vue'
 import { Input as UiInput } from '@/components/ui/input'
 import { ScrollArea as UiScrollArea } from '@/components/ui/scroll-area'
-import { usePipelineStore } from '@/stores/pipeline.store'
+import { usePipelineStore } from '@/stores/pipelines.store'
 import type { IHostSelectorItem } from '@@/shared/types/pipeline.type'
 
 const props = withDefaults(

@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <script setup lang="ts">
 import ModalForm from '@/components/pipeline/ModalForm.vue'
 import PipelineTable from '@/components/pipeline/Table.vue'
-import { usePipelineStore } from '@/stores/pipeline.store'
+import { usePipelineStore } from '@/stores/pipelines.store'
 
 definePageMeta({
 	layout: 'default',

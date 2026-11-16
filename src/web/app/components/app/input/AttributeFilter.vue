@@ -41,12 +41,12 @@ const emits = defineEmits<{
 	'update:modelValue': [value: any]
 }>()
 
-const tables = Object.keys(AttributeTable.Enum).map((val) => ({
+const tables = Object.keys(AttributeTable.enum).map((val) => ({
 	label: val.toUpperCase(),
 	value: val
 }))
 
-const operators = Object.keys(KeyValueOp.Enum).map((val) => ({
+const operators = Object.keys(KeyValueOp.enum).map((val) => ({
 	label: val,
 	value: val
 }))
