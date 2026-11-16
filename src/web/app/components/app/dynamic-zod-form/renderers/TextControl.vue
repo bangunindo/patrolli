@@ -5,90 +5,66 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
-import { computed, inject } from 'vue'
-import { rendererProps, useJsonFormsControl } from '@jsonforms/vue'
-import type { ControlElement } from '@jsonforms/core'
+import { computed } from 'vue'
+import type { FieldDescriptor } from '@@/shared/types/dynamic-form.type'
 import AppInputText from '@/components/app/input/AppInputText.vue'
 import CustomSlotRenderer from './CustomSlotRenderer.vue'
+import { useDynamicField } from '../useDynamicField'
 
-const props = defineProps({
-	...rendererProps<ControlElement>()
-})
+const props = defineProps<{
+	descriptor: FieldDescriptor
+	path: string
+}>()
 
-const { control, handleChange } = useJsonFormsControl(props)
-const slots = inject<Record<string, any>>('dynamicZodFormSlots', {})
-
-const leafName = computed(() => {
-	const p = control.value.path || ''
-	const parts = p.split('.')
-	return parts[parts.length - 1] || p
-})
-
-const customSlot = computed(() => {
-	const pathKey = control.value.path
-	return slots[`field:${pathKey}`] || slots[`field:${leafName.value}`] || null
-})
+const { value, setValue, error, hint, label, required, disabled, customSlot, slotProps } =
+	useDynamicField(props)
 
 const displayValue = computed(() => {
-	const d = control.value.data
+	const d = value.value
 	if (d === null || d === undefined) return ''
 	if (typeof d === 'object') {
-		return d.String ?? d.SmolStr ?? ''
+		const obj = d as Record<string, any>
+		return obj.String ?? obj.SmolStr ?? ''
 	}
 	return String(d)
 })
 
 const inputType = computed(() => {
-	const opts = control.value.uischema?.options || {}
-	if (opts.widget === 'textarea' || opts.type === 'textarea') return 'textarea'
-	if (opts.widget === 'date' || opts.type === 'date' || opts.format === 'date') return 'date'
-	return opts.type || 'text'
+	const h = hint.value as Record<string, any>
+	if (h.widget === 'textarea' || h.type === 'textarea') return 'textarea'
+	if (h.widget === 'date' || h.type === 'date' || h.format === 'date') return 'date'
+	return h.type || 'text'
 })
 
 const onInput = (val: string | number) => {
-	let finalVal = val
-	if (val === '' && control.value.uischema?.options?.emptyPolicy === 'null') {
-		finalVal = null as any
+	let finalVal: any = val
+	if (val === '' && hint.value.emptyPolicy === 'null') {
+		finalVal = null
 	}
-	handleChange(control.value.path, finalVal)
+	setValue(finalVal)
 }
-
-const slotProps = computed(() => ({
-	value: control.value.data,
-	modelValue: control.value.data,
-	'model-value': control.value.data,
-	error: control.value.errors,
-	updateModelValue: onInput,
-	'update-model-value': onInput,
-	handleChange: onInput,
-	'handle-change': onInput
-}))
 </script>
 
 <template>
-	<div
-		v-if="control.visible"
-		:data-invalid="!!control.errors"
-		:class="{ 'has-error': !!control.errors, contents: !!customSlot }"
-	>
-		<!-- Custom Slot Fallback (e.g. #field:host_id) -->
+	<div :data-invalid="!!error" :class="{ 'has-error': !!error, contents: !!customSlot }">
 		<CustomSlotRenderer v-if="customSlot" :render-fn="customSlot" :slot-props="slotProps" />
 
-		<!-- Default BTJ Input Text -->
 		<AppInputText
 			v-else
 			:type="inputType"
 			:model-value="displayValue"
-			:label="control.label"
-			:placeholder="control.uischema?.options?.placeholder || `Enter ${control.label}`"
-			:required="control.required"
-			:error="control.errors"
-			:disabled="!control.enabled"
+			:label="label"
+			:placeholder="hint.placeholder || descriptor.placeholder || `Enter ${label}`"
+			:required="required"
+			:error="error"
+			:disabled="disabled"
 			:uuid="
-				control.uischema?.options?.format === 'uuid' ||
-				control.uischema?.options?.rules?.includes('uuid')
+				hint.format === 'uuid' ||
+				descriptor.format === 'uuid' ||
+				hint.rules?.includes('uuid') ||
+				descriptor.rules?.includes('uuid')
 			"
-			:rules="control.uischema?.options?.rules"
+			:rules="hint.rules || descriptor.rules"
 			@update:model-value="onInput"
 		/>
 	</div>

@@ -5,192 +5,67 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
-import { computed, inject, watchEffect, type ComputedRef } from 'vue'
-import { rendererProps, useJsonFormsControl, DispatchRenderer } from '@jsonforms/vue'
-import type { ControlElement, JsonSchema, UISchemaElement } from '@jsonforms/core'
+import { computed, watch } from 'vue'
+import type { FieldDescriptor } from '@@/shared/types/dynamic-form.type'
 import AppInputSelect from '@/components/app/input/AppInputSelect.vue'
 import AppInputError from '@/components/app/input/AppInputError.vue'
 import UiCheckbox from '@/components/ui/checkbox/Checkbox.vue'
-import { createControlElement, resolveHintForPath } from '@/app/services/forms/hints-to-uischema'
-import { isSensitiveJsonSchema } from '@/app/services/forms/sensitive.utils'
-import type { UiHint } from '@@/shared/types/dynamic-form.type'
-import { formatFieldLabel } from '@/app/services/forms/path-helper'
 import CustomSlotRenderer from './CustomSlotRenderer.vue'
+import DynamicFieldRenderer from '../DynamicFieldRenderer.vue'
+import { formatFieldLabel, safeClone } from '@/app/services/forms/path-helper'
+import { useDynamicField } from '../useDynamicField'
 
-const props = defineProps({
-	...rendererProps<ControlElement>()
-})
+const props = defineProps<{
+	descriptor: FieldDescriptor
+	path: string
+}>()
 
-const { control, handleChange } = useJsonFormsControl(props)
-const slots = inject<Record<string, any>>('dynamicZodFormSlots', {})
-const formHintsRef = inject<ComputedRef<Record<string, UiHint>> | undefined>('formHints', undefined)
-const formHints = computed(() => formHintsRef?.value || {})
-
-const leafName = computed(() => {
-	const p = control.value.path || ''
-	const parts = p.split('.')
-	return parts[parts.length - 1] || p
-})
-
-const customSlot = computed(() => {
-	const pathKey = control.value.path
-	return slots[`field:${pathKey}`] || slots[`field:${leafName.value}`] || null
-})
-
-const onInput = (val: any) => {
-	handleChange(control.value.path, val)
-}
-
-const slotProps = computed(() => ({
-	value: control.value.data,
-	modelValue: control.value.data,
-	'model-value': control.value.data,
-	error: control.value.errors,
-	updateModelValue: onInput,
-	'update-model-value': onInput,
-	handleChange: onInput,
-	'handle-change': onInput
-}))
-
-const selfHint = computed(() => {
-	return resolveHintForPath(control.value.path, formHints.value, (control.value as any).rootData)
-})
-
-// Flatten branches recursively to handle nested anyOf/oneOf (e.g. nullable wrapper anyOf: [null, anyOf: [Basic, Bearer]])
-const rawBranches = computed<JsonSchema[]>(() => {
-	const s = control.value.schema as any
-	const list = s.anyOf || s.oneOf || []
-	const flat: JsonSchema[] = []
-
-	const recurse = (arr: any[]) => {
-		for (const item of arr) {
-			if (item.type === 'null') {
-				flat.push(item)
-			} else if (item.anyOf && Array.isArray(item.anyOf)) {
-				recurse(item.anyOf)
-			} else if (item.oneOf && Array.isArray(item.oneOf)) {
-				recurse(item.oneOf)
-			} else {
-				flat.push(item)
-			}
-		}
-	}
-	recurse(list)
-	return flat
-})
+const { value, setValue, error, hint, label, disabled, leafName, customSlot, slotProps } =
+	useDynamicField(props)
 
 const discriminatorKey = computed(() => {
-	const explicit =
-		control.value.uischema?.options?.discriminatorField || selfHint.value?.discriminatorField
-	if (explicit) return explicit
-
-	// Auto-detect from branches
-	const candidates = ['type', 'module', 'kind', 'method', 'strategy']
-	for (const candidate of candidates) {
-		const found = rawBranches.value.some((b: any) => b.properties && candidate in b.properties)
-		if (found) return candidate
-	}
-
-	return 'type'
+	return hint.value.discriminatorField || props.descriptor.unionDiscriminator || 'type'
 })
 
-interface NormalizedBranch {
-	key: string
-	label: string
-	schema: JsonSchema
-	isExternalTagged: boolean
-	isNull: boolean
-	externalPropertyKey?: string
-}
+const isExternalTagged = computed(() => props.descriptor.unionTagMode === 'external')
 
-const normalizedBranches = computed<NormalizedBranch[]>(() => {
-	const res: NormalizedBranch[] = []
-	for (const b of rawBranches.value as any[]) {
-		if (b.type === 'null') {
-			res.push({
-				key: 'none',
-				label: 'None',
-				schema: b,
-				isExternalTagged: false,
-				isNull: true
-			})
-			continue
-		}
-
-		// 1. Internal tagged: has discriminator property (e.g. type: 'snmp_v1' or 'http')
-		const discProp = b.properties?.[discriminatorKey.value]
-		if (discProp) {
-			const val = discProp.enum?.[0] ?? discProp.const ?? b.title ?? 'unknown'
-			const label = b.title || val.toUpperCase().replace('_', ' ')
-			res.push({
-				key: String(val),
-				label,
-				schema: b,
-				isExternalTagged: false,
-				isNull: false
-			})
-			continue
-		}
-
-		// 2. External tagged: single property wrapping variant (e.g. { properties: { Basic: ... } } or { properties: { Bearer: ... } })
-		if (b.properties && typeof b.properties === 'object') {
-			const propKeys = Object.keys(b.properties)
-			if (propKeys.length === 1) {
-				const tagKey = propKeys[0]
-				res.push({
-					key: tagKey,
-					label: b.title || tagKey,
-					schema: b,
-					isExternalTagged: true,
-					isNull: false,
-					externalPropertyKey: tagKey
-				})
-				continue
-			}
-		}
-
-		// Fallback
-		const val = b.title || 'unknown'
-		res.push({
-			key: String(val),
-			label: String(val),
-			schema: b,
-			isExternalTagged: false,
-			isNull: false
-		})
-	}
-
-	// Apply optionsOrder if specified in hints
-	const order = control.value.uischema?.options?.optionsOrder || selfHint.value?.optionsOrder
-	if (Array.isArray(order) && order.length > 0) {
-		res.sort((a, b) => {
-			const idxA = order.indexOf(a.key)
-			const idxB = order.indexOf(b.key)
-			const posA = idxA === -1 ? 999 : idxA
-			const posB = idxB === -1 ? 999 : idxB
-			return posA - posB
-		})
-	}
-
-	return res
-})
+const rawOptions = computed(() => props.descriptor.options || [])
+const unionBranches = computed(() => props.descriptor.unionBranches || {})
 
 const branchOptions = computed(() => {
-	return normalizedBranches.value.map((nb) => ({
-		label: nb.label,
-		value: nb.key
-	}))
+	const opts = [...rawOptions.value]
+	const order = hint.value.optionsOrder
+	if (Array.isArray(order) && order.length > 0) {
+		opts.sort((a, b) => {
+			const idxA = order.indexOf(a.value)
+			const idxB = order.indexOf(b.value)
+			return (idxA === -1 ? 999 : idxA) - (idxB === -1 ? 999 : idxB)
+		})
+	}
+	return opts
+})
+
+const isOptionalObjectUnion = computed(() => {
+	if (branchOptions.value.length !== 2) return false
+	const hasNone = branchOptions.value.some((o) => o.value === 'none')
+	const nonNull = branchOptions.value.filter((o) => o.value !== 'none')
+	return hasNone && nonNull.length === 1
+})
+
+const singleObjectBranchKey = computed(() => {
+	if (!isOptionalObjectUnion.value) return null
+	return branchOptions.value.find((o) => o.value !== 'none')?.value || null
 })
 
 const currentBranchValue = computed(() => {
-	const data = control.value.data
+	const data = value.value
 	if (data === null || data === undefined) {
-		const hasNullBranch = normalizedBranches.value.some((b) => b.isNull)
-		if (hasNullBranch) return 'none'
+		if (branchOptions.value.some((o) => o.value === 'none')) {
+			return 'none'
+		}
 	}
 
 	if (data && typeof data === 'object') {
-		// Internal tagged
 		if (discriminatorKey.value in data && data[discriminatorKey.value] !== undefined) {
 			return String(data[discriminatorKey.value])
 		}
@@ -200,301 +75,193 @@ const currentBranchValue = computed(() => {
 		if (discriminatorKey.value === 'module' && 'type' in data && data.type !== undefined) {
 			return String(data.type)
 		}
-		// External tagged
-		for (const nb of normalizedBranches.value) {
-			if (nb.isExternalTagged && nb.externalPropertyKey && nb.externalPropertyKey in data) {
-				return nb.key
+		for (const opt of branchOptions.value) {
+			if (opt.value !== 'none' && opt.value in data) {
+				return opt.value
 			}
 		}
 	}
 
-	return (
-		control.value.uischema?.options?.discriminatorDefault ||
-		selfHint.value?.discriminatorDefault ||
-		branchOptions.value[0]?.value ||
-		''
-	)
+	return hint.value.discriminatorDefault || branchOptions.value[0]?.value || ''
 })
 
-const activeBranchInfo = computed<NormalizedBranch | null>(() => {
-	const val = currentBranchValue.value
-	return (
-		normalizedBranches.value.find((b) => b.key === val) || normalizedBranches.value[0] || null
-	)
+const activeBranchFields = computed<FieldDescriptor[]>(() => {
+	const branchKey = isOptionalObjectUnion.value
+		? singleObjectBranchKey.value
+		: currentBranchValue.value
+	if (!branchKey || branchKey === 'none') return []
+	return unionBranches.value[branchKey] || []
 })
 
-const activeBranch = computed<JsonSchema | null>(() => {
-	return activeBranchInfo.value?.schema || null
-})
+const buildBranchChildPath = (child: FieldDescriptor) => {
+	return props.path ? `${props.path}.${child.name}` : child.name
+}
 
-const activeBranchUiSchema = computed<UISchemaElement | null>(() => {
-	const info = isOptionalObjectUnion.value ? singleObjectBranch.value : activeBranchInfo.value
-	if (!info || info.isNull || !info.schema.properties) return null
+const buildBranchInitialValue = (branchKey: string): Record<string, any> => {
+	const fields = unionBranches.value[branchKey] || []
+	const branchDefault = hint.value.branchDefaults?.[branchKey]
 
-	const subElements: ControlElement[] = []
-	const basePath = control.value.path || ''
-
-	const branchKey = info.key
-	for (const propName of Object.keys(info.schema.properties)) {
-		if (!info.isExternalTagged && propName === discriminatorKey.value) continue
-		const fullPath = basePath ? `${basePath}.${propName}` : propName
-		// Include branch alias hint check: e.g. config.attribute_filter.config
-		const branchSpecificPath = basePath
-			? `${basePath}.${branchKey}.${propName}`
-			: `${branchKey}.${propName}`
-		const rootDataWithBranch = {
-			...(control.value as any).rootData,
-			[basePath || 'config']: {
-				...((control.value as any).rootData?.[basePath || 'config'] || {}),
-				[discriminatorKey.value]: branchKey
-			}
+	if (isExternalTagged.value) {
+		if (branchDefault !== undefined) {
+			return { [branchKey]: safeClone(branchDefault) }
 		}
-		const propSchema = (info.schema.properties as any)[propName]
-		const ctrl = createControlElement(
-			propName,
-			fullPath,
-			formHints.value,
-			rootDataWithBranch,
-			propSchema
-		)
-		// If branchSpecificPath has a hint (e.g. widget: 'attribute-filter'), merge it into ctrl options
-		const branchHint = resolveHintForPath(
-			branchSpecificPath,
-			formHints.value,
-			rootDataWithBranch
-		)
-		if (branchHint) {
-			ctrl.options = { ...ctrl.options, ...branchHint }
-			if (branchHint.label) ctrl.label = branchHint.label
-		}
-		subElements.push(ctrl)
+		const isPrimitiveBranch =
+			fields.length === 1 &&
+			fields[0].name === branchKey &&
+			fields[0].widget !== 'custom' &&
+			!fields[0].children?.length
+		return { [branchKey]: isPrimitiveBranch ? '' : {} }
 	}
+
+	const configField = fields.find((f) => f.name === 'config')
+	const nextConfig =
+		branchDefault !== undefined ? safeClone(branchDefault) : configField ? {} : undefined
 
 	return {
-		type: 'VerticalLayout',
-		elements: subElements
-	} as any
-})
+		[discriminatorKey.value]: branchKey,
+		...(nextConfig !== undefined ? { config: nextConfig } : {})
+	}
+}
 
 const onBranchChange = (newVal: any) => {
-	const targetBranch = normalizedBranches.value.find((b) => b.key === newVal)
-	if (!targetBranch) return
-
-	if (targetBranch.isNull) {
-		handleChange(control.value.path, null)
+	if (!newVal) return
+	if (newVal === 'none') {
+		setValue(null)
 		return
 	}
-
-	if (targetBranch.isExternalTagged && targetBranch.externalPropertyKey) {
-		const extKey = targetBranch.externalPropertyKey
-		const extPropSchema = (targetBranch.schema.properties as any)[extKey]
-		// Determine default inner value (object with defaults or string)
-		let defaultVal: any = {}
-		if (extPropSchema?.type === 'string' || isSensitiveJsonSchema(extPropSchema)) {
-			defaultVal = ''
-		}
-		handleChange(control.value.path, {
-			[extKey]: defaultVal
-		})
-		return
-	}
-
-	// Internal tagged
-	let nextConfig: any = undefined
-
-	if (newVal === 'dummy') {
-		const dummyProps = (targetBranch.schema.properties as any)?.config?.properties
-		if (dummyProps?.messages_per_batch !== undefined || dummyProps?.speed !== undefined) {
-			nextConfig = {
-				messages_per_batch: 100,
-				speed: 5
-			}
-		} else {
-			nextConfig = {
-				count: 1,
-				payload: {
-					row: {
-						observed_time: null,
-						severity: 'info',
-						source_ip: null,
-						source_port: null,
-						body: null,
-						attrs: []
-					}
-				}
-			}
-		}
-	} else if (newVal === 'snmp') {
-		nextConfig = { oid: '' }
-	} else if (newVal === 'snmp_walk') {
-		nextConfig = { oids: [] }
-	} else if (newVal === 'prometheus_scrape') {
-		nextConfig = { accept_protobuf: false, stream: false }
-	} else if (targetBranch.schema.properties?.config) {
-		nextConfig = {}
-	}
-
-	handleChange(control.value.path, {
-		[discriminatorKey.value]: newVal,
-		...(nextConfig !== undefined ? { config: nextConfig } : {})
-	})
+	setValue(buildBranchInitialValue(newVal))
 }
 
 const discriminatorLabel = computed(() => {
-	return (
-		control.value.uischema?.options?.discriminatorLabel ||
-		selfHint.value?.discriminatorLabel ||
-		control.value.label ||
-		'Select Type'
-	)
+	return hint.value.discriminatorLabel || label.value || 'Select Type'
 })
 
 const discriminatorPlaceholder = computed(() => {
-	return (
-		control.value.uischema?.options?.discriminatorPlaceholder ||
-		selfHint.value?.discriminatorPlaceholder ||
-		'Select option...'
-	)
-})
-
-// Check if union is simply 'null | single-object' (e.g. authentication, privacy)
-const isOptionalObjectUnion = computed(() => {
-	if (normalizedBranches.value.length !== 2) return false
-	const hasNull = normalizedBranches.value.some((b) => b.isNull)
-	const nonNullBranches = normalizedBranches.value.filter((b) => !b.isNull)
-	if (!hasNull || nonNullBranches.length !== 1) return false
-	const schema = nonNullBranches[0].schema as any
-	return schema?.type === 'object' || Boolean(schema?.properties)
-})
-
-const singleObjectBranch = computed(() => {
-	if (!isOptionalObjectUnion.value) return null
-	return normalizedBranches.value.find((b) => !b.isNull) || null
+	return hint.value.discriminatorPlaceholder || 'Select option...'
 })
 
 const isCheckboxActive = computed(() => {
-	const data = control.value.data
+	const data = value.value
 	if (data === null || data === undefined) return false
-	if (typeof data === 'object') {
-		// If object is empty or non-empty, consider active
-		return true
-	}
-	return false
+	return typeof data === 'object'
 })
 
 const checkboxLabel = computed(() => {
-	if (selfHint.value?.label) return selfHint.value.label
-	if (control.value.label) return `Use ${control.value.label}`
+	if (hint.value.label) return hint.value.label
+	if (label.value) return `Use ${label.value}`
 	return `Use ${formatFieldLabel(leafName.value)}`
 })
 
 const onCheckboxToggle = (val: boolean) => {
 	if (!val) {
-		handleChange(control.value.path, null)
+		setValue(null)
+		return
+	}
+
+	const key = singleObjectBranchKey.value
+	if (isExternalTagged.value && key) {
+		setValue(buildBranchInitialValue(key))
 	} else {
-		const target = singleObjectBranch.value
-		if (target?.isExternalTagged && target.externalPropertyKey) {
-			const extKey = target.externalPropertyKey
-			const extProp = (target.schema.properties as any)[extKey]
-			handleChange(control.value.path, {
-				[extKey]: extProp?.type === 'string' || isSensitiveJsonSchema(extProp) ? '' : {}
-			})
-		} else {
-			handleChange(control.value.path, {})
-		}
+		const branchDefault = key ? hint.value.branchDefaults?.[key] : undefined
+		setValue(branchDefault !== undefined ? safeClone(branchDefault) : {})
 	}
 }
 
-// Auto-populate discriminator when branchOptions only has 1 option and current value is empty
-watchEffect(() => {
-	if (!isOptionalObjectUnion.value) {
-		const data = control.value.data
-		const currentDisc = data?.[discriminatorKey.value]
-		if (
-			branchOptions.value.length === 1 &&
-			(currentDisc === undefined || currentDisc === null || currentDisc === '')
-		) {
-			const onlyOption = branchOptions.value[0].value
-			onBranchChange(onlyOption)
+watch(
+	[() => branchOptions.value, () => value.value],
+	([opts, data]) => {
+		if (isOptionalObjectUnion.value || opts.length === 0) return
+
+		if (opts.length === 1) {
+			const onlyKey = opts[0].value
+			const hasExistingBranch = isExternalTagged.value
+				? Boolean(data && typeof data === 'object' && onlyKey in data)
+				: Boolean(data?.[discriminatorKey.value])
+			if (!hasExistingBranch) {
+				onBranchChange(onlyKey)
+			}
+			return
 		}
-	}
-})
+
+		const hasNoneOption = opts.some((o) => o.value === 'none')
+		const isEmptyObj =
+			typeof data === 'object' && data !== null && Object.keys(data).length === 0
+		const isUninitialized =
+			data === undefined || isEmptyObj || (data === null && !hasNoneOption)
+
+		if (!isUninitialized) return
+
+		const targetBranch = hint.value.discriminatorDefault || opts[0]?.value
+		if (targetBranch && targetBranch !== 'none') {
+			onBranchChange(targetBranch)
+		}
+	},
+	{ immediate: true }
+)
 </script>
 
 <template>
-	<div
-		v-if="control.visible"
-		:data-invalid="!!control.errors"
-		:class="{ 'has-error': !!control.errors }"
-		class="w-full"
-	>
-		<!-- Custom Slot Fallback -->
+	<div :data-invalid="!!error" :class="{ 'has-error': !!error }" class="w-full">
 		<CustomSlotRenderer v-if="customSlot" :render-fn="customSlot" :slot-props="slotProps" />
 
-		<!-- Union Controls Container -->
-		<div v-else class="flex flex-col gap-3 p-3 border border-gray-200 rounded-lg bg-gray-50/50">
+		<div v-else class="flex flex-col gap-3 p-3 border border-border rounded-lg bg-muted/30">
 			<!-- Mode 1: Checkbox for null | single-object -->
 			<template v-if="isOptionalObjectUnion">
 				<div class="flex items-center gap-2 py-1">
 					<UiCheckbox
-						:id="`union-check-${control.path}`"
+						:id="`union-check-${path}`"
 						:checked="isCheckboxActive"
-						:disabled="!control.enabled"
+						:disabled="disabled"
 						@update:checked="onCheckboxToggle"
 					/>
 					<label
-						:for="`union-check-${control.path}`"
+						:for="`union-check-${path}`"
 						class="text-sm font-medium leading-none cursor-pointer select-none text-foreground"
-						:class="{ 'opacity-50 cursor-not-allowed': !control.enabled }"
+						:class="{ 'opacity-50 cursor-not-allowed': disabled }"
 					>
 						{{ checkboxLabel }}
 					</label>
 				</div>
 
-				<!-- Child inputs revealed when checkbox is checked -->
 				<div
-					v-if="isCheckboxActive && singleObjectBranch && activeBranchUiSchema"
+					v-if="isCheckboxActive && activeBranchFields.length > 0"
 					class="pt-2 flex flex-col gap-3"
 				>
-					<dispatch-renderer
-						:schema="singleObjectBranch.schema"
-						:uischema="activeBranchUiSchema"
-						:path="control.path"
-						:enabled="control.enabled"
-						:renderers="control.renderers"
+					<DynamicFieldRenderer
+						v-for="child in activeBranchFields"
+						:key="`${singleObjectBranchKey}-${buildBranchChildPath(child)}`"
+						:descriptor="child"
+						:path="buildBranchChildPath(child)"
 					/>
 				</div>
 			</template>
 
-			<!-- Mode 2: Multi-branch Union Selector (e.g. protocols, auth basic vs bearer vs none) -->
+			<!-- Mode 2: Multi-branch Union Selector -->
 			<template v-else>
-				<!-- Discriminator Selector -->
 				<AppInputSelect
 					:model-value="currentBranchValue"
 					:label="discriminatorLabel"
 					:placeholder="discriminatorPlaceholder"
 					required
 					:options="branchOptions"
-					:disabled="!control.enabled"
+					:disabled="disabled"
 					@update:model-value="onBranchChange"
 				/>
 
-				<!-- Child Fields Dispatcher -->
 				<div
-					v-if="activeBranch && activeBranchUiSchema && !activeBranchInfo?.isNull"
+					v-if="currentBranchValue !== 'none' && activeBranchFields.length > 0"
 					class="pt-2 flex flex-col gap-3"
 				>
-					<dispatch-renderer
-						:schema="activeBranch"
-						:uischema="activeBranchUiSchema"
-						:path="control.path"
-						:enabled="control.enabled"
-						:renderers="control.renderers"
+					<DynamicFieldRenderer
+						v-for="child in activeBranchFields"
+						:key="`${currentBranchValue}-${buildBranchChildPath(child)}`"
+						:descriptor="child"
+						:path="buildBranchChildPath(child)"
 					/>
 				</div>
 			</template>
 
-			<AppInputError :error="control.errors" />
+			<AppInputError :error="error" />
 		</div>
 	</div>
 </template>

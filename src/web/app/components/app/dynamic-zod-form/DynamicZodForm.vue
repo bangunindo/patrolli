@@ -5,22 +5,22 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
-import { computed, provide, ref, useSlots, watch } from 'vue'
+import { computed, provide, ref, toRaw, useSlots, watch } from 'vue'
 import type { z } from 'zod'
-import { JsonForms } from '@jsonforms/vue'
-import type { UISchemaElement, ValidationMode } from '@jsonforms/core'
-import { convertZodToJsonSchema } from '@/app/services/forms/json-schema-converter'
-import { hintsToUiSchema } from '@/app/services/forms/hints-to-uischema'
-import { zodFormRenderers } from './renderers'
-import { AutoFormAdapter, humanizeZodIssue } from '@/app/services/forms/auto-adapter'
+import { useForm } from '@tanstack/vue-form'
+import { introspectZodSchema } from '@/app/services/forms/zod-introspector'
+import { AutoFormAdapter } from '@/app/services/forms/auto-adapter'
+import { isFieldVisible, resolveHintForPath, safeClone } from '@/app/services/forms/path-helper'
 import UiIcon from '@/components/ui/icon/Icon.vue'
-import type { UiHint } from '@@/shared/types/dynamic-form.type'
+import DynamicFieldRenderer from './DynamicFieldRenderer.vue'
+import GroupLayout from './renderers/GroupLayout.vue'
+import { DYNAMIC_FORM_CONTEXT_KEY } from './useDynamicField'
+import type { FieldDescriptor, UiHint } from '@@/shared/types/dynamic-form.type'
 
 const props = withDefaults(
 	defineProps<{
-		schema: z.ZodTypeAny
+		schema: z.ZodType
 		hints?: Record<string, UiHint>
-		uischema?: UISchemaElement
 		disabled?: boolean
 		loading?: boolean
 		initialData?: Record<string, any> | null
@@ -37,118 +37,231 @@ const props = withDefaults(
 const emits = defineEmits<{
 	submit: [validData: any]
 	error: [issues: Record<string, string>]
-	'update:modelValue': [value: Record<string, any>]
 }>()
 
 const slots = useSlots()
 provide('dynamicZodFormSlots', slots)
-provide(
-	'formHints',
-	computed(() => props.hints)
-)
 
-const formRef = ref<HTMLFormElement | null>(null)
 const model = defineModel<Record<string, any>>({ default: () => ({}) })
 const issues = ref<Record<string, string>>({})
 const isSubmitting = ref(false)
 const hasSubmitted = ref(false)
 
-const validationMode = computed<ValidationMode>(() =>
-	hasSubmitted.value ? 'ValidateAndShow' : 'ValidateAndHide'
-)
-
-provide(
-	'formIssues',
-	computed(() => issues.value)
-)
-
-// Convert Zod schema to JSON Schema Draft-07
-const jsonSchema = computed(() => {
-	return convertZodToJsonSchema(props.schema)
-})
-
-// Resolve UISchema: use custom prop if provided, or auto-generate from hints
-const activeUiSchema = computed(() => {
-	if (props.uischema) return props.uischema
-	return hintsToUiSchema(jsonSchema.value, props.hints)
-})
-
-const initDraft = () => {
-	if (props.initialData && Object.keys(props.initialData).length > 0) {
-		model.value = JSON.parse(JSON.stringify(props.initialData))
-	}
+const cloneData = (val: any): Record<string, any> => {
+	if (val === undefined || val === null) return {}
+	return safeClone(val)
 }
 
-initDraft()
+const getInitialValues = () => {
+	if (props.initialData && Object.keys(props.initialData).length > 0) {
+		return cloneData(props.initialData)
+	}
+	if (model.value && Object.keys(model.value).length > 0) {
+		return cloneData(model.value)
+	}
+	return {}
+}
+
+const hasInitialData = Boolean(props.initialData && Object.keys(props.initialData).length > 0)
+const initialValues = getInitialValues()
+if (hasInitialData) {
+	model.value = cloneData(initialValues)
+}
+
+let isInternalSync = false
+
+const form = useForm({
+	defaultValues: initialValues as Record<string, any>
+})
+
+const rootValues = form.useSelector((state) => state.values)
+
+const prepareRawData = () => {
+	if (props.transform) {
+		return props.transform(cloneData(model.value))
+	}
+	return toRaw(model.value) ?? {}
+}
+
+const prepareDataForValidation = () => {
+	return AutoFormAdapter.deepSanitize(
+		cloneData(prepareRawData()),
+		toRaw(props.schema),
+		[],
+		props.hints
+	)
+}
+
+const runZodValidation = () => {
+	const rawData = prepareRawData()
+	const result = AutoFormAdapter.toRequest(toRaw(props.schema), rawData, props.hints)
+	if (!result.success) {
+		return {
+			success: false as const,
+			issues: result.issues || {}
+		}
+	}
+	return { success: true as const, data: result.data }
+}
+
+const syncModelFromForm = (_changedPath?: string) => {
+	const cloned = cloneData(form.state.values)
+	isInternalSync = true
+	model.value = cloned
+	isInternalSync = false
+
+	if (hasSubmitted.value) {
+		const res = runZodValidation()
+		issues.value = res.success ? {} : res.issues
+	}
+}
 
 watch(
 	() => props.initialData,
 	(newVal) => {
-		if (newVal && Object.keys(newVal).length > 0) {
-			model.value = JSON.parse(JSON.stringify(newVal))
-		}
+		const nextVal = newVal && Object.keys(newVal).length > 0 ? cloneData(newVal) : {}
+		isInternalSync = true
+		model.value = nextVal
+		isInternalSync = false
+		form.reset(cloneData(nextVal))
+		issues.value = {}
+		hasSubmitted.value = false
 	},
 	{ deep: true }
 )
 
-// Handle data changes from JSON Forms (Ajv Real-time)
-const handleJsonFormsChange = (event: { data: any; errors?: any[] }) => {
-	if (event.data !== undefined) {
-		model.value = event.data
-		emits('update:modelValue', event.data)
-	}
+// flush: 'sync' ensures isInternalSync guards internal syncModelFromForm updates synchronously
+watch(
+	() => model.value,
+	(newVal) => {
+		if (isInternalSync) return
+		form.reset(cloneData(newVal))
+	},
+	{ deep: true, flush: 'sync' }
+)
+
+provide(DYNAMIC_FORM_CONTEXT_KEY, {
+	form,
+	rootValues,
+	formHints: computed(() => props.hints),
+	formIssues: computed(() => issues.value),
+	hasSubmitted: computed(() => hasSubmitted.value),
+	formDisabled: computed(() => props.disabled || props.loading),
+	syncModelFromForm
+})
+
+const descriptors = computed<FieldDescriptor[]>(() => {
+	return introspectZodSchema(toRaw(props.schema), [], props.hints)
+})
+
+interface LayoutSection {
+	type: 'group' | 'field'
+	key: string
+	order: number
+	label?: string
+	variant?: 'card' | 'section'
+	fields?: FieldDescriptor[]
+	field?: FieldDescriptor
 }
 
-// Prepare data prior to validation (transform + deepSanitize)
-const prepareDataForValidation = () => {
-	let dataToValidate = JSON.parse(JSON.stringify(model.value))
-	if (props.transform) {
-		dataToValidate = props.transform(dataToValidate)
+const hasDynamicLayout = computed(() => {
+	for (const desc of descriptors.value) {
+		if (typeof desc.hints?.visibleWhen === 'function') return true
 	}
-	return AutoFormAdapter.deepSanitize(dataToValidate, props.schema, [], props.hints)
-}
+	for (const [key, h] of Object.entries(props.hints || {})) {
+		if (typeof h?.visibleWhen === 'function') return true
+		if (key.startsWith('config.') && key.split('.').length > 2) return true
+	}
+	return false
+})
 
-// Zod validation on Submit (Dual-layer Validation)
+const layoutSections = computed<LayoutSection[]>(() => {
+	const groupsMap = new Map<
+		string,
+		{ order: number; variant?: 'card' | 'section'; fields: FieldDescriptor[] }
+	>()
+	const sections: LayoutSection[] = []
+
+	// Only subscribe to rootValues when dynamic visibility or branch-specific hints exist
+	const currentRoot = hasDynamicLayout.value ? rootValues.value || {} : {}
+
+	for (const desc of descriptors.value) {
+		const resolvedHint = {
+			...(desc.hints || {}),
+			...(resolveHintForPath(desc.pathKey, props.hints, currentRoot) || {})
+		}
+		if (!isFieldVisible(resolvedHint, currentRoot)) continue
+		const groupName = resolvedHint.group
+		const order = resolvedHint.order ?? 9999
+
+		if (groupName) {
+			if (!groupsMap.has(groupName)) {
+				groupsMap.set(groupName, {
+					order,
+					variant: resolvedHint.groupVariant,
+					fields: []
+				})
+			}
+			const grp = groupsMap.get(groupName)!
+			grp.order = Math.min(grp.order, order)
+			if (resolvedHint.groupVariant && !grp.variant) {
+				grp.variant = resolvedHint.groupVariant
+			}
+			grp.fields.push(desc)
+		} else {
+			sections.push({
+				type: 'field',
+				key: desc.pathKey,
+				order,
+				field: desc
+			})
+		}
+	}
+
+	for (const [groupName, grp] of groupsMap.entries()) {
+		sections.push({
+			type: 'group',
+			key: `group:${groupName}`,
+			order: grp.order,
+			label: groupName,
+			variant: grp.variant,
+			fields: grp.fields
+		})
+	}
+
+	sections.sort((a, b) => a.order - b.order)
+	return sections
+})
+
 const handleSubmit = () => {
 	hasSubmitted.value = true
 	if (isSubmitting.value) return
 	isSubmitting.value = true
 	try {
-		const dataToValidate = prepareDataForValidation()
-		const parseResult = props.schema.safeParse(dataToValidate)
+		const result = runZodValidation()
 
-		if (!parseResult.success) {
-			console.error(
-				'[DynamicZodForm] Validation failed:',
-				parseResult.error,
-				'dataToValidate was:',
-				dataToValidate
-			)
-			const formattedIssues: Record<string, string> = {}
-			for (const issue of parseResult.error.issues) {
-				const pathKey = issue.path.join('.') || 'root'
-				formattedIssues[pathKey] = humanizeZodIssue(issue, props.hints)
-			}
-
-			issues.value = formattedIssues
-			emits('error', formattedIssues)
+		if (!result.success) {
+			issues.value = result.issues
+			emits('error', result.issues)
 			return
 		}
 
 		issues.value = {}
-		emits('submit', parseResult.data)
+		emits('submit', result.data)
 	} catch (err: any) {
 		console.error('[DynamicZodForm] Error during submission:', err)
 	} finally {
-		setTimeout(() => {
-			isSubmitting.value = false
-		}, 0)
+		isSubmitting.value = false
 	}
 }
 
 const resetForm = () => {
 	hasSubmitted.value = false
-	model.value = props.initialData ? JSON.parse(JSON.stringify(props.initialData)) : {}
+	const nextVal = props.initialData ? cloneData(props.initialData) : {}
+	isInternalSync = true
+	model.value = nextVal
+	isInternalSync = false
+	form.reset(cloneData(nextVal))
 	issues.value = {}
 }
 
@@ -157,20 +270,10 @@ const handleCloseAlert = () => {
 }
 
 defineExpose({
-	validateAndSubmit: () => {
-		hasSubmitted.value = true
-		if (formRef.value) {
-			const submitEvent = new Event('submit', { cancelable: true, bubbles: false })
-			formRef.value.dispatchEvent(submitEvent)
-			if (submitEvent.defaultPrevented) {
-				return
-			}
-		}
-		handleSubmit()
-	},
+	validateAndSubmit: handleSubmit,
 	validate: () => {
 		const dataToValidate = prepareDataForValidation()
-		return props.schema.safeParse(dataToValidate)
+		return toRaw(props.schema).safeParse(dataToValidate)
 	},
 	reset: resetForm,
 	clearIssues: handleCloseAlert,
@@ -181,7 +284,6 @@ defineExpose({
 
 <template>
 	<form
-		ref="formRef"
 		data-dynamic-zod-form="true"
 		@submit.prevent="handleSubmit"
 		novalidate
@@ -221,16 +323,22 @@ defineExpose({
 
 		<slot />
 
-		<!-- JSON Forms Core Engine with BTJ UI Renderers -->
-		<JsonForms
-			:data="model"
-			:schema="jsonSchema"
-			:uischema="activeUiSchema"
-			:renderers="zodFormRenderers"
-			:validation-mode="validationMode"
-			:readonly="props.disabled || props.loading"
-			@change="handleJsonFormsChange"
-		/>
+		<!-- TanStack Form Recursive Field Tree -->
+		<div class="flex flex-col gap-4">
+			<template v-for="section in layoutSections" :key="section.key">
+				<GroupLayout
+					v-if="section.type === 'group' && section.fields"
+					:label="section.label"
+					:variant="section.variant"
+					:fields="section.fields"
+				/>
+				<DynamicFieldRenderer
+					v-else-if="section.type === 'field' && section.field"
+					:descriptor="section.field"
+					:path="section.field.pathKey"
+				/>
+			</template>
+		</div>
 
 		<slot
 			name="footer"

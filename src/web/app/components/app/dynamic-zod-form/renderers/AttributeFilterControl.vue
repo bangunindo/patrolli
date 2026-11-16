@@ -5,38 +5,30 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
-import { computed, inject, type ComputedRef } from 'vue'
-import { rendererProps, useJsonFormsControl } from '@jsonforms/vue'
-import type { ControlElement } from '@jsonforms/core'
-import type { UiHint } from '@@/shared/types/dynamic-form.type'
+import type { FieldDescriptor } from '@@/shared/types/dynamic-form.type'
+import CustomSlotRenderer from './CustomSlotRenderer.vue'
+import { useDynamicField } from '../useDynamicField'
 
-const props = defineProps({
-	...rendererProps<ControlElement>()
-})
+const props = defineProps<{
+	descriptor: FieldDescriptor
+	path: string
+}>()
 
-const { control, handleChange } = useJsonFormsControl(props)
-const formHintsRef = inject<ComputedRef<Record<string, UiHint>> | undefined>('formHints', undefined)
-const formHints = computed(() => formHintsRef?.value || {})
-
-const onUpdate = (val: any) => {
-	handleChange(control.value.path, val)
-}
+const { ctx, value, setValue, error, disabled, customSlot, slotProps } = useDynamicField(props)
 </script>
 
 <template>
-	<div
-		v-if="control.visible"
-		:data-invalid="!!control.errors"
-		:class="{ 'has-error': !!control.errors }"
-		class="w-full"
-	>
+	<div :data-invalid="!!error" :class="{ 'has-error': !!error }" class="w-full">
+		<CustomSlotRenderer v-if="customSlot" :render-fn="customSlot" :slot-props="slotProps" />
+
 		<AppInputAttributeFilter
-			:model-value="control.data"
-			:hints="formHints"
-			:error="control.errors"
-			:disabled="!control.enabled"
+			v-else
+			:model-value="value"
+			:hints="ctx.formHints.value"
+			:error="error"
+			:disabled="disabled"
 			:root="true"
-			@update:model-value="onUpdate"
+			@update:model-value="setValue"
 		/>
 	</div>
 </template>

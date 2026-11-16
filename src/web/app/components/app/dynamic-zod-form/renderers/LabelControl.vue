@@ -5,64 +5,35 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
-import { computed, inject } from 'vue'
-import { rendererProps, useJsonFormsControl } from '@jsonforms/vue'
-import type { ControlElement } from '@jsonforms/core'
+import type { FieldDescriptor } from '@@/shared/types/dynamic-form.type'
 import AppInputLabel from '@/components/app/input/Label.vue'
 import CustomSlotRenderer from './CustomSlotRenderer.vue'
+import { useDynamicField } from '../useDynamicField'
 
-const props = defineProps({
-	...rendererProps<ControlElement>()
-})
+const props = defineProps<{
+	descriptor: FieldDescriptor
+	path: string
+}>()
 
-const { control, handleChange } = useJsonFormsControl(props)
-const slots = inject<Record<string, any>>('dynamicZodFormSlots', {})
-
-const leafName = computed(() => {
-	const p = control.value.path || ''
-	const parts = p.split('.')
-	return parts[parts.length - 1] || p
-})
-
-const customSlot = computed(() => {
-	const pathKey = control.value.path
-	return slots[`field:${pathKey}`] || slots[`field:${leafName.value}`] || null
-})
+const { value, setValue, error, label, required, disabled, customSlot, slotProps } =
+	useDynamicField(props)
 
 const onInput = (val: string) => {
-	handleChange(control.value.path, val)
+	setValue(val)
 }
-
-const slotProps = computed(() => ({
-	value: control.value.data,
-	modelValue: control.value.data,
-	'model-value': control.value.data,
-	error: control.value.errors,
-	updateModelValue: onInput,
-	'update-model-value': onInput,
-	handleChange: onInput,
-	'handle-change': onInput
-}))
 </script>
 
 <template>
-	<div
-		v-if="control.visible"
-		:data-invalid="!!control.errors"
-		:class="{ 'has-error': !!control.errors }"
-	>
-		<!-- Custom Slot Fallback (e.g. #field:labels) -->
+	<div :data-invalid="!!error" :class="{ 'has-error': !!error }">
 		<CustomSlotRenderer v-if="customSlot" :render-fn="customSlot" :slot-props="slotProps" />
 
-		<!-- Default BTJ Input Label -->
 		<AppInputLabel
 			v-else
-			:model-value="
-				typeof control.data === 'string' ? control.data : JSON.stringify(control.data || {})
-			"
-			:label="control.label || 'Labels'"
-			:required="control.required"
-			:error="control.errors"
+			:model-value="typeof value === 'string' ? value : JSON.stringify(value || {})"
+			:label="label || 'Labels'"
+			:required="required"
+			:error="error"
+			:disabled="disabled"
 			@update:model-value="onInput"
 		/>
 	</div>

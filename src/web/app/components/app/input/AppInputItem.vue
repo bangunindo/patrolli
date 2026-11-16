@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script setup lang="ts">
 import itemsApi from '@/app/api/items.api'
-import type { IItem, IItemListParams } from '@@/shared/types/item.type'
+import type { IItems, IItemListParams } from '@@/shared/types/item.type'
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import AppInputSelectTable from '@/components/app/input/AppInputSelectTable.vue'
 
@@ -47,7 +47,7 @@ const emits = defineEmits<{
 }>()
 
 const modelValue = defineModel<string[] | string>()
-const items = ref<IItem[]>([])
+const items = ref<IItems[]>([])
 const loading = ref<boolean>(true)
 
 const clusterURLs = computed(() => (props.clusterUrl ? [props.clusterUrl] : undefined))
