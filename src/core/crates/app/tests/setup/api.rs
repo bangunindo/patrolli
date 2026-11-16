@@ -38,12 +38,15 @@ impl Harness {
         setup_logging();
         let (db, pool) = setup_db().await;
 
-        let jwt = Arc::new(Jwt::new(
-            "pipeline-management-test-secret-0123456789",
-            "patrolli-test".to_string(),
-            Duration::from_secs(3600),
-            Duration::from_secs(3600),
-        ));
+        let jwt = Arc::new(
+            Jwt::new(
+                "pipeline-management-test-secret-0123456789",
+                "patrolli-test".to_string(),
+                Duration::from_secs(3600),
+                Duration::from_secs(3600),
+            )
+            .unwrap(),
+        );
         // capture and forwarding are not under test; the sender is dropped so
         // the forwarder task ends right away
         let (_, forward_receiver) = flume::unbounded();
