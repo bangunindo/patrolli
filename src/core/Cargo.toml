@@ -39,7 +39,7 @@ async-snmp = "0.18.1"
 async-stream = "0.3.6"
 async-trait = "0.1.92"
 axum = { version = "0.8.9", features = ["macros", "http2", "ws"] }
-axum-server = { version = "0.8.0", features = ["tls-rustls"] }
+axum-server = { version = "0.9.2", features = ["tls-rustls"] }
 base64 = "0.23.1"
 bytes = { version = "1.12.1", features = ["serde"] }
 chrono = { version = "0.4.45", features = ["serde"] }
@@ -82,11 +82,11 @@ opentelemetry-proto = { version = "0.33.1", default-features = false, features =
     "metrics",
     "trace",
 ] }
-otel-arrow-dfe-config = "0.64.0"
-otel-arrow-dfe-pdata = "0.64.0"
-otel-arrow-dfe-query-engine = "0.64.0"
+otel-arrow-dfe-config = "0.65.0"
+otel-arrow-dfe-pdata = "0.65.0"
+otel-arrow-dfe-query-engine = "0.65.0"
 papaya = "0.2.5"
-parking_lot = { version = "0.12.5" }
+parking_lot = { version = "0.13.0" }
 patrolli = { path = "crates/core" }
 patrolli-cluster = { path = "crates/cluster" }
 patrolli-dns = { path = "crates/dns" }
@@ -110,7 +110,7 @@ reqwest = { version = "0.13.5", default-features = false, features = [
     "json",
     "rustls",
 ] }
-rlimit = "0.10.2"
+rlimit = "0.11.0"
 rustc-hash = "2.1.3"
 rustls = "0.23.46"
 sea-query = { version = "1.0.2", features = ["thread-safe"] }
