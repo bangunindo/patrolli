@@ -279,7 +279,7 @@ impl Jwt {
         oidc: Option<&OidcAuth>,
     ) -> anyhow::Result<Self> {
         let secret = resolve_secret(std::env::var(SECRET_ENV).ok())?;
-        let mut jwt = Self::new(&secret, issuer, access_ttl, refresh_ttl);
+        let mut jwt = Self::new(&secret, issuer, access_ttl, refresh_ttl)?;
 
         if let Some(oidc) = oidc {
             let oidc = Oidc::new(oidc)?;
@@ -298,15 +298,15 @@ impl Jwt {
         issuer: String,
         access_ttl: std::time::Duration,
         refresh_ttl: std::time::Duration,
-    ) -> Self {
-        Self {
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
             issuer,
             access_ttl: Duration::from_std(access_ttl).unwrap_or_else(|_| Duration::minutes(15)),
             refresh_ttl: Duration::from_std(refresh_ttl).unwrap_or_else(|_| Duration::days(7)),
-            encoding: EncodingKey::from_secret(secret.as_bytes()),
-            decoding: DecodingKey::from_secret(secret.as_bytes()),
+            encoding: EncodingKey::from_secret(secret.as_bytes())?,
+            decoding: DecodingKey::from_secret(secret.as_bytes())?,
             oidc: None,
-        }
+        })
     }
 
     pub fn access_ttl_secs(&self) -> i64 {
@@ -646,6 +646,7 @@ mod tests {
             std::time::Duration::from_secs(900),
             std::time::Duration::from_secs(604_800),
         )
+        .unwrap()
     }
 
     #[test]
@@ -686,7 +687,7 @@ mod tests {
         jsonwebtoken::encode(
             &Header::new(Algorithm::HS256),
             &claims,
-            &EncodingKey::from_secret(SECRET.as_bytes()),
+            &EncodingKey::from_secret(SECRET.as_bytes()).unwrap(),
         )
         .unwrap()
     }
@@ -718,15 +719,15 @@ mod oidc_tests {
     /// Generated rather than checked in, so no private key lives in the repo.
     /// Once per test binary: RSA-2048 keygen costs a couple of seconds.
     static KEY: LazyLock<TestKey> = LazyLock::new(|| {
-        let private = rsa::RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 2048).unwrap();
+        let private = rsa::PrivateKey::new(&mut rand::rng(), 2048).unwrap();
         let public = private.to_public_key();
 
         TestKey {
             private_pem: private.to_pkcs8_pem(LineEnding::LF).unwrap().to_string(),
             jwks: format!(
                 r#"{{"keys":[{{"kty":"RSA","use":"sig","alg":"RS256","kid":"{KID}","n":"{}","e":"{}"}}]}}"#,
-                B64.encode(public.n().to_bytes_be()),
-                B64.encode(public.e().to_bytes_be()),
+                B64.encode(public.n_bytes()),
+                B64.encode(public.e_bytes()),
             ),
         }
     });
@@ -912,7 +913,8 @@ mod oidc_tests {
             "cluster-a".to_string(),
             std::time::Duration::from_secs(900),
             std::time::Duration::from_secs(604_800),
-        );
+        )
+        .unwrap();
 
         assert!(matches!(
             jwt.verify(&token(

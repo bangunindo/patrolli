@@ -31,7 +31,7 @@ futures.workspace = true
 ipnet.workspace = true
 memchr = "2.8.3"
 netflow_parser.workspace = true
-nix = { version = "0.31.3", features = ["net", "uio"] }
+nix = { version = "0.32.0", features = ["net", "uio"] }
 nom.workspace = true
 num-bigint = "0.5.1"
 opentelemetry-proto.workspace = true
@@ -63,5 +63,5 @@ prost.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
 # An independent BGP encoder for the BMP decoder's differential test.
-netgauze-bgp-pkt = "0.13"
-netgauze-parse-utils = "0.13"
+netgauze-bgp-pkt = "0.14"
+netgauze-parse-utils = "0.14"
