@@ -16,7 +16,7 @@ Data moves through Patrolli in three stages:
 
     Patrolli gets data in two ways:
     - **Listen:** Patrolli receives data that devices send to it: syslog, NetFlow and sFlow, SNMP traps, and OpenTelemetry.
-    - **Poll:** Patrolli requests data from devices on a schedule: SNMP get, SNMP walk, and Prometheus scrape.
+    - **Poll:** Patrolli requests data from devices on a schedule: SNMP get, SNMP walk, Prometheus scrape, and ICMP ping.
 
 2. **Process**
 
