@@ -40,7 +40,7 @@ nom.workspace = true
 otel-arrow-dfe-pdata.workspace = true
 otel-arrow-dfe-config.workspace = true
 otel-arrow-dfe-query-engine.workspace = true
-otel-arrow-dfe-query-engine-languages = "0.64.0"
+otel-arrow-dfe-query-engine-languages = "0.65.0"
 otel-arrow-contrib-data-engine-expressions = "0.1.1"
 otel-arrow-contrib-data-engine-parser-abstractions = "0.1.1"
 opentelemetry-proto.workspace = true
@@ -49,7 +49,7 @@ parking_lot.workspace = true
 petgraph.workspace = true
 priority-queue = "2.7.0"
 prometheus-scraper.workspace = true
-prometheus-client = "0.25.2"
+prometheus-client = "0.26.0"
 prefix-trie = { version = "0.10.2", features = ["ipnet"] }
 prost.workspace = true
 ipnet.workspace = true

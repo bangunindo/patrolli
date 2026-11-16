@@ -89,7 +89,7 @@ flate2.workspace = true
 ipnet.workspace = true
 hickory-resolver.workspace = true
 # Reads MRT RIB dumps for crates/app/tests/bench_rib.rs; the parser alone, no downloader.
-bgpkit-parser = { version = "0.23", default-features = false, features = ["parser"] }
+bgpkit-parser = { version = "0.24", default-features = false, features = ["parser"] }
 
 [[bin]]
 name = "patrolli"
