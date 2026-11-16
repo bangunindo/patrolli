@@ -110,7 +110,7 @@ describe('Dynamic Form Validation & Format Registry Integration', () => {
 			const TestSchema = z.object({
 				id: z.string().uuid(),
 				email: z.string().email(),
-				ip_addr: z.string().ip(),
+				ip_addr: z.ipv4(),
 				website: z.string().url(),
 				code: z.string().regex(/^[A-Z]{3}$/),
 				bio: z.string().min(10).max(100)

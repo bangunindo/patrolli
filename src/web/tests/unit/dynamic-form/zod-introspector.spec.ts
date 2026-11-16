@@ -12,7 +12,7 @@ describe('zod-introspector', () => {
 			const schema = z.string().min(3).optional().nullable().default('test')
 			const unwrapped = unwrapZodType(schema)
 
-			expect(unwrapped.typeName).toBe('ZodString')
+			expect(unwrapped.typeName).toBe('string')
 			expect(unwrapped.isOptional).toBe(true)
 			expect(unwrapped.isNullable).toBe(true)
 			expect(unwrapped.hasDefault).toBe(true)

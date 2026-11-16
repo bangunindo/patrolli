@@ -5,12 +5,7 @@
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { z } from 'zod'
-import {
-	isNullableJsonSchema,
-	isSensitiveJsonSchema,
-	isSensitiveSchema,
-	isSensitiveSetObject
-} from '@/app/services/forms/sensitive.utils'
+import { isSensitiveSchema, isSensitiveSetObject } from '@/app/services/forms/sensitive.utils'
 import { AutoFormAdapter } from '@/app/services/forms/auto-adapter'
 import { sinkHints } from '@/app/services/forms/ui-hints/sink.hints'
 import { Sensitive as OrvalSensitive } from '@@/shared/generated/patrolliAPI.schemas.type'
@@ -56,51 +51,6 @@ describe('Sensitive secret handling', () => {
 			expect(isSensitiveSetObject(undefined)).toBe(false)
 			expect(isSensitiveSetObject({ not_set: 'handle' })).toBe(false)
 			expect(isSensitiveSetObject({ set: 123 })).toBe(false)
-		})
-
-		it('should detect Sensitive in Draft-07 JSON Schema including nested nullable anyOf / oneOf', () => {
-			const sensitiveJsonSchema = {
-				anyOf: [
-					{ type: 'string' },
-					{
-						type: 'object',
-						properties: {
-							set: { type: 'string' }
-						},
-						required: ['set']
-					}
-				]
-			}
-			expect(isSensitiveJsonSchema(sensitiveJsonSchema)).toBe(true)
-
-			// Orval nested anyOf with null branch
-			const orvalNestedJsonSchema = {
-				anyOf: [
-					{ type: 'null' },
-					{
-						anyOf: [
-							{ type: 'string' },
-							{
-								type: 'object',
-								properties: {
-									set: { type: 'string' }
-								}
-							}
-						]
-					}
-				]
-			}
-			expect(isSensitiveJsonSchema(orvalNestedJsonSchema)).toBe(true)
-			expect(isNullableJsonSchema(orvalNestedJsonSchema)).toBe(true)
-
-			const normalStringJsonSchema = { type: 'string' }
-			expect(isSensitiveJsonSchema(normalStringJsonSchema)).toBe(false)
-			expect(isNullableJsonSchema(normalStringJsonSchema)).toBe(false)
-
-			const otherUnionJsonSchema = {
-				anyOf: [{ type: 'string' }, { type: 'number' }]
-			}
-			expect(isSensitiveJsonSchema(otherUnionJsonSchema)).toBe(false)
 		})
 	})
 

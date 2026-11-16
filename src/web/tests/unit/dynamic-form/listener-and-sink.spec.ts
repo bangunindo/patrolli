@@ -74,6 +74,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 				timeout_ms: 1000,
 				flags: 0,
 				adm_status: 1,
+				labels: {},
 				config: {
 					type: 'listener',
 					config: {
@@ -107,6 +108,7 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 				timeout_ms: 1000,
 				flags: 0,
 				adm_status: 1,
+				labels: {},
 				config: {
 					type: 'listener',
 					config: {
@@ -211,9 +213,16 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 				name: 'Sink Production',
 				adm_status: 1,
 				worker_count: 2,
+				labels: {},
 				batch: {
 					batch_size: 1000,
 					batch_timeout: 1000
+				},
+				retry: {
+					initial_interval: 1000,
+					max_elapsed: 10000,
+					max_interval: 5000,
+					multiplier: 2
 				},
 				channel: {
 					type: 'disk',
@@ -263,6 +272,12 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 					batch_size: 1000,
 					batch_timeout: 1000
 				},
+				retry: {
+					initial_interval: 1000,
+					max_elapsed: 10000,
+					max_interval: 5000,
+					multiplier: 2
+				},
 				channel: {
 					type: 'memory',
 					channel_buffer_size: 1000,
@@ -309,6 +324,12 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 				batch: {
 					batch_size: 1000,
 					batch_timeout: 1000
+				},
+				retry: {
+					initial_interval: 1000,
+					max_elapsed: 10000,
+					max_interval: 5000,
+					multiplier: 2
 				},
 				channel: {
 					type: 'memory',
@@ -383,6 +404,12 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 					batch_size: 1000,
 					batch_timeout: 1000
 				},
+				retry: {
+					initial_interval: 1000,
+					max_elapsed: 10000,
+					max_interval: 5000,
+					multiplier: 2
+				},
 				channel: {
 					type: 'memory',
 					channel_buffer_size: 1000,
@@ -454,6 +481,12 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 				batch: {
 					batch_size: 1000,
 					batch_timeout: 1000
+				},
+				retry: {
+					initial_interval: 1000,
+					max_elapsed: 10000,
+					max_interval: 5000,
+					multiplier: 2
 				},
 				channel: {
 					type: 'memory',
@@ -1023,6 +1056,12 @@ describe('Collector Module Listener & Sink Form Dynamic Form Integration', () =>
 				batch: {
 					batch_size: 1000,
 					batch_timeout: 1000
+				},
+				retry: {
+					initial_interval: 1000,
+					max_elapsed: 10000,
+					max_interval: 5000,
+					multiplier: 2
 				},
 				config: {
 					type: 'open_telemetry',

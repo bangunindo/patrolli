@@ -99,7 +99,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 	describe('Endpoint Protocol Variant Validation via AutoFormAdapter', () => {
 		const baseEndpoint = {
 			name: 'Core Router RouterOS',
-			host_id: '11111111-1111-1111-1111-111111111111',
+			host_id: '11111111-1111-4111-8111-111111111111',
 			adm_status: 1
 		}
 
@@ -363,7 +363,7 @@ describe('Pilot Migration: Endpoint Form Dynamic Schema Tests', () => {
 		it('should populate edit mode data for HTTP endpoint with auth in AutoFormAdapter.toDraft', () => {
 			const existing = {
 				name: 'Existing HTTP',
-				host_id: '11111111-1111-1111-1111-111111111111',
+				host_id: '11111111-1111-4111-8111-111111111111',
 				adm_status: 1,
 				config: {
 					type: 'http',
