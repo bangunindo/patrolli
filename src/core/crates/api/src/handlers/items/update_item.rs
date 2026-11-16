@@ -71,15 +71,15 @@ impl UpdateItemRequest {
                     anyhow::bail!("endpoint_id is not allowed for listener item type");
                 }
             }
-            ItemKind::Snmp | ItemKind::SnmpWalk | ItemKind::PrometheusScrape => {
+            ItemKind::Snmp | ItemKind::SnmpWalk | ItemKind::PrometheusScrape | ItemKind::Icmp => {
                 if self.endpoint_id.is_none() {
                     anyhow::bail!(
-                        "endpoint_id is required for snmp/snmp_walk/prometheus item type"
+                        "endpoint_id is required for snmp/snmp_walk/prometheus/icmp item type"
                     );
                 }
                 if self.listener_id.is_some() {
                     anyhow::bail!(
-                        "listener_id is not allowed for snmp/snmp_walk/prometheus item type"
+                        "listener_id is not allowed for snmp/snmp_walk/prometheus/icmp item type"
                     );
                 }
             }
@@ -226,6 +226,8 @@ pub async fn update_item(
                             endpoint_id
                         )));
             }
+            // An icmp item pings the host of whatever endpoint it names.
+            ItemKind::Icmp => {}
             _ => {}
         }
     }

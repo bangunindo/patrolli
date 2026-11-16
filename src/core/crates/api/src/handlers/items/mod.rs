@@ -136,6 +136,8 @@ pub(crate) async fn validate_endpoint(
                         endpoint_id
                     )));
         }
+        // An icmp item pings the host of whatever endpoint it names.
+        ItemKind::Icmp => {}
         _ => {}
     }
 
@@ -182,12 +184,16 @@ pub(crate) fn validate_item_kind_association(
                 anyhow::bail!("endpoint_id is not allowed for listener item type");
             }
         }
-        ItemKind::Snmp | ItemKind::SnmpWalk | ItemKind::PrometheusScrape => {
+        ItemKind::Snmp | ItemKind::SnmpWalk | ItemKind::PrometheusScrape | ItemKind::Icmp => {
             if endpoint_id.is_none() {
-                anyhow::bail!("endpoint_id is required for snmp/snmp_walk/prometheus item type");
+                anyhow::bail!(
+                    "endpoint_id is required for snmp/snmp_walk/prometheus/icmp item type"
+                );
             }
             if listener_id.is_some() {
-                anyhow::bail!("listener_id is not allowed for snmp/snmp_walk/prometheus item type");
+                anyhow::bail!(
+                    "listener_id is not allowed for snmp/snmp_walk/prometheus/icmp item type"
+                );
             }
         }
         ItemKind::Dummy => {

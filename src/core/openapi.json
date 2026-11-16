@@ -6666,6 +6666,24 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "required": [
+              "config",
+              "type"
+            ],
+            "properties": {
+              "config": {
+                "$ref": "#/components/schemas/IcmpEndpoint"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "icmp"
+                ]
+              }
+            }
           }
         ]
       },
@@ -6676,7 +6694,8 @@
           "snmp_v1",
           "snmp_v2c",
           "snmp_v3",
-          "http"
+          "http",
+          "icmp"
         ]
       },
       "EndpointNode": {
@@ -7780,6 +7799,51 @@
           }
         ]
       },
+      "IcmpEndpoint": {
+        "type": "object",
+        "description": "A host to ping: an IP address or a hostname, without a port.",
+        "required": [
+          "address"
+        ],
+        "properties": {
+          "address": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IcmpItem": {
+        "type": "object",
+        "description": "Ping the endpoint's host `count` times, `interval` apart, and report\nreachability, loss, round-trip time and jitter.\n\nEvery echo request must be answered within the item's `timeout`, which\ntherefore has to cover `interval × (count − 1)` plus 200 ms.",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Echo requests per check, at most 100.",
+            "default": 3,
+            "minimum": 0
+          },
+          "interval": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Time between two echo requests, in milliseconds.",
+            "default": 200,
+            "minimum": 0
+          },
+          "ip_version": {
+            "$ref": "#/components/schemas/IpVersion",
+            "description": "Which address family of a hostname target to ping."
+          },
+          "payload_size": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Bytes of payload after the ICMP header, at most 1400.",
+            "default": 56,
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "InnerTemplate": {
         "type": "object",
         "required": [
@@ -7859,6 +7923,14 @@
         "enum": [
           "log",
           "metrics"
+        ]
+      },
+      "IpVersion": {
+        "type": "string",
+        "enum": [
+          "any",
+          "v4",
+          "v6"
         ]
       },
       "ItemConfig": {
@@ -7952,6 +8024,24 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "required": [
+              "config",
+              "type"
+            ],
+            "properties": {
+              "config": {
+                "$ref": "#/components/schemas/IcmpItem"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "icmp"
+                ]
+              }
+            }
           }
         ]
       },
@@ -7971,7 +8061,8 @@
           "snmp",
           "snmp_walk",
           "dummy",
-          "prometheus_scrape"
+          "prometheus_scrape",
+          "icmp"
         ]
       },
       "ItemOrderBy": {

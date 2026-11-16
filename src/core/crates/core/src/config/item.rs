@@ -42,6 +42,7 @@ pub enum Config {
     SnmpWalk(SnmpWalk),
     Dummy(Dummy),
     PrometheusScrape(PrometheusScrape),
+    Icmp(Icmp),
 }
 
 impl Config {
@@ -52,6 +53,7 @@ impl Config {
             Config::SnmpWalk(config) => config.validate()?,
             Config::Dummy(config) => config.validate()?,
             Config::PrometheusScrape(config) => config.validate()?,
+            Config::Icmp(config) => config.validate()?,
         }
         Ok(())
     }
@@ -63,6 +65,7 @@ impl Config {
             Config::SnmpWalk(config) => Ok(serde_json::to_value(config)?),
             Config::Dummy(config) => Ok(serde_json::to_value(config)?),
             Config::PrometheusScrape(config) => Ok(serde_json::to_value(config)?),
+            Config::Icmp(config) => Ok(serde_json::to_value(config)?),
         }
     }
 }
@@ -151,6 +154,18 @@ impl Item {
             self.timeout = default_timeout();
         }
         self.config.validate()?;
+        if let Config::Icmp(icmp) = &self.config {
+            let needed = icmp.min_timeout();
+            if needed > self.timeout {
+                return Err(anyhow!(
+                    "timeout {}ms is too short for {} pings {}ms apart: needs at least {}ms",
+                    self.timeout.as_millis(),
+                    icmp.count,
+                    icmp.interval.as_millis(),
+                    needed.as_millis(),
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -171,6 +186,7 @@ impl Item {
             Config::SnmpWalk(_) => false,
             Config::Dummy(_) => false,
             Config::PrometheusScrape(_) => false,
+            Config::Icmp(_) => false,
         }
     }
 
@@ -181,6 +197,7 @@ impl Item {
             Config::SnmpWalk(_) => true,
             Config::Dummy(_) => true,
             Config::PrometheusScrape(_) => true,
+            Config::Icmp(_) => true,
         }
     }
 }
@@ -450,6 +467,105 @@ impl PrometheusScrape {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum IpVersion {
+    /// The first address the target resolves to, whatever its family.
+    #[default]
+    Any,
+    V4,
+    V6,
+}
+
+impl IpVersion {
+    pub fn matches(self, ip: &IpAddr) -> bool {
+        match self {
+            IpVersion::Any => true,
+            IpVersion::V4 => ip.is_ipv4(),
+            IpVersion::V6 => ip.is_ipv6(),
+        }
+    }
+}
+
+/// Ping the endpoint's host `count` times, `interval` apart, and report
+/// reachability, loss, round-trip time and jitter.
+///
+/// Every echo request must be answered within the item's `timeout`, which
+/// therefore has to cover `interval × (count − 1)` plus 200 ms.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+#[schema(as = IcmpItem)]
+pub struct Icmp {
+    /// Echo requests per check, at most 100.
+    #[serde(default = "default_icmp_count")]
+    #[schema(default = 3)]
+    pub count: u16,
+    /// Time between two echo requests, in milliseconds.
+    #[serde(
+        default = "default_icmp_interval",
+        with = "crate::common::serde::duration_millis"
+    )]
+    #[schema(value_type = u64, default = 200)]
+    pub interval: Duration,
+    /// Bytes of payload after the ICMP header, at most 1400.
+    #[serde(default = "default_icmp_payload_size")]
+    #[schema(default = 56)]
+    pub payload_size: u16,
+    /// Which address family of a hostname target to ping.
+    #[serde(default)]
+    pub ip_version: IpVersion,
+}
+
+fn default_icmp_count() -> u16 {
+    3
+}
+
+fn default_icmp_interval() -> Duration {
+    Duration::from_millis(200)
+}
+
+fn default_icmp_payload_size() -> u16 {
+    56
+}
+
+impl Icmp {
+    pub const MAX_COUNT: u16 = 100;
+    pub const MAX_PAYLOAD_SIZE: u16 = 1400;
+    /// Kept between the end of the check and the item's timeout, so the check
+    /// returns its result before the worker gives up on it.
+    pub const DEADLINE_MARGIN: Duration = Duration::from_millis(100);
+    /// What the last echo request gets, at the least, to be answered.
+    pub const MIN_REPLY_WAIT: Duration = Duration::from_millis(100);
+    pub const MIN_TIMEOUT_SLACK: Duration = Duration::from_millis(
+        Self::DEADLINE_MARGIN.as_millis() as u64 + Self::MIN_REPLY_WAIT.as_millis() as u64,
+    );
+
+    pub fn validate(&mut self) -> Result<()> {
+        if self.count == 0 {
+            self.count = default_icmp_count();
+        }
+        if self.interval.is_zero() {
+            self.interval = default_icmp_interval();
+        }
+        if self.count > Self::MAX_COUNT {
+            return Err(anyhow!("count must not exceed {}", Self::MAX_COUNT));
+        }
+        if self.payload_size > Self::MAX_PAYLOAD_SIZE {
+            return Err(anyhow!(
+                "payload_size must not exceed {}",
+                Self::MAX_PAYLOAD_SIZE
+            ));
+        }
+        Ok(())
+    }
+
+    /// The shortest item timeout that leaves the last echo request time to be
+    /// answered.
+    pub fn min_timeout(&self) -> Duration {
+        self.interval * u32::from(self.count.saturating_sub(1)) + Self::MIN_TIMEOUT_SLACK
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,5 +610,105 @@ mod tests {
             "max_unknown_oids_per_row": 1,
         }));
         assert!(conf.validate().is_ok());
+    }
+
+    fn icmp_item(timeout_ms: u64, config: serde_json::Value) -> Result<Item> {
+        let mut item: Item = serde_json::from_value(json!({
+            "id": Uuid::now_v7(),
+            "name": "ping",
+            "endpoint_id": Uuid::now_v7(),
+            "host_id": Uuid::now_v7(),
+            "listener_id": null,
+            "timeout": timeout_ms,
+            "type": "icmp",
+            "config": config,
+        }))?;
+        item.validate()?;
+        Ok(item)
+    }
+
+    #[test]
+    fn icmp_defaults_fit_the_default_timeout() {
+        let mut item: Item = serde_json::from_value(json!({
+            "id": Uuid::now_v7(),
+            "name": "ping",
+            "endpoint_id": Uuid::now_v7(),
+            "host_id": Uuid::now_v7(),
+            "listener_id": null,
+            "type": "icmp",
+            "config": {},
+        }))
+        .unwrap();
+        item.validate().unwrap();
+        let Config::Icmp(conf) = &item.config else {
+            unreachable!()
+        };
+        assert_eq!(conf.count, 3);
+        assert_eq!(conf.interval, Duration::from_millis(200));
+        assert_eq!(conf.payload_size, 56);
+        assert_eq!(conf.ip_version, IpVersion::Any);
+        assert_eq!(item.timeout, Duration::from_secs(1));
+        assert!(item.schedulable());
+        assert!(!item.supports_batch_check());
+    }
+
+    #[test]
+    fn icmp_zeroes_take_the_defaults() {
+        let item = icmp_item(1000, json!({"count": 0, "interval": 0})).unwrap();
+        let Config::Icmp(conf) = &item.config else {
+            unreachable!()
+        };
+        assert_eq!(conf.count, 3);
+        assert_eq!(conf.interval, Duration::from_millis(200));
+    }
+
+    #[test]
+    fn icmp_bounds_count_and_payload_size() {
+        assert!(icmp_item(60_000, json!({"count": 100, "interval": 1})).is_ok());
+        assert!(icmp_item(60_000, json!({"count": 101, "interval": 1})).is_err());
+        assert!(icmp_item(1000, json!({"payload_size": 1400})).is_ok());
+        assert!(icmp_item(1000, json!({"payload_size": 1401})).is_err());
+        assert!(
+            icmp_item(1000, json!({"ttl": 64})).is_err(),
+            "unknown field"
+        );
+    }
+
+    #[test]
+    fn icmp_timeout_must_cover_every_ping() {
+        // 4 pings 300ms apart: the last leaves at 900ms, plus 200ms of slack.
+        let config = json!({"count": 4, "interval": 300});
+        assert!(icmp_item(1100, config.clone()).is_ok());
+        let err = icmp_item(1099, config).unwrap_err().to_string();
+        assert!(err.contains("1099ms"), "{err}");
+        assert!(err.contains("4 pings"), "{err}");
+        assert!(err.contains("300ms"), "{err}");
+        // One ping only needs the slack.
+        assert!(icmp_item(200, json!({"count": 1})).is_ok());
+        assert!(icmp_item(199, json!({"count": 1})).is_err());
+    }
+
+    #[test]
+    fn icmp_item_round_trips_through_yaml() {
+        let yaml = "id: 0194f2a0-0000-7000-8000-000000000001\n\
+                    name: ping\n\
+                    host_id: 0194f2a0-0000-7000-8000-000000000002\n\
+                    endpoint_id: 0194f2a0-0000-7000-8000-000000000003\n\
+                    listener_id: null\n\
+                    schedule: \"30\"\n\
+                    timeout: 2000\n\
+                    type: icmp\n\
+                    config:\n  count: 5\n  interval: 250\n  payload_size: 32\n  ip_version: v6\n";
+        let mut item: Item = serde_yaml_ng::from_str(yaml).unwrap();
+        item.validate().unwrap();
+        let back: Item =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&item).unwrap()).unwrap();
+        let Config::Icmp(conf) = back.config else {
+            panic!("an icmp item");
+        };
+        assert_eq!(conf.count, 5);
+        assert_eq!(conf.interval, Duration::from_millis(250));
+        assert_eq!(conf.payload_size, 32);
+        assert_eq!(conf.ip_version, IpVersion::V6);
     }
 }
