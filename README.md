@@ -10,7 +10,7 @@ data, converts it to OpenTelemetry, and keeps it in the
 end to end.
 
 - **Collect:** listen for syslog, NetFlow/sFlow, SNMP traps, and OTLP; poll
-  with SNMP get/walk and Prometheus scrape.
+  with SNMP get/walk, Prometheus scrape, and ICMP ping.
 - **Process:** filter, rename, enrich from lookup tables, or run a transform
   program.
 - **Deliver:** to files, Kafka, ClickHouse, or any OpenTelemetry endpoint.

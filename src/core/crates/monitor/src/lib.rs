@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 mod dummy;
+mod icmp;
 mod prometheus;
 mod snmp;
 
@@ -342,6 +343,10 @@ impl Worker {
                         &self.sender,
                     )
                     .await
+                }
+                item::Config::Icmp(_) => {
+                    let endpoint = endpoint.ok_or_else(|| Error::config("endpoint not found"))?;
+                    icmp::process_icmp(&unit.item, &endpoint, &host, &unit.stats).await
                 }
                 _ => {
                     error!("internal error, incorrect item type");
@@ -1840,6 +1845,165 @@ mod tests {
                     );
                 }
                 assert!(h.records.is_empty());
+            });
+        }
+    }
+
+    mod icmp_check {
+        use super::*;
+        use crate::snmp::TEST_RUNTIME as RUNTIME;
+        use patrolli::config::endpoint::{Config as EndpointConfig, Icmp as IcmpEndpoint, SnmpV2C};
+        use patrolli::config::item::{Icmp, IpVersion};
+        use patrolli::payload::{DataPointsOwned, NumberValue};
+
+        /// Whether this process may open an ICMP socket. Without
+        /// `net.ipv4.ping_group_range` covering our group or `CAP_NET_RAW` it
+        /// may not, and these tests are skipped rather than failed.
+        async fn can_ping() -> bool {
+            match crate::icmp::client("127.0.0.1".parse().unwrap()).await {
+                Ok(_) => true,
+                Err(e) => {
+                    eprintln!("skipping icmp test, no icmp socket: {e}");
+                    false
+                }
+            }
+        }
+
+        fn icmp(count: u16, interval_ms: u64) -> ItemConfig {
+            ItemConfig::Icmp(Icmp {
+                count,
+                interval: StdDuration::from_millis(interval_ms),
+                payload_size: 56,
+                ip_version: IpVersion::Any,
+            })
+        }
+
+        /// One host with `endpoint`, and an icmp item on it.
+        fn ping_item(
+            cache: &cache::Cache,
+            endpoint: EndpointConfig,
+            timeout: StdDuration,
+            config: ItemConfig,
+        ) -> cache::item::Entry {
+            let host_id = add_host(cache);
+            let endpoint_id = Uuid::now_v7();
+            cache.endpoint.write().insert(Endpoint::new(
+                endpoint_id,
+                "target".into(),
+                host_id,
+                endpoint,
+            ));
+            schedule_on(cache, host_id, Some(endpoint_id), timeout, config)
+        }
+
+        fn icmp_endpoint(address: &str) -> EndpointConfig {
+            EndpointConfig::Icmp(IcmpEndpoint {
+                address: address.into(),
+            })
+        }
+
+        /// The value of gauge `name` in the one batch the check emitted.
+        fn gauge(rows: &[MonitorMetric], name: &str) -> Option<NumberValue> {
+            let row = rows.iter().find(|r| r.row.name.as_ref() == name)?;
+            let DataPointsOwned::Gauge(g) = &row.row.data_points else {
+                panic!("{name} is a gauge");
+            };
+            Some(g.data_points[0].value)
+        }
+
+        fn emitted(h: &Harness) -> Vec<MonitorMetric> {
+            match h.records.try_recv() {
+                Ok(MonitorRecord::BatchMetric(rows)) => rows,
+                _ => panic!("one batch of metrics is emitted"),
+            }
+        }
+
+        async fn assert_loopback_answers(endpoint: EndpointConfig) {
+            let mut h = harness();
+            let unit = ping_item(&h.cache, endpoint, StdDuration::from_secs(2), icmp(3, 50));
+            let stats = unit.stats.clone();
+
+            h.worker.process_item(MonitorItem::Single(unit)).await;
+
+            let snap = stats.snapshot();
+            assert_eq!(
+                snap.state,
+                cache::item::ItemState::Ok,
+                "{:?}",
+                snap.last_failure
+            );
+            let rows = emitted(&h);
+            assert_eq!(snap.last_record_count, Some(rows.len() as _));
+            assert!(matches!(
+                gauge(&rows, "icmp.reachable"),
+                Some(NumberValue::Int(1))
+            ));
+            assert!(
+                matches!(gauge(&rows, "icmp.packet_loss"), Some(NumberValue::Float(l)) if l == 0.0)
+            );
+            assert!(gauge(&rows, "icmp.rtt.avg").is_some());
+            assert!(gauge(&rows, "icmp.rtt.jitter").is_some());
+            let ip = "127.0.0.1".parse().unwrap();
+            assert!(rows.iter().all(|r| r.row.source_ip == Some(ip)));
+        }
+
+        #[test]
+        fn a_loopback_ping_goes_ok() {
+            RUNTIME.block_on(async {
+                if !can_ping().await {
+                    return;
+                }
+                assert_loopback_answers(icmp_endpoint("127.0.0.1")).await;
+            });
+        }
+
+        /// An icmp item may name any endpoint, and pings its host.
+        #[test]
+        fn an_snmp_endpoint_is_pinged_at_its_host() {
+            RUNTIME.block_on(async {
+                if !can_ping().await {
+                    return;
+                }
+                assert_loopback_answers(EndpointConfig::SnmpV2C(SnmpV2C {
+                    address: "127.0.0.1:161".parse().unwrap(),
+                    community: "public".into(),
+                    max_bulk_repetitions: 25,
+                    disable_bulk: None,
+                }))
+                .await;
+            });
+        }
+
+        /// A host that never answers both reports itself down and fails the item.
+        #[test]
+        fn an_unanswered_ping_emits_down_and_fails_the_item() {
+            RUNTIME.block_on(async {
+                if !can_ping().await {
+                    return;
+                }
+                let mut h = harness();
+                // TEST-NET-1: routed nowhere, never answers.
+                let unit = ping_item(
+                    &h.cache,
+                    icmp_endpoint("192.0.2.1"),
+                    StdDuration::from_millis(400),
+                    icmp(2, 100),
+                );
+                let stats = unit.stats.clone();
+
+                h.worker.process_item(MonitorItem::Single(unit)).await;
+
+                let rows = emitted(&h);
+                assert!(matches!(gauge(&rows, "icmp.reachable"), Some(NumberValue::Int(0))));
+                assert!(
+                    matches!(gauge(&rows, "icmp.packet_loss"), Some(NumberValue::Float(l)) if l == 1.0)
+                );
+                assert!(gauge(&rows, "icmp.rtt.avg").is_none());
+
+                let snap = stats.snapshot();
+                assert_eq!(snap.state, cache::item::ItemState::Retrying);
+                let failure = snap.last_failure.expect("a failure is recorded");
+                assert_eq!(failure.kind, FailureKind::Unreachable);
             });
         }
     }

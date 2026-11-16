@@ -257,6 +257,10 @@ The node now applies every change that you save in the web interface. To build a
 
     The web interface cannot reach the REST API of the node. Check that `patrolli-1` runs with `docker ps --filter name=patrolli-1`. Then read the errors in the web interface log with `docker logs patrolli-web 2>&1 | grep ERROR`. A line such as `getaddrinfo ENOTFOUND patrolli-1` means that the name in `url` does not resolve from the `patrolli-web` container.
 
+3. **An `icmp` item fails with `failed to open icmp v4 socket`**
+
+    Patrolli pings through an unprivileged ICMP socket, or through a raw socket when that is not allowed. The first needs the sysctl `net.ipv4.ping_group_range` to cover the group of the Patrolli process (it covers IPv6 too). The second needs the capability `CAP_NET_RAW`. The default Docker settings allow both. A node that runs outside a container as a non-root user, a container with `cap_drop: [ALL]`, or a restricted Kubernetes pod may allow neither. Run `sysctl -w net.ipv4.ping_group_range="0 2147483647"` on the host, or give the process `CAP_NET_RAW`. The item tries again at its next check, without a restart.
+
 ## Remove the deployment
 
 To delete the containers, the network, and all data of this guide, run:

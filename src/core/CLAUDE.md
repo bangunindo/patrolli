@@ -101,7 +101,7 @@ channel database. OID validation resolves names against the MIB, so validation c
 listener::WorkerGroup  (syslog, netflow, snmp_trap, otel, dummy,  ─┐
                         internal_logs, internal_metrics)            │  chan (topic "processor")
 monitor::WorkerGroup   (snmp, snmp_walk, prometheus_scrape,         │
-                        dummy — scheduler-driven)                   ┘        │
+                        icmp, dummy — scheduler-driven)             ┘        │
                                                                              ▼
                                             processor::WorkerGroup — one OS thread per core,
                                             each with its own tokio LocalRuntime, sync hot path
@@ -372,6 +372,14 @@ against the newest Kafka, Redpanda and ClickHouse instead of the pinned versions
   the soft `nofile` limit to the hard one at startup and warns when that stays below
   `4 × global.dns.max_inflight + 1024`. The recursor needs `recursion_limit` 64 (its default 24
   fails every `ip6.arpa` name) and outbound UDP+TCP 53; `forward` mode does without.
+- The `icmp` monitor (`crates/monitor/src/icmp.rs`, `surge-ping`) pings through one process-wide
+  ICMP socket per address family, opened on first use (a failed open is retried by the next
+  check) and, like the SNMP transport, tied to the runtime that opened it, so tests share
+  `snmp::TEST_RUNTIME`. Linux `SOCK_DGRAM` ICMP sockets let the kernel own the echo identifier,
+  so replies are matched by `(target, sequence)` alone: every request takes its sequence from
+  one process-wide counter, never a per-item one. Opening a socket needs
+  `net.ipv4.ping_group_range` covering the process group (DGRAM) or `CAP_NET_RAW` (RAW
+  fallback, the only one that reports `icmp.ttl` on Linux); the monitor tests skip without either.
 - SNMPv3 trap receiving (any USM user) and DES/3DES privacy (traps and polling) need
   async-snmp's authoritative engine state and DES salt state, which it refuses to build without.
   Both come from `common::snmp` (one per process): `snmpEngineBoots` is the seconds since

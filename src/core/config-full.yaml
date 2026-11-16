@@ -272,7 +272,7 @@ global:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # monitor — worker pool that picks snmp / snmp_walk / prometheus_scrape /
-# dummy items off the scheduler. Listener items are not scheduled here.
+# icmp / dummy items off the scheduler. Listener items are not scheduled here.
 # ──────────────────────────────────────────────────────────────────────────────
 monitor:
   worker_count: 100      # default 100
@@ -801,13 +801,14 @@ hosts:
     # timezone: Asia/Jakarta
 
 # ──────────────────────────────────────────────────────────────────────────────
-# endpoints — addressable services on a host: SNMP agents and HTTP targets.
+# endpoints — addressable services on a host: SNMP agents, HTTP targets and
+# bare addresses to ping.
 # ──────────────────────────────────────────────────────────────────────────────
 endpoints:
   - id: 019c65dc-3e74-70a2-875c-6035bf8990f6
     name: router-office-snmp-v2c
     host_id: 019bcb00-2fee-70a2-b151-3b1c2de7d947
-    type: snmp_v2c                # snmp_v1 | snmp_v2c | snmp_v3 | http
+    type: snmp_v2c                # snmp_v1 | snmp_v2c | snmp_v3 | http | icmp
     config:
       address: 192.168.1.1:161
       community: public
@@ -856,6 +857,15 @@ endpoints:
   #     # tls:
   #     #   insecure_skip_verify: false
   #     #   ca_cert_path: /etc/patrolli/exporter-ca.crt
+
+  # Bare address, pinged by icmp items. Only needed when the host has no other
+  # endpoint: an icmp item can ping the host of any endpoint type.
+  # - id: 019c65dc-3e74-70a2-875c-6035bf8990fa
+  #   name: router-office-ping
+  #   host_id: 019bcb00-2fee-70a2-b151-3b1c2de7d947
+  #   type: icmp
+  #   config:
+  #     address: 192.168.1.1     # IP address or hostname, no port
 
 # ──────────────────────────────────────────────────────────────────────────────
 # processors — DAG of processors. `inputs` connects to upstream processor IDs
@@ -1166,8 +1176,8 @@ processors:
         | remove attributes["internal.debug"]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# items — what to collect. snmp / snmp_walk / prometheus_scrape / dummy are
-# scheduled by the monitor pool; listener items pull from a listener.
+# items — what to collect. snmp / snmp_walk / prometheus_scrape / icmp / dummy
+# are scheduled by the monitor pool; listener items pull from a listener.
 #
 #   schedule: integer seconds ("60"), cron ("0 */5 * * * *"), or "never".
 #             Default 300s.
@@ -1290,6 +1300,29 @@ items:
   #   config:
   #     stream: false             # hand each metric on as it is scraped, not one batch per scrape
   #     accept_protobuf: false    # ask for the protobuf exposition format
+
+  # ── ICMP ping of an endpoint's host, of any endpoint type (an icmp, snmp or
+  #    http endpoint). Emits the gauges icmp.reachable, icmp.packet_loss,
+  #    icmp.rtt.min/avg/max (s), icmp.rtt.jitter (s, needs 2 replies) and
+  #    icmp.ttl (IPv4 on a raw socket only). No reply at all still emits
+  #    reachable=0 and packet_loss=1, and also fails the item (unreachable).
+  #    `timeout` must be at least interval × (count − 1) + 200 ms.
+  #    Needs ICMP sockets: net.ipv4.ping_group_range (IPv6 too) covering
+  #    the process's group, or CAP_NET_RAW.
+  # - type: icmp
+  #   id: 019c65dc-6f10-70a2-ad19-b7c6eadeff94
+  #   name: router-office-ping
+  #   host_id: 019bcb00-2fee-70a2-b151-3b1c2de7d947
+  #   endpoint_id: 019c65dc-3e74-70a2-875c-6035bf8990fa
+  #   schedule: "30"
+  #   timeout: 1000
+  #   processors:
+  #     - 019c98c8-5512-70a2-906e-7ccd03618702
+  #   config:
+  #     count: 3                  # echo requests per check, 1-100, default 3
+  #     interval: 200             # ms between requests, default 200
+  #     payload_size: 56          # bytes after the ICMP header, max 1400, default 56
+  #     ip_version: any           # any | v4 | v6: family to ping a hostname on
 
   # ── Dummy item: fixed synthetic log row, useful for plumbing tests.
   # - type: dummy

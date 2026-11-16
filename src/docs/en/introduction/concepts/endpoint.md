@@ -6,18 +6,19 @@ description: An endpoint is an address on a host that Patrolli can connect to, t
 
 An endpoint tells Patrolli how to reach a [host](./host). It holds an address and the credentials for that address, such as an SNMP community string or an HTTP token.
 
-Poll [items](./item) use endpoints. An `snmp` item needs an SNMP endpoint to know which device to ask and which credentials to send. A `prometheus_scrape` item needs an HTTP endpoint to know which URL to read.
+Poll [items](./item) use endpoints. An `snmp` item needs an SNMP endpoint to know which device to ask and which credentials to send. A `prometheus_scrape` item needs an HTTP endpoint to know which URL to read. An `icmp` item accepts an endpoint of any type and pings its host.
 
 Each endpoint belongs to one host. A host can have several endpoints, for example one for SNMP and one for an HTTP exporter on the same machine.
 
 ## Endpoint types
 
-Patrolli has four endpoint types.
+Patrolli has five endpoint types.
 
 - `snmp_v1` is an SNMP v1 agent. It needs an `address` and a `community`.
 - `snmp_v2c` is an SNMP v2c agent. It needs an `address` and a `community`. Walks use GETBULK by default, with 25 rows per request. Set `max_bulk_repetitions` to change the number of rows, or set `disable_bulk: true` for a device that handles GETBULK badly.
 - `snmp_v3` is an SNMP v3 agent. Instead of a community, it has a `security_model` with the user name, the authentication protocol, and the privacy protocol. It has the same bulk options as `snmp_v2c`.
 - `http` is an HTTP or HTTPS URL. It can have basic or bearer authentication, TLS settings, and a `connect_timeout`. `prometheus_scrape` items use this type.
+- `icmp` is a bare `address` to ping: an IP address or a hostname, without a port. Use it for a host that has no other endpoint. `icmp` items can also ping the host of an SNMP or HTTP endpoint.
 
 If an SNMP address has no port, Patrolli uses port 161.
 

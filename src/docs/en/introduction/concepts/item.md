@@ -10,11 +10,12 @@ Every item belongs to one host and lists the [processors](./processor) that get 
 
 ## Poll items
 
-A poll item runs a check on a schedule. Patrolli has four poll item types.
+A poll item runs a check on a schedule. Patrolli has five poll item types.
 
 - `snmp` gets the value of one OID, such as `sysUpTime.0`. It needs an SNMP endpoint. When several `snmp` items use the same endpoint, Patrolli asks for all their OIDs in one request.
 - `snmp_walk` walks one or more OIDs, such as the columns of the interface table. It needs an SNMP endpoint. With `table_format: true`, Patrolli joins the columns by index, and each row of the table becomes one record.
 - `prometheus_scrape` reads a Prometheus metrics page. It needs an `http` endpoint.
+- `icmp` pings a host several times per check, 3 by default, 200 ms apart. It works with any endpoint type and pings the host of that endpoint. Each check reports the gauges `icmp.reachable` (1 or 0), `icmp.packet_loss` (0 to 1), `icmp.rtt.min`, `icmp.rtt.avg` and `icmp.rtt.max` (seconds), `icmp.rtt.jitter` (seconds, from two replies), and `icmp.ttl` (IPv4 replies on a raw socket only). When no reply comes back, the check still reports `icmp.reachable` 0 and `icmp.packet_loss` 1, and the item also fails as unreachable. The `timeout` must be at least `interval × (count − 1) + 200` milliseconds.
 - `dummy` produces a fixed log record for testing. It needs no endpoint.
 
 The `schedule` field sets when a check runs. It takes a number of seconds such as `"60"`, a cron expression that starts with a seconds field such as `"0 */5 * * * *"`, or `"never"`. The default is 300 seconds.

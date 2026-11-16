@@ -1441,6 +1441,8 @@ config:
         assert_eq!(ListenerKind::from(&config).to_string(), "bgp");
     }
 
+    // Its peers carry TCP MD5 passwords, which validation accepts on Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn bgp_peering_defaults_and_limits() {
         let conf = bgp("bgp: {}").unwrap();
@@ -1511,6 +1513,8 @@ config:
         assert_eq!(conf.bgp.unwrap().peers[0].asn, Some(65001));
     }
 
+    // Its peers carry TCP MD5 passwords, which validation accepts on Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn bgp_peer_passwords_are_sensitive_fields() {
         let mut config = Config::Bgp(Box::new(

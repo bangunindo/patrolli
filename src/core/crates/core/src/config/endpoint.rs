@@ -32,6 +32,7 @@ pub enum Config {
     SnmpV2C(SnmpV2C),
     SnmpV3(SnmpV3),
     Http(Http),
+    Icmp(Icmp),
 }
 
 impl Config {
@@ -41,6 +42,7 @@ impl Config {
             Self::SnmpV2C(snmp) => snmp.validate()?,
             Self::SnmpV3(snmp) => snmp.validate()?,
             Self::Http(http) => http.validate()?,
+            Self::Icmp(icmp) => icmp.validate()?,
         };
         Ok(())
     }
@@ -51,6 +53,7 @@ impl Config {
             Self::SnmpV2C(snmp) => Ok(serde_json::to_value(snmp)?),
             Self::SnmpV3(snmp) => Ok(serde_json::to_value(snmp)?),
             Self::Http(http) => Ok(serde_json::to_value(http)?),
+            Self::Icmp(icmp) => Ok(serde_json::to_value(icmp)?),
         }
     }
 
@@ -60,7 +63,21 @@ impl Config {
             Self::SnmpV2C(snmp) => host_ip(snmp.address.host()),
             Self::SnmpV3(snmp) => host_ip(snmp.address.host()),
             Self::Http(http) => http.url.host().and_then(host_ip),
+            Self::Icmp(icmp) => host_ip(&icmp.address),
         }
+    }
+
+    /// The endpoint's host, an IP literal (IPv6 without its brackets) or a
+    /// hostname, whatever the endpoint type: what an icmp item pings.
+    pub fn host(&self) -> Option<&str> {
+        let host = match self {
+            Self::SnmpV1(snmp) => snmp.address.host(),
+            Self::SnmpV2C(snmp) => snmp.address.host(),
+            Self::SnmpV3(snmp) => snmp.address.host(),
+            Self::Http(http) => http.url.host()?,
+            Self::Icmp(icmp) => icmp.address.as_str(),
+        };
+        Some(strip_brackets(host))
     }
 }
 
@@ -70,6 +87,7 @@ impl SensitiveFields for Config {
             Self::SnmpV1(_) | Self::SnmpV2C(_) => Vec::new(),
             Self::SnmpV3(snmp) => snmp.security_model.sensitive_mut(),
             Self::Http(http) => http.sensitive_mut(),
+            Self::Icmp(_) => Vec::new(),
         }
     }
 }
@@ -77,11 +95,13 @@ impl SensitiveFields for Config {
 /// `http` hands an IPv6 host back in its URI brackets (`[2001:db8::1]`), which
 /// `IpAddr` does not parse.
 fn host_ip(host: &str) -> Option<IpAddr> {
-    let host = host
-        .strip_prefix('[')
+    strip_brackets(host).parse().ok()
+}
+
+fn strip_brackets(host: &str) -> &str {
+    host.strip_prefix('[')
         .and_then(|h| h.strip_suffix(']'))
-        .unwrap_or(host);
-    host.parse().ok()
+        .unwrap_or(host)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,6 +273,36 @@ impl Http {
     }
 }
 
+/// A host to ping: an IP address or a hostname, without a port.
+// The field is `address`, like the SNMP endpoints', because the database
+// trigger that refreshes listener endpoint IPs reads `config -> 'address'`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+#[schema(as = IcmpEndpoint)]
+pub struct Icmp {
+    pub address: String,
+}
+
+impl Icmp {
+    pub fn validate(&mut self) -> Result<()> {
+        let address = self.address.trim();
+        anyhow::ensure!(!address.is_empty(), "address must not be empty");
+        let host = strip_brackets(address);
+        let valid = host.parse::<IpAddr>().is_ok()
+            || (host == address
+                && host.len() <= 253
+                && host
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_')));
+        anyhow::ensure!(
+            valid,
+            "address must be an IP address or a hostname, without a port: {address}"
+        );
+        self.address = host.to_string();
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +359,101 @@ mod tests {
             unreachable!()
         };
         assert_eq!(kept.address.as_str(), "[2001:db8::1]:1161");
+    }
+
+    fn icmp(address: &str) -> Result<Config> {
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "type": "icmp",
+            "config": { "address": address },
+        }))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    #[test]
+    fn icmp_address_accepts_ips_and_hostnames() {
+        for (given, kept) in [
+            ("192.0.2.1", "192.0.2.1"),
+            (" 192.0.2.1 ", "192.0.2.1"),
+            ("2001:db8::1", "2001:db8::1"),
+            ("[2001:db8::1]", "2001:db8::1"),
+            ("switch-01.example.com", "switch-01.example.com"),
+            ("my_host", "my_host"),
+        ] {
+            let Config::Icmp(conf) = icmp(given).unwrap() else {
+                unreachable!()
+            };
+            assert_eq!(conf.address, kept, "{given}");
+        }
+    }
+
+    #[test]
+    fn icmp_address_rejects_ports_and_junk() {
+        for address in [
+            "",
+            "  ",
+            "192.0.2.1:7",
+            "[2001:db8::1]:7",
+            "example.com:80",
+            "http://example.com",
+            "a b",
+            &"a".repeat(254),
+        ] {
+            assert!(icmp(address).is_err(), "{address:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn icmp_endpoint_has_no_other_fields() {
+        let config = serde_json::from_value::<Config>(serde_json::json!({
+            "type": "icmp",
+            "config": { "address": "192.0.2.1", "port": 7 },
+        }));
+        assert!(config.is_err());
+    }
+
+    #[test]
+    fn host_is_the_bare_host_of_every_endpoint_type() {
+        assert_eq!(snmp_v2c("192.0.2.1:1161").host(), Some("192.0.2.1"));
+        assert_eq!(snmp_v2c("[2001:db8::1]:1161").host(), Some("2001:db8::1"));
+        assert_eq!(
+            snmp_v2c("switch.example.com").host(),
+            Some("switch.example.com")
+        );
+        assert_eq!(
+            http("http://[2001:db8::1]:8080/metrics").host(),
+            Some("2001:db8::1")
+        );
+        assert_eq!(
+            http("https://example.com/metrics").host(),
+            Some("example.com")
+        );
+        assert_eq!(icmp("[2001:db8::1]").unwrap().host(), Some("2001:db8::1"));
+        assert_eq!(icmp("example.com").unwrap().host(), Some("example.com"));
+    }
+
+    #[test]
+    fn icmp_endpoint_yields_its_ip() {
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        assert_eq!(icmp("192.0.2.1").unwrap().ip(), Some(ip));
+        assert_eq!(icmp("example.com").unwrap().ip(), None);
+    }
+
+    #[test]
+    fn icmp_endpoint_round_trips_through_yaml() {
+        let yaml = "id: 0194f2a0-0000-7000-8000-000000000001\n\
+                    name: gw\n\
+                    host_id: 0194f2a0-0000-7000-8000-000000000002\n\
+                    type: icmp\n\
+                    config:\n  address: 192.0.2.1\n";
+        let mut endpoint: Endpoint = serde_yaml_ng::from_str(yaml).unwrap();
+        endpoint.validate().unwrap();
+        let Config::Icmp(conf) = &endpoint.config else {
+            panic!("an icmp endpoint");
+        };
+        assert_eq!(conf.address, "192.0.2.1");
+        let back: Endpoint =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&endpoint).unwrap()).unwrap();
+        assert!(matches!(back.config, Config::Icmp(Icmp { address }) if address == "192.0.2.1"));
     }
 }
