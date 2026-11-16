@@ -70,7 +70,7 @@ function handleDelete(event: MouseEvent) {
 			class="!w-4 !h-4 !bg-white dark:!bg-slate-900 !border-2 !border-[#0284C7] !rounded-full z-10"
 		/>
 
-		<!-- Row 1: Header (Icon, Title, Telemetry Badge, Options) -->
+		<!-- Row 1: Header (Icon, Title, Options) -->
 		<div class="flex items-center justify-between gap-1 w-full">
 			<div class="flex items-center gap-1.5 flex-1 min-w-0">
 				<!-- Server Icon -->
@@ -95,32 +95,6 @@ function handleDelete(event: MouseEvent) {
 				<span class="text-xs font-medium text-black dark:text-white truncate">
 					{{ data.title || 'Source' }}
 				</span>
-			</div>
-
-			<!-- Telemetry Badge (Logs) -->
-			<div
-				class="flex items-center gap-1 px-1.5 py-0.5 rounded-[8px] bg-[#E0F2FE] dark:bg-sky-950/60 shrink-0"
-			>
-				<svg
-					width="12"
-					height="12"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="#0284C7"
-					stroke-width="2.5"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-				>
-					<line x1="8" y1="6" x2="21" y2="6" />
-					<line x1="8" y1="12" x2="21" y2="12" />
-					<line x1="8" y1="18" x2="21" y2="18" />
-					<circle cx="4" cy="6" r="1.5" fill="#0284C7" />
-					<circle cx="4" cy="12" r="1.5" fill="#0284C7" />
-					<circle cx="4" cy="18" r="1.5" fill="#0284C7" />
-				</svg>
-				<span class="text-xs font-normal text-[#0284C7] dark:text-sky-300 leading-none"
-					>Logs</span
-				>
 			</div>
 
 			<!-- 3-Dots Menu -->
