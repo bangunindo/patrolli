@@ -24,7 +24,7 @@ permissions:
 
 env:
   # Matches the build stage of src/core/Dockerfile.
-  RUST_VERSION: "1.99.1"
+  RUST_VERSION: "1.100.0"
   CARGO_TERM_COLOR: always
 
 jobs:

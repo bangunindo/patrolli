@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 
-FROM rust:1.99.1 AS build_stage
+FROM rust:1.100.0 AS build_stage
 RUN apt-get update && apt-get install -y \
     cmake \
     libclang-dev \

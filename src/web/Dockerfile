@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 
-FROM node:24-slim AS build-stage
+FROM node:26-slim AS build-stage
 
 WORKDIR /app
 
@@ -12,7 +12,7 @@ RUN npm ci
 
 RUN npm run build
 
-FROM node:24-alpine AS production-stage
+FROM node:26 AS production-stage
 LABEL org.opencontainers.image.source="https://github.com/bangunindo/patrolli" \
       org.opencontainers.image.licenses="AGPL-3.0-only"
 
