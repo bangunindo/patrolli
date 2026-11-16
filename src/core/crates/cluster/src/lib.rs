@@ -41,6 +41,10 @@ const GRPC_STARTUP_GRACE: time::Duration = time::Duration::from_millis(300);
 /// connections. Its streaming calls end as soon as it is told to stop, so this
 /// only bounds a call stuck in a handler.
 const GRPC_DRAIN_TIMEOUT: time::Duration = time::Duration::from_secs(5);
+/// How often the inter-node gRPC server pings each connection, and how long it
+/// waits for the answer before closing it.
+const GRPC_KEEPALIVE_INTERVAL: time::Duration = time::Duration::from_secs(6);
+const GRPC_KEEPALIVE_TIMEOUT: time::Duration = time::Duration::from_secs(3);
 
 struct Lifecycle {
     sink_reporter: JoinHandle<()>,
@@ -378,7 +382,13 @@ impl Cluster {
         token: CancellationToken,
     ) -> Result<JoinHandle<()>> {
         let addr = cluster_config.inter_node.grpc.address;
-        let mut builder = tonic::transport::Server::builder();
+        // Same timing as the client side (`inter::comm::build_channel`). A peer
+        // that vanishes without closing (power loss, partition) otherwise
+        // leaves its streams open here forever: the handler only waits on the
+        // inbound stream, and nothing else would ever touch the connection.
+        let mut builder = tonic::transport::Server::builder()
+            .http2_keepalive_interval(Some(GRPC_KEEPALIVE_INTERVAL))
+            .http2_keepalive_timeout(Some(GRPC_KEEPALIVE_TIMEOUT));
         if let Some(tls_conf) = &cluster_config.inter_node.grpc.tls {
             builder = builder.tls_config(common::tls::build_tonic_server_tls(tls_conf)?)?;
         }
