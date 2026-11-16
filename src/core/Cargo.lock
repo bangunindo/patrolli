@@ -4796,7 +4796,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "patrolli"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "ahash",
  "anyhow",
@@ -4887,7 +4887,7 @@ dependencies = [
 
 [[package]]
 name = "patrolli-api"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "anyhow",
  "async-recursion",
@@ -4927,7 +4927,7 @@ dependencies = [
 
 [[package]]
 name = "patrolli-app"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4993,7 +4993,7 @@ dependencies = [
 
 [[package]]
 name = "patrolli-cluster"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -5034,7 +5034,7 @@ dependencies = [
 
 [[package]]
 name = "patrolli-dns"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5050,7 +5050,7 @@ dependencies = [
 
 [[package]]
 name = "patrolli-listener"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "ahash",
  "anyhow",
@@ -5102,7 +5102,7 @@ dependencies = [
 
 [[package]]
 name = "patrolli-monitor"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5131,7 +5131,7 @@ dependencies = [
 
 [[package]]
 name = "patrolli-processor"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5159,7 +5159,7 @@ dependencies = [
 
 [[package]]
 name = "patrolli-proto"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "bytes",
  "prost",
@@ -5170,7 +5170,7 @@ dependencies = [
 
 [[package]]
 name = "patrolli-sink"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "anyhow",
  "arc-swap",
