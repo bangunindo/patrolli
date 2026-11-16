@@ -26,7 +26,13 @@ export const listenerHints: Record<string, UiHint> = {
 	config: {
 		order: 7,
 		discriminatorLabel: 'Listener Type',
-		discriminatorPlaceholder: 'Select listener type...'
+		discriminatorPlaceholder: 'Select listener type...',
+		branchDefaults: {
+			dummy: {
+				messages_per_batch: 100,
+				speed: 5
+			}
+		}
 	},
 
 	// Hide double nested config borders on union branches

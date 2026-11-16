@@ -112,6 +112,9 @@ export interface UiHint {
 	/** Order of discriminator variant choices */
 	optionsOrder?: string[]
 
+	/** Default values per union branch key */
+	branchDefaults?: Record<string, any>
+
 	/** Format validator name (e.g. 'uuid', 'email', 'ip', 'ipv4', 'hostname', 'port', 'url', 'cron') */
 	format?: string
 

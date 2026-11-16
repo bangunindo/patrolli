@@ -8,7 +8,7 @@ import { z } from 'zod'
 export function isZodSchema(input: any): boolean {
 	return (
 		input instanceof z.ZodType ||
-		(Boolean(input) && typeof input === 'object' && '_def' in input)
+		(Boolean(input) && typeof input === 'object' && '_zod' in input)
 	)
 }
 

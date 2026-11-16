@@ -3,7 +3,7 @@
  * Do not edit manually.
  * Patrolli API
  * RESTful API for Patrolli monitoring system
- * OpenAPI spec version: 0.1.0-beta.1
+ * OpenAPI spec version: 0.1.0-beta.5
  */
 import * as zod from 'zod'
 
@@ -26,10 +26,10 @@ export const listUsersQueryLimitMin = 0
 export const listUsersQueryOffsetMin = 0
 
 export const ListUsersQueryParams = zod.object({
-	user_ids: zod.array(zod.string().uuid()).optional(),
+	user_ids: zod.array(zod.uuid()).optional(),
 	username: zod.string().optional(),
-	limit: zod.number().int().min(listUsersQueryLimitMin).optional(),
-	offset: zod.number().int().min(listUsersQueryOffsetMin).optional(),
+	limit: zod.int().min(listUsersQueryLimitMin).optional(),
+	offset: zod.int().min(listUsersQueryOffsetMin).optional(),
 	order_by: zod.enum(['username', 'last_updated']).optional(),
 	order_dir: zod.enum(['asc', 'desc']).optional()
 })
@@ -52,7 +52,7 @@ export const GetUserSummaryResponse = ResponseDataUserSummaryResponse
  * @summary Get a user by ID
  */
 export const GetUserParams = zod.object({
-	user_id: zod.string().uuid().describe('User UUID')
+	user_id: zod.uuid().describe('User UUID')
 })
 
 export const GetUserResponse = ResponseDataGetUserResponse
@@ -61,7 +61,7 @@ export const GetUserResponse = ResponseDataGetUserResponse
  * @summary Delete a user
  */
 export const DeleteUserParams = zod.object({
-	user_id: zod.string().uuid().describe('User UUID')
+	user_id: zod.uuid().describe('User UUID')
 })
 
 export const DeleteUserResponse = ResponseDataTupleUnit
@@ -73,7 +73,7 @@ export const DeleteUserResponse = ResponseDataTupleUnit
  * @summary Update a user
  */
 export const UpdateUserParams = zod.object({
-	user_id: zod.string().uuid().describe('User UUID')
+	user_id: zod.uuid().describe('User UUID')
 })
 
 export const UpdateUserBody = UpdateUserRequest
@@ -86,7 +86,7 @@ export const UpdateUserResponse = ResponseDataUpdateUserResponse
  * @summary Unlink a user's SSO account
  */
 export const UnlinkSsoParams = zod.object({
-	user_id: zod.string().uuid().describe('User UUID')
+	user_id: zod.uuid().describe('User UUID')
 })
 
 export const UnlinkSsoResponse = ResponseDataUpdateUserResponse

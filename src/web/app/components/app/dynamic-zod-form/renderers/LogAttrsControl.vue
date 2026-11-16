@@ -5,36 +5,25 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
-import { computed, inject, nextTick, ref, watch, type ComputedRef } from 'vue'
-import { rendererProps, useJsonFormsControl } from '@jsonforms/vue'
-import type { ControlElement } from '@jsonforms/core'
+import { computed, nextTick, ref, watch } from 'vue'
+import type { FieldDescriptor } from '@@/shared/types/dynamic-form.type'
 import AppInputSelect from '@/components/app/input/AppInputSelect.vue'
 import AppInputError from '@/components/app/input/AppInputError.vue'
-import { resolveHintForPath } from '@/app/services/forms/hints-to-uischema'
-import type { UiHint } from '@@/shared/types/dynamic-form.type'
+import CustomSlotRenderer from './CustomSlotRenderer.vue'
 import { formatFieldLabel } from '@/app/services/forms/path-helper'
+import { useDynamicField } from '../useDynamicField'
 
-const props = defineProps({
-	...rendererProps<ControlElement>()
-})
+const props = defineProps<{
+	descriptor: FieldDescriptor
+	path: string
+}>()
 
-const { control, handleChange } = useJsonFormsControl(props)
-const formHintsRef = inject<ComputedRef<Record<string, UiHint>> | undefined>('formHints', undefined)
-const formHints = computed(() => formHintsRef?.value || {})
-
-const leafName = computed(() => {
-	const p = control.value.path || ''
-	const parts = p.split('.')
-	return parts[parts.length - 1] || p
-})
-
-const selfHint = computed(() => {
-	return resolveHintForPath(control.value.path, formHints.value, (control.value as any).rootData)
-})
+const { value, setValue, error, hint, label, required, disabled, leafName, customSlot, slotProps } =
+	useDynamicField(props)
 
 const fieldLabel = computed(() => {
-	if (selfHint.value?.label) return selfHint.value.label
-	if (control.value.label) return control.value.label
+	if (hint.value.label) return hint.value.label
+	if (label.value) return label.value
 	return leafName.value ? formatFieldLabel(leafName.value) : 'Attributes'
 })
 
@@ -156,13 +145,13 @@ const serializeTupleArray = (items: LogAttrItem[]): any[] => {
 	})
 }
 
-const rows = ref<LogAttrItem[]>(parseTupleArray(control.value.data))
+const rows = ref<LogAttrItem[]>(parseTupleArray(value.value))
 const isSyncing = ref(false)
 
 const emitUpdate = () => {
 	isSyncing.value = true
 	const serialized = serializeTupleArray(rows.value)
-	handleChange(control.value.path, serialized)
+	setValue(serialized)
 	nextTick(() => {
 		isSyncing.value = false
 	})
@@ -183,7 +172,7 @@ const onTypeChange = (row: LogAttrItem, newType: any) => {
 }
 
 const addRow = () => {
-	if (!control.value.enabled) return
+	if (disabled.value) return
 	rows.value.push({
 		id: generateId(),
 		key: '',
@@ -194,7 +183,7 @@ const addRow = () => {
 }
 
 const removeRow = (idx: number) => {
-	if (!control.value.enabled) return
+	if (disabled.value) return
 	rows.value.splice(idx, 1)
 	emitUpdate()
 }
@@ -204,7 +193,7 @@ const onFieldChange = () => {
 }
 
 watch(
-	() => control.value.data,
+	() => value.value,
 	(newVal) => {
 		if (isSyncing.value) return
 		rows.value = parseTupleArray(newVal)
@@ -215,129 +204,135 @@ watch(
 
 <template>
 	<div
-		v-if="control.visible"
-		:data-invalid="!!control.errors"
-		:class="{ 'has-error': !!control.errors }"
+		:data-invalid="!!error"
+		:class="{ 'has-error': !!error }"
 		class="w-full flex flex-col gap-2"
 	>
-		<!-- Header / Label -->
-		<div class="flex justify-between items-center mb-1">
-			<label v-if="fieldLabel" class="font-semibold block text-sm">
-				{{ fieldLabel }}
-				<span v-if="control.required" class="text-destructive">*</span>
-			</label>
-			<span v-if="rows.length > 0" class="text-xs text-gray-500">
-				{{ rows.length }} attribute{{ rows.length !== 1 ? 's' : '' }}
-			</span>
-		</div>
+		<CustomSlotRenderer v-if="customSlot" :render-fn="customSlot" :slot-props="slotProps" />
 
-		<!-- Rows -->
-		<div v-for="(row, idx) in rows" :key="row.id" class="flex gap-2 items-center">
-			<!-- Attribute Key -->
-			<div class="flex-1 min-w-0">
-				<UiInput
-					v-model="row.key"
-					placeholder="Key"
-					class="h-8 text-xs"
-					:disabled="!control.enabled"
-					@input="onFieldChange"
-				/>
+		<template v-else>
+			<!-- Header / Label -->
+			<div class="flex justify-between items-center mb-1">
+				<label v-if="fieldLabel" class="font-semibold block text-sm">
+					{{ fieldLabel }}
+					<span v-if="required" class="text-destructive">*</span>
+				</label>
+				<span v-if="rows.length > 0" class="text-xs text-gray-500">
+					{{ rows.length }} attribute{{ rows.length !== 1 ? 's' : '' }}
+				</span>
 			</div>
 
-			<!-- Attribute Type -->
-			<div class="w-28 flex-shrink-0">
-				<AppInputSelect
-					:model-value="row.type"
-					:options="typeOptions"
-					label-key="label"
-					value-key="value"
-					size="sm"
-					:disabled="!control.enabled"
-					@update:model-value="onTypeChange(row, $event)"
-				/>
-			</div>
-
-			<!-- Attribute Value -->
-			<div class="flex-1 min-w-0">
-				<UiInput
-					v-if="row.type === 'String'"
-					v-model="row.value"
-					placeholder="Value"
-					class="h-8 text-xs"
-					:disabled="!control.enabled"
-					@input="onFieldChange"
-				/>
-				<UiInput
-					v-else-if="row.type === 'Int64'"
-					v-model="row.value"
-					type="number"
-					step="1"
-					placeholder="0"
-					class="h-8 text-xs"
-					:disabled="!control.enabled"
-					@input="onFieldChange"
-				/>
-				<UiInput
-					v-else-if="row.type === 'Double'"
-					v-model="row.value"
-					type="number"
-					step="any"
-					placeholder="0.0"
-					class="h-8 text-xs"
-					:disabled="!control.enabled"
-					@input="onFieldChange"
-				/>
-				<div v-else-if="row.type === 'Bool'" class="flex items-center h-full px-2 gap-2">
-					<UiSwitch
-						:model-value="!!row.value"
-						:disabled="!control.enabled"
-						@update:model-value="
-							(val) => {
-								row.value = val
-								onFieldChange()
-							}
-						"
+			<!-- Rows -->
+			<div v-for="(row, idx) in rows" :key="row.id" class="flex gap-2 items-center">
+				<!-- Attribute Key -->
+				<div class="flex-1 min-w-0">
+					<UiInput
+						v-model="row.key"
+						placeholder="Key"
+						class="h-8 text-xs"
+						:disabled="disabled"
+						@input="onFieldChange"
 					/>
-					<span class="text-xs text-muted-foreground font-mono">
-						{{ row.value ? 'true' : 'false' }}
-					</span>
 				</div>
-				<div
-					v-else-if="row.type === 'Null'"
-					class="flex items-center h-full px-2 text-xs text-muted-foreground italic"
+
+				<!-- Attribute Type -->
+				<div class="w-28 flex-shrink-0">
+					<AppInputSelect
+						:model-value="row.type"
+						:options="typeOptions"
+						label-key="label"
+						value-key="value"
+						size="sm"
+						:disabled="disabled"
+						@update:model-value="onTypeChange(row, $event)"
+					/>
+				</div>
+
+				<!-- Attribute Value -->
+				<div class="flex-1 min-w-0">
+					<UiInput
+						v-if="row.type === 'String'"
+						v-model="row.value"
+						placeholder="Value"
+						class="h-8 text-xs"
+						:disabled="disabled"
+						@input="onFieldChange"
+					/>
+					<UiInput
+						v-else-if="row.type === 'Int64'"
+						v-model="row.value"
+						type="number"
+						step="1"
+						placeholder="0"
+						class="h-8 text-xs"
+						:disabled="disabled"
+						@input="onFieldChange"
+					/>
+					<UiInput
+						v-else-if="row.type === 'Double'"
+						v-model="row.value"
+						type="number"
+						step="any"
+						placeholder="0.0"
+						class="h-8 text-xs"
+						:disabled="disabled"
+						@input="onFieldChange"
+					/>
+					<div
+						v-else-if="row.type === 'Bool'"
+						class="flex items-center h-full px-2 gap-2"
+					>
+						<UiSwitch
+							:model-value="!!row.value"
+							:disabled="disabled"
+							@update:model-value="
+								(val) => {
+									row.value = val
+									onFieldChange()
+								}
+							"
+						/>
+						<span class="text-xs text-muted-foreground font-mono">
+							{{ row.value ? 'true' : 'false' }}
+						</span>
+					</div>
+					<div
+						v-else-if="row.type === 'Null'"
+						class="flex items-center h-full px-2 text-xs text-muted-foreground italic"
+					>
+						(null)
+					</div>
+				</div>
+
+				<!-- Action: Remove -->
+				<UiButton
+					type="button"
+					variant="outline"
+					size="icon"
+					class="h-8 w-8 text-destructive hover:text-destructive"
+					:disabled="disabled"
+					@click="removeRow(idx)"
 				>
-					(null)
-				</div>
+					<UiIcon name="minus" class="w-3.5 h-3.5" />
+				</UiButton>
 			</div>
 
-			<!-- Action: Remove -->
-			<UiButton
-				type="button"
-				variant="outline"
-				size="icon"
-				class="h-8 w-8 text-destructive hover:text-destructive"
-				:disabled="!control.enabled"
-				@click="removeRow(idx)"
-			>
-				<UiIcon name="minus" class="w-3.5 h-3.5" />
-			</UiButton>
-		</div>
+			<!-- Action: Add Attribute -->
+			<div>
+				<UiButton
+					v-if="!disabled"
+					type="button"
+					variant="ghost"
+					size="sm"
+					class="h-7 px-2 text-xs text-primary flex items-center gap-1.5"
+					@click="addRow"
+				>
+					<UiIcon name="plus" class="w-3.5 h-3.5" />
+					<span>Add Attribute</span>
+				</UiButton>
+			</div>
 
-		<!-- Action: Add Attribute -->
-		<div>
-			<UiButton
-				v-if="control.enabled"
-				type="button"
-				variant="ghost"
-				size="sm"
-				class="h-7 px-2 text-xs text-primary flex items-center gap-1.5"
-				@click="addRow"
-			>
-				<UiIcon name="plus" class="w-3.5 h-3.5" />
-				<span>Add Attribute</span>
-			</UiButton>
-		</div>
-
-		<AppInputError :messages="control.errors" />
+			<AppInputError :error="error" />
+		</template>
 	</div>
 </template>

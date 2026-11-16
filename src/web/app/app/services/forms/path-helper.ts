@@ -6,6 +6,9 @@
  * Utility functions for nested object path manipulation and form label formatting
  */
 
+import { toRaw } from 'vue'
+import type { UiHint } from '@@/shared/types/dynamic-form.type'
+
 /**
  * Retrieves a value from a nested object based on a path array
  */
@@ -105,4 +108,118 @@ export function formatFieldLabel(name: string): string {
 			return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
 		})
 		.join(' ')
+}
+
+/**
+ * Extracts the active discriminator value (module or type) from root form data.
+ */
+export function getActiveDiscriminatorType(rootData: any): string | undefined {
+	return rootData?.config?.module || rootData?.config?.type || rootData?.module || rootData?.type
+}
+
+const hintLeafIndexCache = new WeakMap<
+	Record<string, UiHint>,
+	Map<string, Array<[string, UiHint]>>
+>()
+
+function getHintLeafIndex(hints: Record<string, UiHint>): Map<string, Array<[string, UiHint]>> {
+	const rawHints = toRaw(hints)
+	let index = hintLeafIndexCache.get(rawHints)
+	if (!index) {
+		index = new Map()
+		for (const [k, h] of Object.entries(rawHints)) {
+			const lastDot = k.lastIndexOf('.')
+			const leaf = lastDot >= 0 ? k.slice(lastDot + 1) : k
+			let bucket = index.get(leaf)
+			if (!bucket) {
+				bucket = []
+				index.set(leaf, bucket)
+			}
+			bucket.push([k, h])
+		}
+		hintLeafIndexCache.set(rawHints, index)
+	}
+	return index
+}
+
+/**
+ * Resolves UiHint for a given path key, checking exact match, alias, suffix match, and branch alias.
+ */
+export function resolveHintForPath(
+	pathKey: string,
+	hints: Record<string, UiHint> = {},
+	rootData?: any
+): UiHint | undefined {
+	if (!pathKey) return undefined
+	const rawHints = toRaw(hints)
+	if (rawHints[pathKey]) return rawHints[pathKey]
+
+	const cleanKey = pathKey.replace(/^\.+|\.+$/g, '')
+	if (rawHints[cleanKey]) return rawHints[cleanKey]
+
+	const parts = cleanKey.split('.')
+	const leaf = parts[parts.length - 1]
+
+	if (parts[0] === 'config') {
+		const activeType = getActiveDiscriminatorType(rootData)
+		if (activeType && parts.length > 2) {
+			const branchAlias = ['config', activeType, ...parts.slice(2)].join('.')
+			if (rawHints[branchAlias]) return rawHints[branchAlias]
+			const branchWithConfig = ['config', activeType, 'config', ...parts.slice(2)].join('.')
+			if (rawHints[branchWithConfig]) return rawHints[branchWithConfig]
+		}
+		if (parts[1] !== 'config') {
+			const configAlias = ['config', 'config', ...parts.slice(1)].join('.')
+			if (rawHints[configAlias]) return rawHints[configAlias]
+		}
+	}
+
+	const candidates = getHintLeafIndex(rawHints).get(leaf)
+	if (!candidates) return undefined
+
+	const activeType = rootData?.config?.type || rootData?.type
+	for (const [k, h] of candidates) {
+		const kParts = k.split('.')
+		if (kParts[0] === 'config' && kParts.length > 2 && activeType) {
+			const branch = kParts[1]
+			if (branch !== 'config' && branch !== activeType) {
+				continue
+			}
+		}
+		return h
+	}
+
+	return undefined
+}
+
+/**
+ * Safely clones a value (unwrapping Vue reactive proxies) using structuredClone with JSON fallback.
+ */
+export function safeClone<T>(val: T): T {
+	if (val === undefined || val === null || typeof val !== 'object') return val
+	const raw = toRaw(val)
+	try {
+		return structuredClone(raw)
+	} catch {
+		return JSON.parse(JSON.stringify(raw))
+	}
+}
+
+/**
+ * Evaluates whether a field is visible given its resolved UiHint and current root form values.
+ */
+export function isFieldVisible(
+	hint: UiHint | undefined,
+	rootData: Record<string, any> = {}
+): boolean {
+	if (hint?.hidden) return false
+	const vw = hint?.visibleWhen
+	if (typeof vw === 'function') {
+		try {
+			return Boolean(vw(rootData))
+		} catch {
+			return true
+		}
+	}
+	return true
 }

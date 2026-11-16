@@ -54,8 +54,10 @@ describe('Multicluster CRUD for Template Items Feature', () => {
 		host_template_id: templateId1,
 		outputs: [],
 		root_item_id: 'item-1',
+		config_embed: null,
 		config: {
 			type: 'snmp',
+			config_embed: null,
 			config: { oid: '1.3.6.1.4.1.2021.4.6.0' }
 		},
 		...partial
@@ -143,6 +145,7 @@ describe('Multicluster CRUD for Template Items Feature', () => {
 				adm_status: 1,
 				flags: 0,
 				timeout_ms: 5000,
+				labels: {},
 				config: {
 					type: 'snmp',
 					config: {
@@ -310,6 +313,7 @@ describe('Multicluster CRUD for Template Items Feature', () => {
 				adm_status: 1,
 				flags: 0,
 				timeout_ms: 5000,
+				labels: {},
 				config: {
 					type: 'snmp',
 					config: { oid: '1.3.6.1.4.1.2021.9.1.7.1' }
