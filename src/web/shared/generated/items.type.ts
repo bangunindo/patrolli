@@ -3,7 +3,7 @@
  * Do not edit manually.
  * Patrolli API
  * RESTful API for Patrolli monitoring system
- * OpenAPI spec version: 0.1.0-beta.1
+ * OpenAPI spec version: 0.1.0-beta.5
  */
 import * as zod from 'zod'
 
@@ -36,21 +36,21 @@ export const listItemsQueryLimitMin = 0
 export const listItemsQueryOffsetMin = 0
 
 export const ListItemsQueryParams = zod.object({
-	item_ids: zod.array(zod.string().uuid()).optional(),
+	item_ids: zod.array(zod.uuid()).optional(),
 	name: zod.string().optional(),
-	limit: zod.number().int().min(listItemsQueryLimitMin).optional(),
-	offset: zod.number().int().min(listItemsQueryOffsetMin).optional(),
+	limit: zod.int().min(listItemsQueryLimitMin).optional(),
+	offset: zod.int().min(listItemsQueryOffsetMin).optional(),
 	order_by: zod.enum(['item_id', 'name', 'last_updated']).optional(),
 	order_dir: zod.enum(['asc', 'desc']).optional(),
-	host_template_ids: zod.array(zod.string().uuid()).optional(),
+	host_template_ids: zod.array(zod.uuid()).optional(),
 	template_ids: zod
-		.array(zod.string().uuid())
+		.array(zod.uuid())
 		.optional()
 		.describe(
 			'Return items that from specified template IDs. This includes items that are defined in the templates, as well as items that are used by hosts that use the templates.'
 		),
 	host_ids: zod
-		.array(zod.string().uuid())
+		.array(zod.uuid())
 		.optional()
 		.describe(
 			'Return items that are used by the specified host IDs. This includes items from templates used by the hosts, as well as items directly defined on the hosts.'
@@ -62,19 +62,18 @@ export const ListItemsQueryParams = zod.object({
 			'If specified, include items based on their exclusivity:\n- `host`: include items that are directly defined on hosts\n- `template`: include items that are defined in templates but not used by any hosts\n- `template_on_host`: include items that are defined in templates and used by hosts\n\nIf multiple exclusivity options are specified, items that match any of the specified exclusivity will be included. If no exclusivity is specified, items of all exclusivity will be included.'
 		),
 	endpoint_ids: zod
-		.array(zod.string().uuid())
+		.array(zod.uuid())
 		.optional()
 		.describe(
 			'If specified, only return items that are associated with the specified endpoint IDs'
 		),
 	listener_ids: zod
-		.array(zod.string().uuid())
+		.array(zod.uuid())
 		.optional()
 		.describe(
 			'If specified, only return items that are associated with the specified listener IDs'
 		),
 	processor_id: zod
-		.string()
 		.uuid()
 		.optional()
 		.describe('If specified, only return items that outputs to the specified processor ID'),
@@ -94,7 +93,7 @@ export const ListItemsResponse = ResponseDataListItemResponse
  * @summary Create an item for a host
  */
 export const CreateHostItemParams = zod.object({
-	host_id: zod.string().uuid().describe('Host UUID')
+	host_id: zod.uuid().describe('Host UUID')
 })
 
 export const CreateHostItemBody = CreateHostItemRequest
@@ -105,7 +104,7 @@ export const CreateHostItemResponse = ResponseDataCreateHostItemResponse
  * @summary Create an item for a template
  */
 export const CreateTemplateItemParams = zod.object({
-	template_id: zod.string().uuid().describe('Template UUID')
+	template_id: zod.uuid().describe('Template UUID')
 })
 
 export const CreateTemplateItemBody = CreateTemplateItemRequest
@@ -116,7 +115,7 @@ export const CreateTemplateItemResponse = ResponseDataCreateTemplateItemResponse
  * @summary Get an item by ID
  */
 export const GetItemParams = zod.object({
-	item_id: zod.string().uuid().describe('Item UUID')
+	item_id: zod.uuid().describe('Item UUID')
 })
 
 export const GetItemResponse = ResponseDataItemSchema
@@ -128,7 +127,7 @@ export const GetItemResponse = ResponseDataItemSchema
  * @summary Update an item by ID
  */
 export const UpdateItemParams = zod.object({
-	item_id: zod.string().uuid().describe('Item UUID')
+	item_id: zod.uuid().describe('Item UUID')
 })
 
 export const UpdateItemBody = UpdateItemRequest
@@ -139,7 +138,7 @@ export const UpdateItemResponse = ResponseDataUpdateItemRequest
  * @summary Delete an item by ID
  */
 export const DeleteItemParams = zod.object({
-	item_id: zod.string().uuid().describe('Item UUID')
+	item_id: zod.uuid().describe('Item UUID')
 })
 
 export const DeleteItemResponse = ResponseDataTupleUnit
@@ -152,7 +151,7 @@ export const DeleteItemResponse = ResponseDataTupleUnit
  * @summary Update an applied template item by ID
  */
 export const UpdateAppliedTemplateItemParams = zod.object({
-	item_id: zod.string().uuid().describe('Item UUID')
+	item_id: zod.uuid().describe('Item UUID')
 })
 
 export const UpdateAppliedTemplateItemBody = UpdateAppliedTemplateItemRequest
@@ -165,7 +164,7 @@ export const UpdateAppliedTemplateItemResponse = ResponseDataUpdateAppliedTempla
  * @summary Update a host item by ID
  */
 export const UpdateHostItemParams = zod.object({
-	item_id: zod.string().uuid().describe('Item UUID')
+	item_id: zod.uuid().describe('Item UUID')
 })
 
 export const UpdateHostItemBody = UpdateHostItemRequest
@@ -183,7 +182,7 @@ export const UpdateHostItemResponse = ResponseDataUpdateHostItemRequest
  * @summary Update a template item by ID
  */
 export const UpdateTemplateItemParams = zod.object({
-	item_id: zod.string().uuid().describe('Item UUID')
+	item_id: zod.uuid().describe('Item UUID')
 })
 
 export const UpdateTemplateItemBody = UpdateTemplateItemRequest

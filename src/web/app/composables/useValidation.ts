@@ -24,7 +24,7 @@ export interface FieldValidationOptions {
 	value?: MaybeRefOrGetter<any>
 	rules?: MaybeRefOrGetter<string[]>
 	error?: MaybeRefOrGetter<string | string[] | null | undefined>
-	schema?: z.ZodTypeAny
+	schema?: z.ZodType
 	path?: string | string[]
 	disabled?: MaybeRefOrGetter<boolean>
 	onClose?: () => void

@@ -3,7 +3,7 @@
  * Do not edit manually.
  * Patrolli API
  * RESTful API for Patrolli monitoring system
- * OpenAPI spec version: 0.1.0-beta.1
+ * OpenAPI spec version: 0.1.0-beta.5
  */
 import * as zod from 'zod'
 
@@ -26,10 +26,10 @@ export const listSinksQueryLimitMin = 0
 export const listSinksQueryOffsetMin = 0
 
 export const ListSinksQueryParams = zod.object({
-	sink_ids: zod.array(zod.string().uuid()).optional(),
+	sink_ids: zod.array(zod.uuid()).optional(),
 	name: zod.string().optional(),
-	limit: zod.number().int().min(listSinksQueryLimitMin).optional(),
-	offset: zod.number().int().min(listSinksQueryOffsetMin).optional(),
+	limit: zod.int().min(listSinksQueryLimitMin).optional(),
+	offset: zod.int().min(listSinksQueryOffsetMin).optional(),
 	order_by: zod.enum(['name', 'last_updated']).optional(),
 	order_dir: zod.enum(['asc', 'desc']).optional(),
 	types: zod.array(SinkKind).optional()
@@ -48,7 +48,7 @@ export const CreateSinkResponse = ResponseDataCreateSinkResponse
  * @summary Get a sink by ID
  */
 export const GetSinkParams = zod.object({
-	sink_id: zod.string().uuid().describe('Sink UUID')
+	sink_id: zod.uuid().describe('Sink UUID')
 })
 
 export const GetSinkResponse = ResponseDataGetSinkResponse
@@ -57,7 +57,7 @@ export const GetSinkResponse = ResponseDataGetSinkResponse
  * @summary Update a sink
  */
 export const UpdateSinkParams = zod.object({
-	sink_id: zod.string().uuid().describe('Sink UUID')
+	sink_id: zod.uuid().describe('Sink UUID')
 })
 
 export const UpdateSinkBody = UpdateSinkRequest
@@ -68,7 +68,7 @@ export const UpdateSinkResponse = ResponseDataUpdateSinkResponse
  * @summary Delete a sink
  */
 export const DeleteSinkParams = zod.object({
-	sink_id: zod.string().uuid().describe('Sink UUID')
+	sink_id: zod.uuid().describe('Sink UUID')
 })
 
 export const DeleteSinkResponse = ResponseDataTupleUnit

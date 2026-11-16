@@ -58,7 +58,8 @@ export type SinkChanelType = z.infer<typeof ZodSinkChanel>['type']
 
 export const SinkChanelType = ZodSinkChanel.options.reduce(
 	(acc, option) => {
-		const typeValue = option._def.right.shape.type._def.values[0] as SinkChanelType
+		const typeEnum = option.def.right.shape.type
+		const typeValue = typeEnum.options[0] as SinkChanelType
 
 		const uppercaseKey = typeValue.toUpperCase() as Uppercase<SinkChanelType>
 
@@ -69,7 +70,7 @@ export const SinkChanelType = ZodSinkChanel.options.reduce(
 	{} as Record<Uppercase<SinkChanelType>, SinkChanelType>
 )
 
-const compressionRaw = ZodSinkChanel.options[1]._def.left.shape.compression
+const compressionRaw = ZodSinkChanel.options[1].def.left.shape.compression
 const compression = compressionRaw.unwrap()
 export type SinkChanelCompression = z.infer<typeof compression>
 

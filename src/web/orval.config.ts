@@ -14,6 +14,7 @@ export default defineConfig({
 			fileExtension: '.type.ts',
 			override: {
 				zod: {
+					version: 4,
 					generateReusableSchemas: true
 				}
 			}
@@ -31,6 +32,7 @@ export default defineConfig({
 			fileExtension: '.type.ts',
 			override: {
 				zod: {
+					version: 4,
 					generateReusableSchemas: true
 				}
 			}
@@ -48,6 +50,7 @@ export default defineConfig({
 			fileExtension: '.type.ts',
 			override: {
 				zod: {
+					version: 4,
 					generateReusableSchemas: true
 				}
 			}
