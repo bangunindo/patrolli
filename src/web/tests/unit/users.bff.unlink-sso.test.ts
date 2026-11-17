@@ -17,6 +17,7 @@ vi.mock('h3', () => ({
 	defineEventHandler: (fn: any) => fn,
 	deleteCookie: vi.fn(),
 	getCookie: vi.fn(() => undefined),
+	getRequestHeader: vi.fn(() => undefined),
 	getRequestHeaders: vi.fn(() => ({})),
 	getQuery: vi.fn(() => ({})),
 	parseCookies: vi.fn(() => ({})),
