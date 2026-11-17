@@ -15,9 +15,13 @@ vi.mock('@@/server/services/cluster.service', () => ({
 
 vi.mock('h3', () => ({
 	defineEventHandler: (fn: any) => fn,
+	deleteCookie: vi.fn(),
+	getCookie: vi.fn(() => undefined),
 	getRequestHeaders: vi.fn(() => ({})),
 	getQuery: vi.fn(() => ({})),
+	parseCookies: vi.fn(() => ({})),
 	readBody: vi.fn(),
+	setCookie: vi.fn(),
 	setResponseStatus: vi.fn()
 }))
 
@@ -148,5 +152,90 @@ describe('BFF POST /api/users/:userId/unlink-sso - Multi-Cluster Unlink SSO', ()
 
 		expect(res.status_code).toBe(404)
 		expect(res.success).toBe(false)
+	})
+
+	it('should refresh and retry when resolveUsernameAcrossClusters receives 401', async () => {
+		vi.mocked(clusterService.getClustersConfig).mockReturnValue([clusterAlpha] as any)
+		vi.mocked(clusterService.resolveClusterTargets).mockReturnValue([clusterAlpha] as any)
+		vi.mocked(h3.readBody).mockResolvedValueOnce({})
+		vi.mocked(h3.getCookie).mockImplementation((_event, name) => {
+			if (name === 'access_token') return 'revoked-jwt'
+			if (name === 'refresh_token') return 'rt-1'
+			if (name === 'auth_provider') return 'local'
+			return undefined
+		})
+
+		let lookupAttempt = 0
+		vi.mocked(clusterService.forwardToCluster).mockImplementation(
+			async (_cluster, targetPath, options) => {
+				if (targetPath === '/api/v1/auth/refresh') {
+					return {
+						status: 200,
+						headers: new Headers(),
+						data: {
+							data: {
+								access_token: 'refreshed-unlink-jwt',
+								refresh_token: 'refreshed-rt'
+							}
+						}
+					}
+				}
+				if (targetPath === '/api/v1/users/repr-user-id' && options.method === 'GET') {
+					lookupAttempt++
+					if (lookupAttempt === 1) {
+						return { status: 401, headers: new Headers(), data: {} }
+					}
+					return {
+						status: 200,
+						headers: new Headers(),
+						data: { data: { username: 'alice' } }
+					}
+				}
+				if (targetPath === '/api/v1/users' && options.method === 'GET') {
+					return {
+						status: 200,
+						headers: new Headers(),
+						data: { data: { users: [{ user_id: 'alpha-1', username: 'alice' }] } }
+					}
+				}
+				if (
+					targetPath === '/api/v1/users/alpha-1/unlink-sso' &&
+					options.method === 'POST'
+				) {
+					return { status: 200, headers: new Headers(), data: { success: true } }
+				}
+				return { status: 404, headers: new Headers(), data: {} }
+			}
+		)
+
+		const event = {
+			node: {
+				req: {
+					headers: {
+						cookie: 'access_token=revoked-jwt; refresh_token=rt-1; auth_provider=local'
+					}
+				},
+				res: {
+					getHeader: vi.fn(),
+					setHeader: vi.fn()
+				}
+			},
+			context: {
+				params: { userId: 'repr-user-id' }
+			}
+		} as any
+
+		const res = await unlinkSsoHandler(event)
+
+		expect(res.status_code).toBe(200)
+		expect(res.success).toBe(true)
+		expect(clusterService.forwardToCluster).toHaveBeenCalledWith(
+			clusterAlpha,
+			'/api/v1/users/alpha-1/unlink-sso',
+			expect.objectContaining({
+				method: 'POST',
+				headers: expect.objectContaining({ authorization: 'Bearer refreshed-unlink-jwt' })
+			})
+		)
 	})
 })

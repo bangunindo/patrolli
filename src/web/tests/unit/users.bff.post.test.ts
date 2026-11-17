@@ -15,6 +15,7 @@ vi.mock('@@/server/services/cluster.service', () => ({
 
 vi.mock('h3', () => ({
 	defineEventHandler: (fn: any) => fn,
+	getCookie: vi.fn(() => undefined),
 	getRequestHeaders: vi.fn(() => ({})),
 	getQuery: vi.fn(() => ({})),
 	readBody: vi.fn(),

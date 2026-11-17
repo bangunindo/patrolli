@@ -106,4 +106,22 @@ describe('Auth Logout - Client & Helper', () => {
 		await expect(axiosInstance.post('/auth/logout')).rejects.toThrow()
 		expect(appShowErrorSpy).not.toHaveBeenCalled()
 	})
+
+	it('authStore.logout should deduplicate concurrent calls (single-flight)', async () => {
+		const authStore = useAuthStore()
+		let resolveLogout!: (val: any) => void
+		const logoutApiSpy = vi.spyOn(authApi, 'logout').mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					resolveLogout = resolve
+				})
+		)
+
+		const p1 = authStore.logout()
+		const p2 = authStore.logout()
+		resolveLogout({ success: true })
+		await Promise.all([p1, p2])
+
+		expect(logoutApiSpy).toHaveBeenCalledTimes(1)
+	})
 })

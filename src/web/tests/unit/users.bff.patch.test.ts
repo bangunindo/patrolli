@@ -15,6 +15,10 @@ vi.mock('@@/server/services/cluster.service', () => ({
 
 vi.mock('h3', () => ({
 	defineEventHandler: (fn: any) => fn,
+	getCookie: vi.fn(() => undefined),
+	setCookie: vi.fn(),
+	deleteCookie: vi.fn(),
+	parseCookies: vi.fn(() => ({})),
 	getRequestHeaders: vi.fn(() => ({})),
 	getQuery: vi.fn(() => ({})),
 	readBody: vi.fn(),
@@ -145,5 +149,72 @@ describe('BFF PATCH /api/users/:userId - Single Cluster User Update', () => {
 		expect(res.status_code).toBe(200)
 		expect(res.success).toBe(true)
 		expect(res.data.clusters).toEqual(['Cluster Alpha', 'Cluster Beta'])
+	})
+
+	it('should transparently refresh token and retry PATCH when upstream returns 401', async () => {
+		vi.mocked(clusterService.getClustersConfig).mockReturnValue([
+			clusterAlpha,
+			clusterBeta
+		] as any)
+		vi.mocked(clusterService.resolveClusterTargets).mockReturnValue([clusterAlpha as any])
+		vi.mocked(h3.readBody).mockResolvedValueOnce({ display_name: 'Alice Refreshed' })
+		const validUnexpiredAt = `hdr.${Buffer.from(
+			JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 300 })
+		).toString('base64url')}.sig`
+		vi.mocked(h3.getCookie).mockImplementation((_event: any, name: string) => {
+			if (name === 'access_token') return validUnexpiredAt
+			if (name === 'refresh_token') return 'valid-refresh-token'
+			if (name === 'auth_provider') return 'local'
+			return undefined
+		})
+
+		vi.mocked(clusterService.forwardToCluster)
+			.mockResolvedValueOnce({
+				status: 401,
+				headers: new Headers(),
+				data: { message: 'Unauthorized' }
+			})
+			.mockResolvedValueOnce({
+				status: 200,
+				headers: new Headers(),
+				data: { access_token: 'new-access-token', refresh_token: 'new-refresh-token' }
+			})
+			.mockResolvedValueOnce({
+				status: 200,
+				headers: new Headers(),
+				data: { data: { user_id: 'alpha-1', display_name: 'Alice Refreshed' } }
+			})
+
+		const event = {
+			context: {
+				params: { userId: 'alpha-1' }
+			}
+		} as any
+
+		const res = await patchUserHandler(event)
+
+		expect(clusterService.forwardToCluster).toHaveBeenCalledTimes(3)
+		expect(clusterService.forwardToCluster).toHaveBeenNthCalledWith(
+			2,
+			clusterAlpha,
+			'/api/v1/auth/refresh',
+			expect.objectContaining({
+				method: 'POST',
+				body: { refresh_token: 'valid-refresh-token' }
+			})
+		)
+		expect(clusterService.forwardToCluster).toHaveBeenNthCalledWith(
+			3,
+			clusterAlpha,
+			'/api/v1/users/alpha-1',
+			expect.objectContaining({
+				method: 'PATCH',
+				headers: expect.objectContaining({
+					authorization: 'Bearer new-access-token'
+				})
+			})
+		)
+		expect(res.status_code).toBe(200)
+		expect(res.success).toBe(true)
 	})
 })
