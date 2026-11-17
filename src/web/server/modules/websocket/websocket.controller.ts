@@ -5,6 +5,7 @@
 import WebSocket from 'ws'
 import { defineWebSocketHandler } from 'h3'
 import { getClustersConfig } from '@@/server/services/cluster.service'
+import { isJwtExpired } from '@@/server/utils/auth-cookies'
 import {
 	createUpstreamWebSocket,
 	resolveWebSocketAuthHeader,
@@ -86,10 +87,18 @@ export function createNitroWebSocketProxy() {
 					queryToken
 				})
 
-				const headers: Record<string, string> = {}
-				if (peer.request?.headers?.cookie) {
-					headers.cookie = peer.request.headers.cookie
+				const token = authHeader?.startsWith('Bearer ')
+					? authHeader.slice(7).trim()
+					: authHeader
+				if (token && isJwtExpired(token)) {
+					console.warn(
+						`[Nitro WS Proxy] Access token expired for WebSocket client ${peer.id}; closing so client can refresh`
+					)
+					peer.close(4401, 'Access token expired')
+					return
 				}
+
+				const headers: Record<string, string> = {}
 				if (authHeader) {
 					headers.authorization = authHeader
 					console.log(
