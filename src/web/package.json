@@ -4,6 +4,10 @@
 	"license": "AGPL-3.0-only",
 	"type": "module",
 	"private": true,
+	"packageManager": "pnpm@12.21.0",
+	"engines": {
+		"pnpm": ">=12"
+	},
 	"save-exact": true,
 	"scripts": {
 		"dev": "nuxt dev --open",
@@ -14,18 +18,18 @@
 		"build-only": "nuxt build",
 		"postinstall": "nuxt prepare",
 		"type-check": "vue-tsc --noEmit",
-		"lint": "npm run lint:js && npm run lint:prettier",
+		"lint": "pnpm lint:js && pnpm lint:prettier",
 		"lint:cache-fix": "eslint --cache --fix",
 		"lint:js": "eslint --ext \".js,.ts,.vue\"  --ignore-pattern=.gitignore,.eslintignore .",
-		"lintfix:js": "npm run lint:js -- --fix",
+		"lintfix:js": "pnpm lint:js --fix",
 		"lint:prettier": "prettier --check .",
 		"lintfix:prettier": "prettier --write --list-different .",
 		"api:schema-dev": "orval --project devschema",
 		"api:schema-patrolli": "orval --project patrolliapischema",
-		"api:schema": "npm run schema:get && orval --project apischema",
+		"api:schema": "pnpm schema:get && orval --project apischema",
 		"schema:get": "curl --insecure http://localhost:8080/api-docs/openapi.json -o openapi.json",
-		"dependencies-refresh": "rm -rf node_modules package-lock.json && npm install",
-		"depr": "npm run dependencies-refresh",
+		"dependencies-refresh": "rm -rf node_modules pnpm-lock.yaml && pnpm install",
+		"depr": "pnpm dependencies-refresh",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:ui": "vitest --ui",
@@ -99,69 +103,13 @@
 		"vitest": "4.1.12",
 		"vue-tsc": "3.3.2"
 	},
-	"overrides": {
-		"minimatch": "11.0.8",
-		"deepmerge": "4.3.1",
-		"glob": "14.0.6",
-		"esbuild": "0.25.0",
-		"form-data": "4.0.6",
-		"js-yaml": "4.3.2",
-		"dompurify": "3.4.18",
-		"postcss": "8.5.27",
-		"devalue": "5.9.4",
-		"source-map-js": "1.2.2",
-		"braces": "3.0.3",
-		"chokidar": "4.0.3",
-		"micromatch": "4.0.8",
-		"fast-glob": "3.3.3",
-		"@simple-git/argv-parser": "2.0.1",
-		"simple-git": "4.0.2",
-		"node-forge": "1.4.3",
-		"postcss-selector-parser": "7.1.6",
-		"@vue/server-renderer": "3.5.43",
-		"markdown-it": "14.3.3",
-		"serialize-javascript": "7.1.4"
-	},
-	"pnpm": {
-		"overrides": {
-			"minimatch": "11.0.8",
-			"deepmerge": "4.3.1",
-			"glob": "14.0.6",
-			"esbuild": "0.25.0",
-			"form-data": "4.0.6",
-			"js-yaml": "4.3.2",
-			"dompurify": "3.4.18",
-			"postcss": "8.5.27",
-			"devalue": "5.9.4",
-			"source-map-js": "1.2.2",
-			"braces": "3.0.3",
-			"chokidar": "4.0.3",
-			"micromatch": "4.0.8",
-			"fast-glob": "3.3.3",
-			"@simple-git/argv-parser": "2.0.1",
-			"simple-git": "4.0.2",
-			"node-forge": "1.4.3",
-			"postcss-selector-parser": "7.1.6",
-			"@vue/server-renderer": "3.5.43"
-		},
-		"onlyBuiltDependencies": [
-			"@parcel/watcher",
-			"esbuild",
-			"vue-demi"
-		]
-	},
 	"lint-staged": {
 		"*/**/*.{js,jsx,ts,tsx,vue}": [
-			"npm run lintfix:js",
-			"npm run lintfix:prettier"
+			"pnpm lintfix:js",
+			"pnpm lintfix:prettier"
 		],
 		"*/**/*.{css,scss,json,md}": [
-			"npm run lintfix:prettier"
+			"pnpm lintfix:prettier"
 		]
-	},
-	"allowScripts": {
-		"vue-demi@0.14.10": true,
-		"@parcel/watcher@2.6.0": true,
-		"esbuild@0.25.0": true
 	}
 }
