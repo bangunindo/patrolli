@@ -145,7 +145,7 @@ global:
 
 With a `backend` block, the node reads only the `global` part from `config.yaml`. It keeps everything else in the database: listeners, hosts, items, processors, and sinks.
 
-- **`PATROLLI_ADMIN_USER` and `PATROLLI_ADMIN_PASSWORD`:** create the first user when the database has no users. After that, the node ignores them.
+- **`PATROLLI_ADMIN_USER` and `PATROLLI_ADMIN_PASSWORD`:** create the first user once for a new database. After initialization, the node ignores them. These variables do not reset or recreate the user. Patrolli prevents deletion or disabling of the last enabled user.
 - **`PATROLLI_JWT_SECRET`:** signs the login tokens. Compose takes the value from `JWT_SECRET` in the `.env` file next to `compose.yaml`, and stops with an error when it is missing. The secret must be at least 32 bytes long.
 - **`PATROLLI_SECRET_KEYS`:** the keys that encrypt the passwords, passphrases, and tokens that sinks, listeners, and endpoints keep in the database. Write each key as `<id>:<secret>`, and separate the keys with commas. An id has 1 to 20 letters, digits, `-`, or `_`. A secret is any text of at least 16 bytes without commas. A long random value is safest, and `openssl rand -base64 32` is one way to make one.
 - **`PATROLLI_SECRET_ACTIVE_KEY`:** the id of the key that encrypts new values. The id must be in `PATROLLI_SECRET_KEYS`. Every node of a cluster needs the same values for both variables. A node without them does not start.

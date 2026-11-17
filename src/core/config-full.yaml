@@ -205,9 +205,9 @@ global:
   #     # In backend mode, with or without this api block, stored secrets are encrypted with
   #     # keys from the environment: PATROLLI_SECRET_KEYS (<id>:<secret>, secret at least
   #     # 16 bytes, comma separated) and PATROLLI_SECRET_ACTIVE_KEY (the id that encrypts), identical on every node
-  #     # The first user is seeded from the environment too, only while the users
-  #     # table is empty: PATROLLI_ADMIN_USER and PATROLLI_ADMIN_PASSWORD, plus
-  #     # PATROLLI_ADMIN_ALLOW_SSO (true | false, default false).
+  #     # A new database creates its first user once from PATROLLI_ADMIN_USER and
+  #     # PATROLLI_ADMIN_PASSWORD, plus PATROLLI_ADMIN_ALLOW_SSO (true | false,
+  #     # default false). These variables do not reset or recreate the user.
   #     auth:
   #       local:
   #         jwt_issuer: patrolli-cluster-1

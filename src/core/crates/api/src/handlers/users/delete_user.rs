@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::error::ApiResultExt;
-use crate::handlers::users::not_found;
+use crate::handlers::users::{not_found, protect_last_enabled_user};
 use crate::response::{ResponseData, ResponseError};
 use crate::state::AppState;
 use axum::extract::{Path, State};
@@ -27,6 +27,7 @@ type DeleteUserResponse = ();
     responses(
         (status = 204, description = "User deleted", body = ResponseData<DeleteUserResponse>),
         (status = 404, description = "User not found", body = ResponseError),
+        (status = 409, description = "Cannot delete the last enabled user", body = ResponseError),
         (status = 500, description = "Internal server error", body = ResponseError)
     ),
     tag = "users",
@@ -44,14 +45,17 @@ pub async fn delete_user(
         .and_where(Expr::col(Users::UserId).eq(user_id))
         .build_postgres(PostgresQueryBuilder);
 
-    let client = state.db_pool.get().await.ctx("get database connection")?;
-    let deleted = client
+    let mut client = state.db_pool.get().await.ctx("get database connection")?;
+    let tx = client.transaction().await.ctx("start transaction")?;
+    protect_last_enabled_user(&tx, user_id).await?;
+    let deleted = tx
         .execute(sql.as_str(), &values.as_params())
         .await
         .ctx("delete user")?;
     if deleted == 0 {
         return Err(not_found(user_id));
     }
+    tx.commit().await.ctx("commit transaction")?;
     info!(target_user_id = %user_id, "user deleted");
 
     Ok(ResponseData::from_status(StatusCode::NO_CONTENT))

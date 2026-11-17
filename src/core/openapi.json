@@ -4208,6 +4208,16 @@
               }
             }
           },
+          "409": {
+            "description": "Cannot delete the last enabled user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -4287,7 +4297,7 @@
             }
           },
           "409": {
-            "description": "Username already exists",
+            "description": "Username already exists or user is the last enabled user",
             "content": {
               "application/json": {
                 "schema": {

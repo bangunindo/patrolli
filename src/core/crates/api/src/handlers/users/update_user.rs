@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::error::ApiResultExt;
-use crate::handlers::users::{USER_COLUMNS, User, hash_password, not_found, row_to_user};
+use crate::handlers::users::{
+    USER_COLUMNS, User, hash_password, not_found, protect_last_enabled_user, row_to_user,
+};
 use crate::response::{ResponseData, ResponseError};
 use crate::state::AppState;
 use axum::extract::{Path, State};
@@ -82,7 +84,7 @@ impl From<User> for UpdateUserResponse {
         (status = 200, description = "User updated", body = ResponseData<UpdateUserResponse>),
         (status = 400, description = "Validation error", body = ResponseError),
         (status = 404, description = "User not found", body = ResponseError),
-        (status = 409, description = "Username already exists", body = ResponseError),
+        (status = 409, description = "Username already exists or user is the last enabled user", body = ResponseError),
         (status = 500, description = "Internal server error", body = ResponseError)
     ),
     tag = "users",
@@ -126,6 +128,10 @@ pub async fn update_user(
 
     let mut client = state.db_pool.get().await.ctx("get database connection")?;
     let tx = client.transaction().await.ctx("start transaction")?;
+
+    if matches!(payload.adm_status, Some(AdmStatus::Disabled)) {
+        protect_last_enabled_user(&tx, user_id).await?;
+    }
 
     // check new username is not taken
     if let Some(username) = &payload.username {

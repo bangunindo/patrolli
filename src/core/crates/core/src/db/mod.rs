@@ -47,41 +47,59 @@ pub async fn run_migrations(pool: &Pool) -> Result<()> {
 
     info!("running database migrations");
     let report = migrations::runner()
+        .set_grouped(true)
         .run_async(&mut *client)
         .await
         .context("failed to run migrations")?;
 
-    // Populate users table with username and password from environment variables if it is empty
-    let user_count: i64 = client
-        .query_one("SELECT COUNT(*) FROM users", &[])
+    let completed: bool = client
+        .query_one(
+            "SELECT (val->>'completed')::boolean FROM configs WHERE key = 'bootstrap'",
+            &[],
+        )
         .await
-        .context("failed to query users table")?
+        .context("failed to read bootstrap state")?
         .get(0);
 
-    if user_count == 0 {
-        let username = std::env::var("PATROLLI_ADMIN_USER");
-        let password = std::env::var("PATROLLI_ADMIN_PASSWORD");
-        if let (Ok(username), Ok(password)) = (username, password) {
-            let allow_sso: bool = match std::env::var("PATROLLI_ADMIN_ALLOW_SSO") {
-                Ok(value) => value
-                    .parse()
-                    .context("PATROLLI_ADMIN_ALLOW_SSO must be true or false")?,
-                Err(_) => false,
-            };
-            let created = client
+    if !completed {
+        let user_count: i64 = client
+            .query_one("SELECT COUNT(*) FROM users", &[])
+            .await
+            .context("failed to query users table")?
+            .get(0);
+        if user_count > 0 {
+            client.execute("UPDATE configs SET val = '{\"completed\": true}', last_updated = now() WHERE key = 'bootstrap'", &[]).await.context("failed to complete bootstrap")?;
+        } else {
+            let username = std::env::var("PATROLLI_ADMIN_USER");
+            let password = std::env::var("PATROLLI_ADMIN_PASSWORD");
+            if let (Ok(username), Ok(password)) = (username, password) {
+                let allow_sso: bool = match std::env::var("PATROLLI_ADMIN_ALLOW_SSO") {
+                    Ok(value) => value
+                        .parse()
+                        .context("PATROLLI_ADMIN_ALLOW_SSO must be true or false")?,
+                    Err(_) => false,
+                };
+                let tx = client
+                    .transaction()
+                    .await
+                    .context("failed to start bootstrap transaction")?;
+                let created = tx
                 .execute(
                     "INSERT INTO users (user_id, username, password_hash, allow_sso) VALUES ($1, $2, crypt($3, gen_salt('bf', 12)), $4) ON CONFLICT (username) DO NOTHING",
                     &[&Uuid::now_v7(), &username, &password, &allow_sso],
                 )
                 .await
                 .context("failed to create default admin user")?;
-            info!(user = %username, allow_sso, created = created == 1, "default admin user seeded");
-        } else {
-            // nobody can log in to the API until a user exists
-            warn!(
-                vars = "PATROLLI_ADMIN_USER,PATROLLI_ADMIN_PASSWORD",
-                "users table is empty and admin env vars are not set, skipping default user creation"
-            );
+                tx.execute("UPDATE configs SET val = '{\"completed\": true}', last_updated = now() WHERE key = 'bootstrap'", &[]).await.context("failed to complete bootstrap")?;
+                tx.commit().await.context("failed to commit bootstrap")?;
+                info!(user = %username, allow_sso, created = created == 1, "default admin user seeded");
+            } else {
+                // nobody can log in to the API until a user exists
+                warn!(
+                    vars = "PATROLLI_ADMIN_USER,PATROLLI_ADMIN_PASSWORD",
+                    "users table is empty and admin env vars are not set, skipping default user creation"
+                );
+            }
         }
     }
 

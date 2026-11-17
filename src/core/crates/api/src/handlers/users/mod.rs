@@ -18,11 +18,13 @@ pub use list_users::{UserOrderBy, list_users};
 pub use unlink_sso::unlink_sso;
 pub use update_user::update_user;
 
+use crate::error::ApiResultExt;
 use crate::response::ResponseError;
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use patrolli::db::schema::{AdmStatus, Users};
-use sea_query::Expr;
+use sea_query::{Expr, ExprTrait, PostgresQueryBuilder, Query};
+use sea_query_postgres::PostgresBinder;
 use utoipa::OpenApi;
 
 /// `OidcSubject` is read only to fill `sso_linked`; the value itself is never returned.
@@ -79,6 +81,30 @@ fn row_to_user(row: &tokio_postgres::Row) -> anyhow::Result<User> {
         sso_linked: row.try_get::<_, Option<String>>("oidc_subject")?.is_some(),
         last_updated: row.try_get("last_updated")?,
     })
+}
+
+async fn protect_last_enabled_user(
+    tx: &tokio_postgres::Transaction<'_>,
+    user_id: uuid::Uuid,
+) -> Result<(), ResponseError> {
+    tx.batch_execute("LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE")
+        .await
+        .ctx("lock users")?;
+    let (sql, values) = Query::select()
+        .column(Users::UserId)
+        .from(Users::Table)
+        .and_where(Expr::col(Users::AdmStatus).eq(AdmStatus::Enabled as i16))
+        .build_postgres(PostgresQueryBuilder);
+    let enabled = tx
+        .query(&sql, &values.as_params())
+        .await
+        .ctx("list enabled users")?;
+    if enabled.len() == 1 && enabled[0].get::<_, uuid::Uuid>(0) == user_id {
+        return Err(ResponseError::from_status(StatusCode::CONFLICT)
+            .with_title("Last enabled user")
+            .with_detail("At least one enabled user must remain."));
+    }
+    Ok(())
 }
 
 fn hash_password(password: String) -> Expr {

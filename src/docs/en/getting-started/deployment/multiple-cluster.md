@@ -257,7 +257,7 @@ global:
 
 These settings matter for a multi-cluster setup:
 
-- **`PATROLLI_ADMIN_USER` and `PATROLLI_ADMIN_PASSWORD`:** create the first user when the database of the cluster has no users. After that, the node ignores them.
+- **`PATROLLI_ADMIN_USER` and `PATROLLI_ADMIN_PASSWORD`:** create the first user once for a new cluster database. After initialization, the nodes ignore them. These variables do not reset or recreate the user. Patrolli prevents deletion or disabling of the last enabled user.
 - **`PATROLLI_ADMIN_ALLOW_SSO`:** lets the first user sign in with single sign-on. The [Authentication](./authentication) guide uses it.
 - **`PATROLLI_JWT_SECRET`:** signs the login tokens of the cluster. Compose takes the value from `JWT_SECRET` in the `.env` file next to `compose.yaml`, and stops with an error when it is missing. The secret must be at least 32 bytes long, and each cluster needs its own.
 - **`PATROLLI_SECRET_KEYS` and `PATROLLI_SECRET_ACTIVE_KEY`:** encrypt the passwords, passphrases, and tokens that the cluster keeps in its database. Compose takes the values from `SECRET_KEYS` and `SECRET_ACTIVE_KEY` in the same `.env` file. Each cluster can have its own key. A long random value is safest, and the commands above make one with `openssl rand -base64 32`.
