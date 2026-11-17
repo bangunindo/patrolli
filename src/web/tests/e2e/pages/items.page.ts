@@ -347,7 +347,12 @@ export class ItemsPage extends BasePage {
 
 		const editOption = this.page.getByRole('menuitem', { name: /edit item/i })
 		await editOption.waitFor({ state: 'visible', timeout: 5_000 })
+		const itemFetchPromise = this.page.waitForResponse(
+			(res) => res.url().includes('/api/items/') && res.status() === 200,
+			{ timeout: 10_000 }
+		)
 		await editOption.click()
+		await itemFetchPromise
 		await this.modalDialog.waitFor({ state: 'visible', timeout: 5_000 })
 	}
 
