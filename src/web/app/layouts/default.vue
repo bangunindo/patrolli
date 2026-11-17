@@ -17,8 +17,7 @@ watch(
 	() => store.activeClusterURL,
 	() => {
 		const authStore = useAuthStore()
-		const authCookie = useCookie<boolean>('is_authenticated')
-		if (authStore.authenticated || authCookie.value) {
+		if (authStore.hasActiveSession()) {
 			keys.value = ''.generateSecureString()
 		}
 	}

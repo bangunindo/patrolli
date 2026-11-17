@@ -6,8 +6,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script setup lang="ts">
 import appHelper from '@/app/helpers/app.helper'
-import cookieHelper from '@/app/helpers/cookie.helper'
-import tokenHelper from '@/app/helpers/token.helper'
 import { userHints } from '@/app/services/forms/ui-hints/user.hints'
 import DynamicZodForm from '@/components/app/dynamic-zod-form/DynamicZodForm.vue'
 import AppInputCluster from '@/components/app/input/AppInputCluster.vue'
@@ -137,19 +135,13 @@ const handleFormSubmit = async (validFormData: any) => {
 
 			// If allow_sso changes for the currently authenticated user, refresh user clusters & global filter
 			if (allowSsoChanged) {
-				const decoded = tokenHelper.decodeToken() as any
-				const idToken = cookieHelper.get('id_token')
-				const decodedId = idToken ? (tokenHelper.decodeToken(idToken) as any) : null
+				const sessionUser = await authStore.ensureCurrentUser()
 
 				const currentIdentifiers = [
-					decoded?.preferred_username,
-					decoded?.username,
-					decoded?.sub,
-					decoded?.email,
-					decodedId?.preferred_username,
-					decodedId?.username,
-					decodedId?.sub,
-					decodedId?.email
+					sessionUser?.preferred_username,
+					sessionUser?.username,
+					sessionUser?.sub,
+					sessionUser?.email
 				]
 					.filter(Boolean)
 					.map((v) => String(v).toLowerCase())
