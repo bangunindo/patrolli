@@ -33,11 +33,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: src/web/package.json
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: src/web/package-lock.json
+          cache: pnpm
+          cache-dependency-path: src/web/pnpm-lock.yaml
       - name: Map kc.localtest.me to localhost
         # The stack binds IPv4 only; don't depend on public DNS for the name.
         run: echo "127.0.0.1 kc.localtest.me" | sudo tee -a /etc/hosts
@@ -59,7 +62,7 @@ jobs:
             echo "PATROLLI_CORE_IMAGE=$image"
             echo "PATROLLI_CORE_PULL_POLICY=$policy"
           } >> "$GITHUB_ENV"
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
       - name: Generate ephemeral certs, secrets and configs
         # Also exports E2E_USERNAME and E2E_PASSWORD for Playwright.
         run: ./dev/setup.sh --force
@@ -78,12 +81,12 @@ jobs:
           done
           echo "::error::backend stack did not become ready"
           exit 1
-      - run: npx playwright install chromium --with-deps
+      - run: pnpm exec playwright install chromium --with-deps
       - name: Run e2e
         timeout-minutes: 20
         env:
           CONFIG_FILE: dev/.generated/config-fe.yaml
-        run: npm run test:e2e
+        run: pnpm test:e2e
       - name: Backend logs
         if: failure()
         run: docker compose -f dev/docker-compose.yml logs --no-color
