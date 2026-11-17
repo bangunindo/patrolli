@@ -7,24 +7,91 @@ import {
 	appendResponseHeader,
 	getQuery,
 	getRequestHeaders,
-	getRequestHost,
-	getRequestProtocol,
 	readBody,
 	setResponseHeader,
 	setResponseHeaders,
 	setResponseStatus
 } from 'h3'
-import { clearAuthCookies, setAuthCookies } from '@@/server/utils/auth-cookies'
-import { renderOidcErrorHtml, renderOidcSuccessHtml } from '@@/server/utils/auth-html'
 import {
-	getClustersConfig,
-	getKeycloakConfig,
-	resolveClusterTargets
-} from '@@/server/services/cluster.service'
-import { exchangeKeycloakCode, refreshKeycloakToken } from '@@/server/modules/keycloak/keycloak.api'
+	buildAuthSessionPayload,
+	clearAuthCookies,
+	extractTokenPayload,
+	setAuthCookies
+} from '@@/server/utils/auth-cookies'
+import { renderOidcErrorHtml, renderOidcSuccessHtml } from '@@/server/utils/auth-html'
+import { getClustersConfig, resolveClusterTargets } from '@@/server/services/cluster.service'
+import {
+	executeClusterRequestsWithAuthRetry,
+	performTokenRefresh,
+	sanitizeUnauthenticatedHeaders
+} from '@@/server/services/auth-refresh.service'
+import { exchangeKeycloakCode } from '@@/server/modules/keycloak/keycloak.api'
+import {
+	formatKeycloakConnectionError,
+	getValidatedKeycloakConfig,
+	resolveDynamicOidcRedirectUri
+} from '@@/server/modules/keycloak/keycloak.utils'
 import { verifyUserClusterAccess } from '@@/server/services/cluster-access.service'
+import type { AuthProvider } from '@@/shared/types/auth.type'
+import type { ICluster } from '@@/shared/types/cluster.type'
 import { forwardAuthToCluster } from './auth.api'
-import { extractAuthRefreshParams, isLogoutPath } from './auth.utils'
+import { extractAuthRefreshParams, isLoginPath, isLogoutPath } from './auth.utils'
+
+async function forwardAuthToTargets(
+	event: H3Event,
+	targetClusters: ICluster[],
+	fullAuthPath: string,
+	options: {
+		isAuthenticatedAction: boolean
+		method: string
+		reqHeaders: Record<string, any>
+		clusterHeader: string | null
+		query: Record<string, any>
+		body: any
+	}
+) {
+	const executeItem = async (cluster: ICluster, headers: Record<string, any>) => {
+		const res = await forwardAuthToCluster(cluster, fullAuthPath, {
+			method: options.method,
+			headers,
+			query: options.query,
+			body: options.body
+		})
+		return { cluster, data: res.data, status: res.status, headers: res.headers }
+	}
+
+	if (options.isAuthenticatedAction) {
+		const { results } = await executeClusterRequestsWithAuthRetry(event, {
+			items: targetClusters,
+			reqHeaders: options.reqHeaders,
+			clusterHeader: options.clusterHeader,
+			execute: executeItem
+		})
+		return results
+	}
+
+	return Promise.all(targetClusters.map((cluster) => executeItem(cluster, options.reqHeaders)))
+}
+
+export async function establishAuthSession(
+	event: H3Event,
+	rawData: any,
+	provider: AuthProvider,
+	activeClusterUrl?: string | null
+) {
+	const tokens = extractTokenPayload(rawData)
+	setAuthCookies(event, tokens, provider, activeClusterUrl)
+	if (tokens.access_token) {
+		await verifyUserClusterAccess(event, tokens.access_token)
+	}
+	return buildAuthSessionPayload(tokens)
+}
+
+function respondOidcHtml(event: H3Event, status: number, html: string): string {
+	setResponseStatus(event, status)
+	setResponseHeader(event, 'content-type', 'text/html; charset=utf-8')
+	return html
+}
 
 /**
  * Handles /auth/[...path] multi-cluster authentication route (login, logout, etc.)
@@ -37,7 +104,9 @@ export async function handleAuthProxy(event: H3Event) {
 	}
 	const cleanPathParam = pathParam.replace(/^(?:\/?v1\/)?(?:\/?auth\/)?/, '')
 	const fullAuthPath = `/api/v1/auth/${cleanPathParam}`
+	const isLogin = isLoginPath(pathParam, fullAuthPath)
 	const isLogout = isLogoutPath(pathParam, fullAuthPath)
+	const isAuthenticatedAction = !isLogin && !isLogout
 
 	const allClusters = getClustersConfig(event)
 	const reqHeaders = getRequestHeaders(event)
@@ -80,76 +149,38 @@ export async function handleAuthProxy(event: H3Event) {
 		}
 	}
 
-	// 1. Single target cluster
-	const singleTarget = targetClusters[0]
-	if (targetClusters.length === 1 && singleTarget) {
-		const res = await forwardAuthToCluster(singleTarget, fullAuthPath, {
-			method,
-			headers: reqHeaders,
-			query,
-			body
-		})
+	const effectiveHeaders = isLogin ? sanitizeUnauthenticatedHeaders(reqHeaders) || {} : reqHeaders
 
+	const responses = await forwardAuthToTargets(event, targetClusters, fullAuthPath, {
+		isAuthenticatedAction,
+		method,
+		reqHeaders: effectiveHeaders,
+		clusterHeader,
+		query,
+		body
+	})
+
+	if (targetClusters.length === 1 && responses[0]?.headers) {
 		const responseHeaders: Record<string, string> = {}
-		res.headers.forEach((value, key) => {
+		responses[0].headers.forEach((value, key) => {
 			const lowerKey = key.toLowerCase()
-			if (lowerKey === 'set-cookie') {
-				appendResponseHeader(event, 'set-cookie', value)
-			} else if (lowerKey !== 'content-encoding' && lowerKey !== 'content-length') {
+			if (
+				lowerKey !== 'set-cookie' &&
+				lowerKey !== 'content-encoding' &&
+				lowerKey !== 'content-length'
+			) {
 				responseHeaders[key] = value
 			}
 		})
 		setResponseHeaders(event, responseHeaders)
-
-		if (isLogout) {
-			clearAuthCookies(event)
-			setResponseStatus(event, 200)
-			return {
-				status_code: 200,
-				success: true,
-				data:
-					res.data && res.status >= 200 && res.status < 300
-						? res.data
-						: { message: 'Logout successful' }
-			}
-		} else if (res.status === 200 && res.data) {
-			setAuthCookies(event, res.data, 'local')
-			const token =
-				res.data?.access_token ||
-				res.data?.data?.access_token ||
-				res.data?.token ||
-				res.data?.data?.token
-			if (token) {
-				await verifyUserClusterAccess(event, token)
-			}
-		}
-
-		setResponseStatus(event, res.status)
-		return res.data
 	}
 
-	// 2. Multi-cluster fan-out (login / logout to all clusters)
-	const responses = await Promise.all(
-		targetClusters.map(async (cluster) => {
-			const res = await forwardAuthToCluster(cluster, fullAuthPath, {
-				method,
-				headers: reqHeaders,
-				query,
-				body
-			})
-			return { cluster, data: res.data, status: res.status, headers: res.headers }
-		})
-	)
-
-	// Collect and set all cookies from all cluster responses
 	for (const r of responses) {
-		if (r.headers) {
-			r.headers.forEach((value, key) => {
-				if (key.toLowerCase() === 'set-cookie') {
-					appendResponseHeader(event, 'set-cookie', value)
-				}
-			})
-		}
+		r.headers?.forEach((value, key) => {
+			if (key.toLowerCase() === 'set-cookie') {
+				appendResponseHeader(event, 'set-cookie', value)
+			}
+		})
 	}
 
 	if (isLogout) {
@@ -166,18 +197,21 @@ export async function handleAuthProxy(event: H3Event) {
 	const successfulResponse = responses.find((r) => r.status >= 200 && r.status < 300)
 
 	if (successfulResponse) {
-		if (successfulResponse.data) {
-			setAuthCookies(event, successfulResponse.data, 'local')
-			const token =
-				successfulResponse.data?.access_token ||
-				successfulResponse.data?.data?.access_token ||
-				successfulResponse.data?.token ||
-				successfulResponse.data?.data?.token
-			if (token) {
-				await verifyUserClusterAccess(event, token)
+		setResponseStatus(event, successfulResponse.status)
+		const tokens = extractTokenPayload(successfulResponse.data)
+		if (tokens.access_token || tokens.refresh_token) {
+			const sessionData = await establishAuthSession(
+				event,
+				tokens,
+				'local',
+				clusterHeader || successfulResponse.cluster.clientPath
+			)
+			return {
+				status_code: successfulResponse.status,
+				success: true,
+				data: sessionData
 			}
 		}
-		setResponseStatus(event, successfulResponse.status)
 		return successfulResponse.data
 	}
 
@@ -191,7 +225,7 @@ export async function handleAuthProxy(event: H3Event) {
 /**
  * Handles /api/auth/refresh endpoint for local & keycloak token refreshing
  */
-export async function handleAuthRefresh(event: H3Event) {
+export async function handleAuthRefresh(event: H3Event, forcedProvider?: AuthProvider) {
 	let body: any = {}
 	try {
 		body = (await readBody(event)) || {}
@@ -206,6 +240,7 @@ export async function handleAuthRefresh(event: H3Event) {
 		const errorPayload = {
 			status_code: 401,
 			success: false,
+			is_session_invalid: true,
 			error: {
 				title: 'Unauthorized',
 				detail: 'Refresh token not found in cookies or request'
@@ -216,128 +251,23 @@ export async function handleAuthRefresh(event: H3Event) {
 		return errorPayload
 	}
 
-	// 1. Keycloak Refresh Flow
-	if (authProvider === 'keycloak') {
-		const kcConfig = getKeycloakConfig()
-		if (!kcConfig || !kcConfig.host || !kcConfig.client_id) {
-			const errorPayload = {
-				status_code: 500,
-				success: false,
-				error: {
-					title: 'Configuration Error',
-					detail: 'Keycloak configuration is missing or incomplete in config-fe.yaml'
-				}
-			}
-			setResponseStatus(event, 500)
-			return errorPayload
-		}
+	const result = await performTokenRefresh(event, {
+		refreshToken: String(refreshToken),
+		authProvider: forcedProvider ?? authProvider,
+		clusterHeader,
+		reqHeaders,
+		query
+	})
 
-		try {
-			const response = await refreshKeycloakToken(kcConfig, String(refreshToken))
-			const data = response.data
-
-			if (response.status >= 400) {
-				const errorPayload = {
-					status_code: response.status,
-					success: false,
-					error: {
-						title: 'Keycloak Refresh Error',
-						detail:
-							data?.error_description ||
-							data?.error ||
-							'Failed to refresh token with Keycloak'
-					},
-					data
-				}
-				setResponseStatus(event, response.status)
-				return errorPayload
-			}
-
-			setAuthCookies(event, data, 'keycloak')
-
-			return {
-				status_code: 200,
-				success: true,
-				data
-			}
-		} catch (error: any) {
-			const causeDetail = error?.cause?.message || error?.cause?.code || error?.cause
-			const errMessage = error?.message || 'Failed to connect to Keycloak token endpoint'
-			const fullDetail = causeDetail ? `${errMessage} (${causeDetail})` : errMessage
-
-			const errorPayload = {
-				status_code: 502,
-				success: false,
-				error: {
-					title: 'Bad Gateway',
-					detail: fullDetail
-				}
-			}
-			setResponseStatus(event, 502)
-			return errorPayload
-		}
+	setResponseStatus(event, result.status)
+	if (!result.ok) {
+		return result.errorPayload
 	}
 
-	// 2. Local Cluster Refresh Flow
-	const allClusters = getClustersConfig(event)
-	const targetClusters = resolveClusterTargets(clusterHeader, allClusters)
-
-	if (targetClusters.length === 0) {
-		const errorPayload = {
-			status_code: 502,
-			success: false,
-			error: {
-				title: 'Bad Gateway',
-				detail: 'No clusters configured for refresh token exchange'
-			}
-		}
-		setResponseStatus(event, 502)
-		return errorPayload
-	}
-
-	const refreshPayload = {
-		refresh_token: refreshToken
-	}
-
-	const responses = await Promise.all(
-		targetClusters.map(async (cluster) => {
-			const res = await forwardAuthToCluster(cluster, '/api/v1/auth/refresh', {
-				method: 'POST',
-				headers: reqHeaders,
-				query,
-				body: refreshPayload
-			})
-			return { cluster, data: res.data, status: res.status, headers: res.headers }
-		})
-	)
-
-	for (const r of responses) {
-		if (r.headers) {
-			r.headers.forEach((value, key) => {
-				if (key.toLowerCase() === 'set-cookie') {
-					appendResponseHeader(event, 'set-cookie', value)
-				}
-			})
-		}
-	}
-
-	const successfulResponse = responses.find((r) => r.status >= 200 && r.status < 300)
-
-	if (successfulResponse) {
-		if (successfulResponse.data) {
-			setAuthCookies(event, successfulResponse.data, 'local')
-		}
-		setResponseStatus(event, successfulResponse.status)
-		return successfulResponse.data
-	}
-
-	const firstError = responses[0]
-	if (firstError) {
-		if (firstError.status === 401 || firstError.status === 403) {
-			clearAuthCookies(event)
-		}
-		setResponseStatus(event, firstError.status)
-		return firstError.data
+	return {
+		status_code: result.status,
+		success: true,
+		data: buildAuthSessionPayload(result.tokens)
 	}
 }
 
@@ -351,24 +281,15 @@ export async function handleOidcCallback(event: H3Event) {
 
 	if (error || !code) {
 		const errMessage = error || 'Authorization code not found in callback query.'
-		setResponseStatus(event, 400)
-		setResponseHeader(event, 'content-type', 'text/html; charset=utf-8')
-		return renderOidcErrorHtml(errMessage)
+		return respondOidcHtml(event, 400, renderOidcErrorHtml(errMessage))
 	}
 
-	const kcConfig = getKeycloakConfig()
-	if (!kcConfig || !kcConfig.host || !kcConfig.client_id) {
-		const errMessage = 'Keycloak configuration is missing or incomplete in config-fe.yaml'
-		setResponseStatus(event, 500)
-		setResponseHeader(event, 'content-type', 'text/html; charset=utf-8')
-		return renderOidcErrorHtml(errMessage)
+	const { config: kcConfig, errorPayload } = getValidatedKeycloakConfig()
+	if (!kcConfig) {
+		return respondOidcHtml(event, 500, renderOidcErrorHtml(errorPayload.error.detail))
 	}
 
-	const host = getRequestHost(event, { xForwardedHost: true })
-	const proto = getRequestProtocol(event, { xForwardedProto: true })
-	const dynamicRedirectUri = host
-		? `${proto}://${host}/auth/oidc/callback`
-		: kcConfig.redirect_uri
+	const dynamicRedirectUri = resolveDynamicOidcRedirectUri(event, kcConfig.redirect_uri)
 
 	try {
 		const response = await exchangeKeycloakCode(kcConfig, code, dynamicRedirectUri)
@@ -379,21 +300,13 @@ export async function handleOidcCallback(event: H3Event) {
 				data?.error_description ||
 				data?.error ||
 				`Token exchange failed with status ${response.status}`
-			setResponseStatus(event, response.status >= 400 ? response.status : 400)
-			setResponseHeader(event, 'content-type', 'text/html; charset=utf-8')
-			return renderOidcErrorHtml(errMessage)
+			const errStatus = response.status >= 400 ? response.status : 400
+			return respondOidcHtml(event, errStatus, renderOidcErrorHtml(errMessage))
 		}
 
-		setAuthCookies(event, data, 'keycloak')
-		setResponseHeader(event, 'content-type', 'text/html; charset=utf-8')
-		return renderOidcSuccessHtml(data.access_token, data.refresh_token, data.id_token)
+		await establishAuthSession(event, data, 'keycloak')
+		return respondOidcHtml(event, 200, renderOidcSuccessHtml())
 	} catch (err: any) {
-		const causeDetail = err?.cause?.message || err?.cause?.code || err?.cause
-		const errMessage = err?.message || 'Failed to connect to Keycloak token endpoint'
-		const fullDetail = causeDetail ? `${errMessage} (${causeDetail})` : errMessage
-
-		setResponseStatus(event, 502)
-		setResponseHeader(event, 'content-type', 'text/html; charset=utf-8')
-		return renderOidcErrorHtml(fullDetail)
+		return respondOidcHtml(event, 502, renderOidcErrorHtml(formatKeycloakConnectionError(err)))
 	}
 }

@@ -31,12 +31,19 @@ export interface IAuthClusterResult {
 export interface ILoginBody extends z.infer<typeof LoginBody> {}
 export interface IChangePasswordBody extends z.infer<typeof ChangePasswordBody> {}
 
+export interface IAuthUser {
+	preferred_username?: string
+	username?: string
+	sub?: string
+	email?: string
+	clusters?: string[]
+	cluster?: string
+}
+
 export declare interface IAuthResponse extends IBaseResponse {
 	data: {
-		access_token: string
-		expires_in: number
-		refresh_token: string
-		id_token?: string
+		expires_in?: number
+		user?: IAuthUser
 	}
 }
 
