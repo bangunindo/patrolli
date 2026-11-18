@@ -25,6 +25,7 @@ export default defineConfig({
 		exclude: ['**/node_modules/**', '**/tests/e2e/**'],
 		globals: true,
 		environment: 'happy-dom',
+		execArgv: ['--no-experimental-webstorage'],
 		testTimeout: 10000
 	}
 })

@@ -114,14 +114,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: src/web/package.json
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: src/web/package-lock.json
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run type-check
+          node-version-file: src/web/package.json
+          cache: pnpm
+          cache-dependency-path: src/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm type-check
         # Non-blocking until the existing vue-tsc errors are fixed.
         continue-on-error: true
-      - run: npm test
+      - run: pnpm test

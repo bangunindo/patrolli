@@ -74,7 +74,7 @@ export default defineConfig({
 	],
 
 	webServer: {
-		command: 'npm run build && npm run preview',
+		command: 'pnpm build && pnpm preview',
 		url: baseURL,
 		ignoreHTTPSErrors: true,
 		reuseExistingServer: !process.env.CI,
