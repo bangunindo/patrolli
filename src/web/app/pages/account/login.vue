@@ -10,7 +10,6 @@ import appHelper from '@/app/helpers/app.helper'
 import AppInputCluster from '@/components/app/input/AppInputCluster.vue'
 import { useAuthStore } from '@/stores/auth.store'
 import type { ILoginBody } from '@@/shared/types/auth.type'
-import { storeToRefs } from 'pinia'
 import { onMounted, reactive, ref } from 'vue'
 
 definePageMeta({
@@ -19,7 +18,6 @@ definePageMeta({
 })
 
 const authStore = useAuthStore()
-const {} = storeToRefs(authStore)
 
 const formLoading = ref<boolean>(false)
 const selectedCluster = ref<string | null>(null)

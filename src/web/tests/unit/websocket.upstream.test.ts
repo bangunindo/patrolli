@@ -4,7 +4,12 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as clusterUtils from '@@/server/services/cluster.service'
-import { resolveWebSocketUpstreamUrl } from '@@/server/services/websocket.service'
+import * as authRefreshService from '@@/server/services/auth-refresh.service'
+import { isJwtExpired } from '@@/server/utils/auth-cookies'
+import {
+	resolveWebSocketAuthHeader,
+	resolveWebSocketUpstreamUrl
+} from '@@/server/services/websocket.service'
 import type { ICluster } from '@@/shared/types/cluster.type'
 
 describe('WebSocket Upstream URL Resolution', () => {
@@ -90,5 +95,22 @@ describe('WebSocket Upstream URL Resolution', () => {
 
 		expect(fullUpstreamPath).toBe('/ws/v1/test')
 		expect(upstreamUrl).toBe('ws://patrolli:8080/ws/v1/test')
+	})
+
+	it('should extract access_token cookie without triggering server-side refresh and detect expiry', () => {
+		const expiredPayload = Buffer.from(
+			JSON.stringify({ exp: Math.floor(Date.now() / 1000) - 60 })
+		).toString('base64url')
+		const expiredJwt = `hdr.${expiredPayload}.sig`
+
+		const refreshSpy = vi.spyOn(authRefreshService, 'performTokenRefresh')
+
+		const authHeader = resolveWebSocketAuthHeader({
+			cookie: `access_token=${expiredJwt}; refresh_token=old-rt; auth_provider=keycloak; active_cluster_url=/patrolli`
+		})
+
+		expect(refreshSpy).not.toHaveBeenCalled()
+		expect(authHeader).toBe(`Bearer ${expiredJwt}`)
+		expect(isJwtExpired(expiredJwt)).toBe(true)
 	})
 })

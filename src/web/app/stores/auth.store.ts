@@ -7,13 +7,18 @@ import { defineStore } from 'pinia'
 import authApi from '@/app/api/auth.api'
 import clustersApi, { formatClusterOptions } from '@/app/api/clusters.api'
 import cookieHelper from '@/app/helpers/cookie.helper'
-import tokenHelper from '@/app/helpers/token.helper'
 import { useAppStore } from '@/stores/app.store'
-import type { ILoginBody } from '@@/shared/types/auth.type'
+import type { IAuthUser, ILoginBody } from '@@/shared/types/auth.type'
+
+export const PREFLIGHT_REFRESH_LEEWAY_MS = 30 * 1000
+export const AUTH_REFRESH_LOCK_NAME = 'patrolli-auth-refresh'
 
 export const useAuthStore = defineStore(
 	'auth',
 	() => {
+		let activeRefreshPromise: Promise<boolean> | null = null
+		let activeUserFetchPromise: Promise<IAuthUser | null> | null = null
+		let activeLogoutPromise: Promise<void> | null = null
 		const getAuthCookie = () => {
 			if (typeof useCookie === 'function') {
 				return useCookie<boolean>('is_authenticated', {
@@ -32,32 +37,135 @@ export const useAuthStore = defineStore(
 			return null
 		}
 
+		const getNumericCookie = (name: string): number | null => {
+			const raw = cookieHelper.get(name)
+			if (!raw) return null
+			const parsed = Number(raw)
+			return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+		}
+
 		const authCookie = getAuthCookie()
 		const authenticated = ref(Boolean(authCookie.value))
 		const authProvider = ref<'local' | 'keycloak' | null>(getInitialAuthProvider())
 		const isClusterReadonly = computed(() => authProvider.value === 'local')
+		const user = ref<IAuthUser | null>(null)
 		const userRoles = ref()
 		const userPermissions = ref()
 		const userMenus = ref()
 		const error = ref<string | null>(null)
+		const lastRefreshedAt = ref<number>(getNumericCookie('auth_refreshed_at') ?? Date.now())
+		const tokenExpiresAt = ref<number | null>(getNumericCookie('access_token_exp'))
+
+		function hasActiveSession(): boolean {
+			return (
+				authenticated.value ||
+				Boolean(authCookie.value) ||
+				cookieHelper.get('is_authenticated') === 'true'
+			)
+		}
+
+		function isAccessTokenExpiringSoon(leewayMs = PREFLIGHT_REFRESH_LEEWAY_MS): boolean {
+			const expAt = getNumericCookie('access_token_exp') ?? tokenExpiresAt.value
+			if (expAt === null) return false
+			return Date.now() >= expAt - leewayMs
+		}
+
+		function isSessionInvalidError(err: any): boolean {
+			const status = err?.status ?? err?.response?.status
+			return (
+				status === 401 ||
+				status === 403 ||
+				err?.data?.is_session_invalid === true ||
+				err?.data?.data?.error === 'invalid_grant'
+			)
+		}
+
+		function resetAuthState() {
+			authenticated.value = false
+			authCookie.value = false
+			authProvider.value = null
+			tokenExpiresAt.value = null
+		}
+
+		function applyAuthenticatedSession(options: {
+			user?: IAuthUser | null
+			provider?: 'local' | 'keycloak' | null
+			expiresIn?: number
+			updateRefreshedAt?: boolean
+		}) {
+			authenticated.value = true
+			authCookie.value = true
+			if (options.user !== undefined) {
+				user.value = options.user
+			}
+			if (options.provider) {
+				authProvider.value = options.provider
+			}
+			if (
+				typeof options.expiresIn === 'number' &&
+				Number.isFinite(options.expiresIn) &&
+				options.expiresIn > 0
+			) {
+				tokenExpiresAt.value = Date.now() + options.expiresIn * 1000
+			} else {
+				const cookieExp = getNumericCookie('access_token_exp')
+				if (cookieExp !== null) {
+					tokenExpiresAt.value = cookieExp
+				}
+			}
+			if (options.updateRefreshedAt) {
+				lastRefreshedAt.value = Date.now()
+			}
+		}
+
+		async function fetchCurrentUser(): Promise<IAuthUser | null> {
+			if (activeUserFetchPromise) return activeUserFetchPromise
+
+			activeUserFetchPromise = (async () => {
+				try {
+					const response = await authApi.me()
+					if (response?.success && response.data?.user) {
+						applyAuthenticatedSession({
+							user: response.data.user,
+							provider: response.data.auth_provider,
+							expiresIn: response.data.expires_in
+						})
+						return user.value
+					}
+					return null
+				} catch (err: any) {
+					if (isSessionInvalidError(err) && hasActiveSession()) {
+						await logout()
+					}
+					return null
+				} finally {
+					activeUserFetchPromise = null
+				}
+			})()
+
+			return activeUserFetchPromise
+		}
+
+		async function ensureCurrentUser(): Promise<IAuthUser | null> {
+			if (!hasActiveSession()) return null
+			if (user.value) return user.value
+			return fetchCurrentUser()
+		}
 
 		async function login(payload: ILoginBody, clusterURL?: string) {
 			try {
 				const clusterURLs = clusterURL ? [clusterURL] : undefined
 				const response = await authApi.login(payload, clusterURLs)
 				if (response && response.success) {
-					authenticated.value = true
-					authCookie.value = true
-					authProvider.value = 'local'
-					cookieHelper.set('auth_provider', 'local', 7)
-					cookieHelper.set('is_authenticated', 'true', 1)
+					applyAuthenticatedSession({
+						user: response.data?.user,
+						provider: 'local',
+						expiresIn: response.data?.expires_in,
+						updateRefreshedAt: true
+					})
 
-					if (response.data?.access_token) {
-						tokenHelper.setTokens({
-							access_token: response.data.access_token,
-							refresh_token: response.data.refresh_token,
-							id_token: response.data.id_token
-						})
+					if (!response.data?.user) {
+						await fetchCurrentUser()
 					}
 
 					if (clusterURL) {
@@ -71,78 +179,129 @@ export const useAuthStore = defineStore(
 
 					return response
 				} else {
-					authenticated.value = false
-					authCookie.value = false
-					authProvider.value = null
+					resetAuthState()
 					throw new Error('Login failed')
 				}
 			} catch (err: any) {
 				error.value = err.message || 'Failed to login'
-				authenticated.value = false
-				authCookie.value = false
-				authProvider.value = null
+				resetAuthState()
 				throw err
 			}
 		}
 
-		async function refreshAccessToken(): Promise<string | null> {
-			try {
-				// Nitro BFF handles token refresh using HTTP cookies
-				const response = await authApi.refreshToken()
+		async function refreshAccessToken(options?: {
+			skipIfFresh?: boolean
+			skipIfRefreshedWithinMs?: number
+		}): Promise<boolean> {
+			if (activeRefreshPromise) {
+				return activeRefreshPromise
+			}
 
-				if (response && response.success && response.data?.access_token) {
-					const data = response.data
-					tokenHelper.setTokens({
-						access_token: data.access_token,
-						refresh_token: data.refresh_token,
-						id_token: data.id_token
-					})
-					authenticated.value = true
-					authCookie.value = true
-					const provider = cookieHelper.get('auth_provider') as
-						| 'local'
-						| 'keycloak'
-						| null
-					if (provider) {
-						authProvider.value = provider
+			activeRefreshPromise = (async () => {
+				const runRefresh = async (): Promise<boolean> => {
+					const cookieExp = getNumericCookie('access_token_exp')
+					const cookieRefreshedAt = getNumericCookie('auth_refreshed_at')
+
+					if (
+						options?.skipIfRefreshedWithinMs &&
+						cookieRefreshedAt !== null &&
+						Date.now() - cookieRefreshedAt < options.skipIfRefreshedWithinMs
+					) {
+						if (cookieExp !== null) {
+							tokenExpiresAt.value = cookieExp
+						}
+						lastRefreshedAt.value = cookieRefreshedAt
+						return true
 					}
-					return data.access_token
+
+					if (options?.skipIfFresh) {
+						if (
+							cookieExp !== null &&
+							Date.now() < cookieExp - PREFLIGHT_REFRESH_LEEWAY_MS
+						) {
+							tokenExpiresAt.value = cookieExp
+							lastRefreshedAt.value = cookieRefreshedAt ?? Date.now()
+							return true
+						}
+					}
+
+					const response = await authApi.refreshToken()
+
+					if (response && response.success) {
+						const provider = cookieHelper.get('auth_provider') as
+							| 'local'
+							| 'keycloak'
+							| null
+						applyAuthenticatedSession({
+							user: response.data?.user,
+							provider,
+							expiresIn: response.data?.expires_in,
+							updateRefreshedAt: true
+						})
+						return true
+					}
+
+					return false
 				}
 
-				throw new Error('No access token returned from Nitro refresh endpoint')
-			} catch (err) {
-				console.error('Failed to refresh token in Nitro:', err)
-				await logout()
-				return null
-			}
+				try {
+					const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined
+					return typeof locks?.request === 'function'
+						? await locks.request(AUTH_REFRESH_LOCK_NAME, () => runRefresh())
+						: await runRefresh()
+				} catch (err: any) {
+					console.error('Failed to refresh token in Nitro:', err)
+					if (isSessionInvalidError(err)) {
+						await logout()
+					}
+					return false
+				} finally {
+					activeRefreshPromise = null
+				}
+			})()
+
+			return activeRefreshPromise
+		}
+
+		async function ensureValidAccessToken(): Promise<boolean> {
+			if (!hasActiveSession()) return false
+			if (!isAccessTokenExpiringSoon()) return true
+			return refreshAccessToken({ skipIfFresh: true })
 		}
 
 		async function logout() {
-			try {
-				await authApi.logout()
-			} catch (err) {
-				console.error(err)
-			} finally {
-				cookieHelper.clearAll()
-				cookieHelper.remove('user_clusters')
-				tokenHelper.clearTokens()
-				authenticated.value = false
-				authCookie.value = false
-				authProvider.value = null
-				userMenus.value = null
-
-				try {
-					const appStore = useAppStore()
-					appStore.notificationItems = []
-					appStore.activeClusterURL = null
-				} catch {
-					// ignore
-				}
-
-				if (typeof navigateTo === 'function') {
-					await navigateTo('/account/login')
-				}
+			if (activeLogoutPromise) {
+				return activeLogoutPromise
 			}
+
+			activeLogoutPromise = (async () => {
+				try {
+					await authApi.logout()
+				} catch (err) {
+					console.error(err)
+				} finally {
+					cookieHelper.clearAll()
+					cookieHelper.remove('user_clusters')
+					resetAuthState()
+					user.value = null
+					userMenus.value = null
+
+					try {
+						const appStore = useAppStore()
+						appStore.notificationItems = []
+						appStore.activeClusterURL = null
+					} catch {
+						// ignore
+					}
+
+					if (typeof navigateTo === 'function') {
+						await navigateTo('/account/login')
+					}
+					activeLogoutPromise = null
+				}
+			})()
+
+			return activeLogoutPromise
 		}
 
 		async function refreshUserClusters() {
@@ -184,16 +343,28 @@ export const useAuthStore = defineStore(
 			authenticated,
 			authProvider,
 			isClusterReadonly,
+			user,
 			userRoles,
 			userPermissions,
 			userMenus,
 			error,
+			lastRefreshedAt,
+			tokenExpiresAt,
 
+			hasActiveSession,
+			isAccessTokenExpiringSoon,
+			ensureValidAccessToken,
 			login,
+			fetchCurrentUser,
+			ensureCurrentUser,
 			refreshAccessToken,
 			refreshUserClusters,
 			logout
 		}
 	},
-	{ persist: true }
+	{
+		persist: {
+			omit: ['user', 'tokenExpiresAt', 'lastRefreshedAt']
+		}
+	}
 )

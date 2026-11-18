@@ -6,7 +6,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script setup lang="ts">
 import appHelper from '@/app/helpers/app.helper'
-import tokenHelper from '@/app/helpers/token.helper'
 import AppInputCluster from '@/components/app/input/AppInputCluster.vue'
 import { useAppStore } from '@/stores/app.store'
 import { useAuthStore } from '@/stores/auth.store'
@@ -21,13 +20,11 @@ const appStore = useAppStore()
 const authStore = useAuthStore()
 const pipelineBuildStore = usePipelineBuildStore()
 const { isDarkMode, activeClusterURL } = storeToRefs(appStore)
-const { isClusterReadonly } = storeToRefs(authStore)
+const { isClusterReadonly, user } = storeToRefs(authStore)
 
 const isMobileMenuOpen = ref(false)
 
-// Local and Keycloak access tokens both carry preferred_username. The token
-// cookie is only readable in the browser, so this is filled in onMounted.
-const username = ref('')
+const username = computed(() => user.value?.preferred_username || user.value?.username || '')
 const userInitials = computed(() => username.value.slice(0, 2).toUpperCase())
 
 const menuList = computed(() => {
@@ -110,8 +107,8 @@ watch(
 	}
 )
 
-onMounted(() => {
-	username.value = tokenHelper.decodeToken().preferred_username ?? ''
+onMounted(async () => {
+	await authStore.ensureCurrentUser()
 	validateActiveCluster()
 	const handleResize = () => {
 		if (window.innerWidth >= 768 && isMobileMenuOpen.value) {

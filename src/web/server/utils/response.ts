@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { type H3Event, setResponseHeaders, setResponseStatus } from 'h3'
+import { type H3Event, appendResponseHeader, setResponseStatus } from 'h3'
 import type { ICluster } from '@@/shared/types/cluster.type'
 
 export interface ClusterResponseItem {
@@ -169,8 +169,12 @@ export function handleSingleClusterResponse(
 	const clusterSetCookie = (res.headers as any).getSetCookie
 		? (res.headers as any).getSetCookie()
 		: res.headers.get('set-cookie')
-	if (clusterSetCookie) {
-		setResponseHeaders(event, { 'set-cookie': clusterSetCookie })
+	if (Array.isArray(clusterSetCookie)) {
+		for (const cookieVal of clusterSetCookie) {
+			if (cookieVal) appendResponseHeader(event, 'set-cookie', cookieVal)
+		}
+	} else if (clusterSetCookie) {
+		appendResponseHeader(event, 'set-cookie', clusterSetCookie)
 	}
 
 	if (res.data && typeof res.data === 'object') {

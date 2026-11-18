@@ -4,6 +4,7 @@
 
 import type {
 	IAuthResponse,
+	IAuthUser,
 	ILoginBody,
 	ILoginResponse,
 	ILogoutResponse
@@ -33,6 +34,23 @@ const authApi = {
 
 	async refreshToken(): Promise<IAuthResponse | undefined> {
 		return httpService.post<IAuthResponse>('/api/auth/refresh')
+	},
+
+	async me(): Promise<
+		| {
+				success: boolean
+				data?: {
+					user: IAuthUser
+					auth_provider: 'local' | 'keycloak'
+					expires_in?: number
+				}
+		  }
+		| undefined
+	> {
+		return httpService.get('/api/auth/me', {
+			suppressErrorStatuses: [401],
+			rethrowErrors: true
+		})
 	},
 
 	async getKeycloakLoginUrl(): Promise<{ success: boolean; data?: { url: string } } | undefined> {

@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { handleGetClusters } from '@@/server/modules/clusters/clusters.controller'
+import * as authRefreshService from '@@/server/services/auth-refresh.service'
 import { verifyUserClusterAccess } from '@@/server/services/cluster-access.service'
 import * as clusterService from '@@/server/services/cluster.service'
 import * as authCookies from '@@/server/utils/auth-cookies'
@@ -14,10 +16,16 @@ vi.mock('@@/server/services/cluster.service', () => ({
 	forwardToCluster: vi.fn()
 }))
 
+vi.mock('@@/server/services/auth-refresh.service', () => ({
+	tryTransparentRefreshOn401: vi.fn()
+}))
+
 vi.mock('@@/server/utils/auth-cookies', () => ({
 	setUserClustersCookie: vi.fn(),
 	clearAuthCookies: vi.fn(),
-	setAuthCookies: vi.fn()
+	setAuthCookies: vi.fn(),
+	getAuthCookies: vi.fn(),
+	isJwtExpired: vi.fn()
 }))
 
 vi.mock('@/app/helpers/cookie.helper', () => ({
@@ -80,7 +88,7 @@ describe('Cluster Access Verification Feature', () => {
 					clientPath: '/patrolli2'
 				}
 			]
-			vi.mocked(clusterService.getClustersConfig).mockReturnValueOnce(mockClusters as any)
+			vi.mocked(clusterService.getClustersConfig).mockReturnValue(mockClusters as any)
 
 			vi.mocked(clusterService.forwardToCluster).mockImplementation(async (cluster: any) => {
 				if (cluster.name === 'patrolli') {
@@ -153,6 +161,152 @@ describe('Cluster Access Verification Feature', () => {
 
 			expect(urls).toBeDefined()
 			expect(Array.isArray(urls)).toBe(true)
+		})
+	})
+
+	describe('handleGetClusters pre-emptive and transparent refresh', () => {
+		it('should refresh expired access_token via tryTransparentRefreshOn401 before verifying cluster access', async () => {
+			const mockClusters = [
+				{
+					key: 'patrolli',
+					name: 'patrolli',
+					url: 'http://patrolli:8080',
+					clientPath: '/patrolli'
+				}
+			]
+			vi.mocked(clusterService.getClustersConfig).mockReturnValue(mockClusters as any)
+			vi.mocked(authCookies.getAuthCookies).mockReturnValueOnce({
+				access_token: 'expired-token',
+				refresh_token: 'valid-rt',
+				id_token: undefined,
+				auth_provider: 'local',
+				is_authenticated: true,
+				active_cluster_url: '/patrolli'
+			})
+			vi.mocked(authCookies.isJwtExpired).mockReturnValueOnce(true)
+			vi.mocked(authRefreshService.tryTransparentRefreshOn401).mockResolvedValueOnce(
+				'fresh-token-abc'
+			)
+			vi.mocked(clusterService.forwardToCluster).mockResolvedValueOnce({
+				status: 200,
+				headers: new Headers(),
+				data: { nodes: [] }
+			})
+
+			const event = {
+				path: '/api/clusters?refresh=true',
+				node: {
+					req: {
+						url: '/api/clusters?refresh=true',
+						headers: {}
+					},
+					res: {}
+				}
+			} as any
+
+			const res = await handleGetClusters(event)
+
+			expect(authRefreshService.tryTransparentRefreshOn401).toHaveBeenCalledWith(
+				event,
+				'/patrolli'
+			)
+			expect(clusterService.forwardToCluster).toHaveBeenCalledWith(
+				mockClusters[0],
+				'/api/v1/nodes',
+				{
+					method: 'GET',
+					headers: {
+						authorization: 'Bearer fresh-token-abc'
+					}
+				}
+			)
+			expect(res.success).toBe(true)
+			expect(res.data).toHaveLength(1)
+		})
+
+		it('should transparently refresh when cluster access check returns 401 for an unexpired token', async () => {
+			const mockClusters = [
+				{
+					key: 'patrolli',
+					name: 'patrolli',
+					url: 'http://patrolli:8080',
+					clientPath: '/patrolli'
+				}
+			]
+			vi.mocked(clusterService.getClustersConfig).mockReturnValue(mockClusters as any)
+			vi.mocked(authCookies.getAuthCookies).mockReturnValueOnce({
+				access_token: 'revoked-token',
+				refresh_token: 'valid-rt',
+				id_token: undefined,
+				auth_provider: 'local',
+				is_authenticated: true,
+				active_cluster_url: '/patrolli'
+			})
+			vi.mocked(authCookies.isJwtExpired).mockReturnValueOnce(false)
+			vi.mocked(clusterService.forwardToCluster)
+				.mockResolvedValueOnce({
+					status: 401,
+					headers: new Headers(),
+					data: { error: 'Unauthorized' }
+				})
+				.mockResolvedValueOnce({
+					status: 200,
+					headers: new Headers(),
+					data: { nodes: [] }
+				})
+			vi.mocked(authRefreshService.tryTransparentRefreshOn401).mockResolvedValueOnce(
+				'fresh-token-401'
+			)
+
+			const event = {
+				path: '/api/clusters?refresh=true',
+				node: { req: { url: '/api/clusters?refresh=true', headers: {} }, res: {} }
+			} as any
+
+			const res = await handleGetClusters(event)
+
+			expect(authRefreshService.tryTransparentRefreshOn401).toHaveBeenCalledTimes(1)
+			expect(clusterService.forwardToCluster).toHaveBeenCalledTimes(2)
+			expect(res.success).toBe(true)
+			expect(res.data).toHaveLength(1)
+		})
+
+		it('should not refresh when cluster access check returns 403 without any 401', async () => {
+			const mockClusters = [
+				{
+					key: 'patrolli',
+					name: 'patrolli',
+					url: 'http://patrolli:8080',
+					clientPath: '/patrolli'
+				}
+			]
+			vi.mocked(clusterService.getClustersConfig).mockReturnValue(mockClusters as any)
+			vi.mocked(authCookies.getAuthCookies).mockReturnValueOnce({
+				access_token: 'valid-token-no-access',
+				refresh_token: 'valid-rt',
+				id_token: undefined,
+				auth_provider: 'local',
+				is_authenticated: true,
+				active_cluster_url: '/patrolli'
+			})
+			vi.mocked(authCookies.isJwtExpired).mockReturnValueOnce(false)
+			vi.mocked(clusterService.forwardToCluster).mockResolvedValueOnce({
+				status: 403,
+				headers: new Headers(),
+				data: { error: 'Forbidden' }
+			})
+
+			const event = {
+				path: '/api/clusters?refresh=true',
+				node: { req: { url: '/api/clusters?refresh=true', headers: {} }, res: {} }
+			} as any
+
+			const res = await handleGetClusters(event)
+
+			expect(authRefreshService.tryTransparentRefreshOn401).not.toHaveBeenCalled()
+			expect(clusterService.forwardToCluster).toHaveBeenCalledTimes(1)
+			expect(res.success).toBe(true)
+			expect(res.data).toHaveLength(1)
 		})
 	})
 })
