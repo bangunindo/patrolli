@@ -9,6 +9,10 @@ import {
 	handleClusterMutation,
 	resolveClusterTargets
 } from '@@/server/services/cluster.service'
+import {
+	executeClusterRequestsWithAuthRetry,
+	executeSingleClusterRequestWithAuthRetry
+} from '@@/server/services/auth-refresh.service'
 import { distributePagination, rebalancePaginationResponses } from '@@/server/utils/pagination'
 import { handleSingleClusterResponse, mergeDynamicResponses } from '@@/server/utils/response'
 import { forwardProxyToCluster } from './proxy.api'
@@ -36,18 +40,22 @@ export async function handleProxyGet(event: H3Event) {
 		return errorPayload
 	}
 
-	// 1. Single cluster target
 	const singleTarget = targetClusters[0]
 	if (targetClusters.length === 1 && singleTarget) {
-		const res = await forwardProxyToCluster(singleTarget, fullApiPath, {
-			method,
-			headers: reqHeaders,
-			query
+		const { result } = await executeSingleClusterRequestWithAuthRetry(event, {
+			item: singleTarget,
+			reqHeaders,
+			clusterHeader,
+			execute: (cluster, headers) =>
+				forwardProxyToCluster(cluster, fullApiPath, {
+					method,
+					headers,
+					query
+				})
 		})
-		return handleSingleClusterResponse(event, singleTarget, res)
+		return handleSingleClusterResponse(event, singleTarget, result)
 	}
 
-	// 2. Multi-cluster scatter-gather for GET requests
 	const limit = query.limit !== undefined ? Number(query.limit) : undefined
 	const offset = query.offset !== undefined ? Number(query.offset) : undefined
 	const isPaginated =
@@ -58,16 +66,19 @@ export async function handleProxyGet(event: H3Event) {
 		targetClusters.length > 1
 
 	if (!isPaginated) {
-		const responses = await Promise.all(
-			targetClusters.map(async (cluster) => {
+		const { results: responses } = await executeClusterRequestsWithAuthRetry(event, {
+			items: targetClusters,
+			reqHeaders,
+			clusterHeader,
+			execute: async (cluster, headers) => {
 				const res = await forwardProxyToCluster(cluster, fullApiPath, {
 					method,
-					headers: reqHeaders,
+					headers,
 					query
 				})
 				return { cluster, data: res.data, status: res.status }
-			})
-		)
+			}
+		})
 		const merged = mergeDynamicResponses(responses)
 		const finalStatus = merged.status_code || 200
 		setResponseStatus(event, finalStatus)
@@ -91,24 +102,29 @@ export async function handleProxyGet(event: H3Event) {
 		}
 	})
 
-	const initialResponses = await Promise.all(
-		requestPlans.map(async (plan) => {
-			const res = await forwardProxyToCluster(plan.cluster, fullApiPath, {
-				method,
-				headers: reqHeaders,
-				query: plan.localQuery
-			})
-			return {
-				cluster: plan.cluster,
-				plan: {
-					localOffset: plan.localOffset,
-					localLimit: plan.localLimit
-				},
-				data: res.data,
-				status: res.status
+	const { results: initialResponses, effectiveHeaders } =
+		await executeClusterRequestsWithAuthRetry(event, {
+			items: requestPlans,
+			reqHeaders,
+			clusterHeader,
+			execute: async (plan, headers) => {
+				const res = await forwardProxyToCluster(plan.cluster, fullApiPath, {
+					method,
+					headers,
+					query: plan.localQuery
+				})
+				return {
+					cluster: plan.cluster,
+					plan: {
+						localOffset: plan.localOffset,
+						localLimit: plan.localLimit
+					},
+					localQuery: plan.localQuery,
+					data: res.data,
+					status: res.status
+				}
 			}
 		})
-	)
 
 	const mergedResult = mergeDynamicResponses(
 		initialResponses.map((r) => ({
@@ -123,7 +139,7 @@ export async function handleProxyGet(event: H3Event) {
 		initialResponses,
 		fullApiPath,
 		method,
-		reqHeaders,
+		reqHeaders: effectiveHeaders,
 		query,
 		offset,
 		limit

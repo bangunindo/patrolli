@@ -2,7 +2,55 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import { getRequestHost, getRequestProtocol, type H3Event } from 'h3'
+import { getKeycloakConfig } from '@@/server/services/cluster.service'
 import type { IKeycloakConfig } from '@@/shared/types/cluster.type'
+
+/**
+ * Validates and returns the Keycloak configuration, or a standardized 500 error payload.
+ */
+export function getValidatedKeycloakConfig():
+	| { config: IKeycloakConfig; errorPayload?: undefined }
+	| { config?: undefined; errorPayload: Record<string, any> } {
+	const kcConfig = getKeycloakConfig()
+	if (!kcConfig || !kcConfig.host || !kcConfig.client_id) {
+		return {
+			errorPayload: {
+				status_code: 500,
+				success: false,
+				error: {
+					title: 'Configuration Error',
+					detail: 'Keycloak configuration is missing or incomplete in config-fe.yaml'
+				}
+			}
+		}
+	}
+	return { config: kcConfig }
+}
+
+/**
+ * Resolves the dynamic OIDC callback redirect URI from the incoming request headers.
+ */
+export function resolveDynamicOidcRedirectUri(
+	event: H3Event,
+	fallbackUri?: string
+): string | undefined {
+	const host = getRequestHost(event, { xForwardedHost: true })
+	const proto = getRequestProtocol(event, { xForwardedProto: true })
+	return host ? `${proto}://${host}/auth/oidc/callback` : fallbackUri
+}
+
+/**
+ * Formats upstream Keycloak connection errors including underlying cause details.
+ */
+export function formatKeycloakConnectionError(
+	error: any,
+	defaultMessage = 'Failed to connect to Keycloak token endpoint'
+): string {
+	const causeDetail = error?.cause?.message || error?.cause?.code || error?.cause
+	const errMessage = error?.message || defaultMessage
+	return causeDetail ? `${errMessage} (${causeDetail})` : errMessage
+}
 
 /**
  * Builds the Keycloak authorization URL for initiating OIDC flow

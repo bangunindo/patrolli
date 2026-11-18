@@ -33,6 +33,13 @@ export function extractAuthRefreshParams(event: H3Event, body?: any) {
 }
 
 /**
+ * Checks whether a path parameter corresponds to a login request
+ */
+export function isLoginPath(pathParam: string, fullAuthPath: string): boolean {
+	return pathParam.replace(/\/$/, '') === 'login' || fullAuthPath.includes('/auth/login')
+}
+
+/**
  * Checks whether a path parameter corresponds to a logout request
  */
 export function isLogoutPath(pathParam: string, fullAuthPath: string): boolean {

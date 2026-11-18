@@ -6,17 +6,14 @@ import { useAuthStore } from '@/stores/auth.store'
 
 export default defineNuxtRouteMiddleware((to) => {
 	const authStore = useAuthStore()
-	const authCookie = useCookie<boolean>('is_authenticated')
-	const isAuthenticated = Boolean(authCookie.value || authStore.authenticated)
+	const isAuthenticated = authStore.hasActiveSession()
 	const isAuthRequired = to.meta.requiresAuth !== false
 
 	if (isAuthRequired && !isAuthenticated) {
-		console.log('>>> [DEBUG auth.global.ts] redirecting to /account/login')
 		return navigateTo('/account/login')
 	}
 
 	if (!isAuthRequired && isAuthenticated && to.path.startsWith('/account')) {
-		console.log('>>> [DEBUG auth.global.ts] redirecting to /configuration/host')
 		return navigateTo('/configuration/host')
 	}
 })

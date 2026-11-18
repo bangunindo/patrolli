@@ -8,24 +8,28 @@ import { formatClusterList } from '@@/server/modules/clusters/clusters.utils'
 import type { IClusterClientItem } from '@@/shared/types/cluster.type'
 import { setUserClustersCookie } from '@@/server/utils/auth-cookies'
 
+export interface IClusterAccessResult {
+	clusters: IClusterClientItem[]
+	sawUnauthorized: boolean
+}
+
 /**
  * Verifies which clusters the authenticated user has access to by querying GET /api/nodes
- * on each configured cluster. If /api/nodes returns HTTP 200, access is granted.
- * Sets the resulting cluster list in the `user_clusters` cookie.
+ * on each configured cluster, returning both accessible clusters and whether any cluster returned 401.
  */
-export async function verifyUserClusterAccess(
+export async function verifyUserClusterAccessWithStatus(
 	event: H3Event,
 	accessToken: string
-): Promise<IClusterClientItem[]> {
+): Promise<IClusterAccessResult> {
 	if (!accessToken) {
 		setUserClustersCookie(event, [])
-		return []
+		return { clusters: [], sawUnauthorized: false }
 	}
 
 	const allClusters = getClustersConfig(event)
 	if (!allClusters || allClusters.length === 0) {
 		setUserClustersCookie(event, [])
-		return []
+		return { clusters: [], sawUnauthorized: false }
 	}
 
 	const checkResults = await Promise.all(
@@ -39,12 +43,14 @@ export async function verifyUserClusterAccess(
 				})
 				return {
 					cluster,
-					hasAccess: res.status === 200
+					hasAccess: res.status === 200,
+					isUnauthorized: res.status === 401
 				}
 			} catch {
 				return {
 					cluster,
-					hasAccess: false
+					hasAccess: false,
+					isUnauthorized: false
 				}
 			}
 		})
@@ -56,5 +62,21 @@ export async function verifyUserClusterAccess(
 
 	const formatted = formatClusterList(accessibleClusters)
 	setUserClustersCookie(event, formatted)
-	return formatted
+	return {
+		clusters: formatted,
+		sawUnauthorized: checkResults.some((result) => result.isUnauthorized)
+	}
+}
+
+/**
+ * Verifies which clusters the authenticated user has access to by querying GET /api/nodes
+ * on each configured cluster. If /api/nodes returns HTTP 200, access is granted.
+ * Sets the resulting cluster list in the `user_clusters` cookie.
+ */
+export async function verifyUserClusterAccess(
+	event: H3Event,
+	accessToken: string
+): Promise<IClusterClientItem[]> {
+	const { clusters } = await verifyUserClusterAccessWithStatus(event, accessToken)
+	return clusters
 }

@@ -3,6 +3,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { logClusterError, logClusterForward, logClusterResponse } from './logger.service'
+import {
+	executeClusterRequestsWithAuthRetry,
+	executeSingleClusterRequestWithAuthRetry
+} from './auth-refresh.service'
 import { handleSingleClusterResponse, mergeDynamicResponses } from '@@/server/utils/response'
 import { executeHttpRequest } from '@@/server/services/apibase.service'
 import { extractProxyContext } from '@@/server/modules/proxy/proxy.utils'
@@ -221,7 +225,6 @@ export async function forwardToCluster(
 	}
 
 	const reqHeaders: Record<string, string> = {}
-	if (options.headers?.cookie) reqHeaders.cookie = options.headers.cookie
 	let authHeader = options.headers?.authorization || options.headers?.Authorization
 	if (!authHeader && options.headers?.cookie) {
 		const match =
@@ -338,30 +341,37 @@ export async function handleClusterMutation(event: H3Event) {
 		}
 	}
 
-	// 1. Single cluster target
 	const singleTarget = targetClusters[0]
 	if (targetClusters.length === 1 && singleTarget) {
-		const res = await forwardToCluster(singleTarget, fullApiPath, {
-			method,
-			headers: reqHeaders,
-			query,
-			body
+		const { result } = await executeSingleClusterRequestWithAuthRetry(event, {
+			item: singleTarget,
+			reqHeaders,
+			clusterHeader,
+			execute: (cluster, headers) =>
+				forwardToCluster(cluster, fullApiPath, {
+					method,
+					headers,
+					query,
+					body
+				})
 		})
-		return handleSingleClusterResponse(event, singleTarget, res)
+		return handleSingleClusterResponse(event, singleTarget, result)
 	}
 
-	// 2. Multi-cluster mutations (POST, PUT, DELETE, PATCH)
-	const mutationResponses = await Promise.all(
-		targetClusters.map(async (cluster) => {
+	const { results: mutationResponses } = await executeClusterRequestsWithAuthRetry(event, {
+		items: targetClusters,
+		reqHeaders,
+		clusterHeader,
+		execute: async (cluster, headers) => {
 			const res = await forwardToCluster(cluster, fullApiPath, {
 				method,
-				headers: reqHeaders,
+				headers,
 				query,
 				body
 			})
 			return { cluster, data: res.data, status: res.status }
-		})
-	)
+		}
+	})
 
 	const merged = mergeDynamicResponses(mutationResponses)
 	const finalStatus = merged.status_code || 200

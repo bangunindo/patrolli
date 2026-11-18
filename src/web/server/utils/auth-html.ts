@@ -2,14 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-export function renderOidcSuccessHtml(
-	accessToken: string,
-	_refreshToken?: string,
-	idToken?: string
-): string {
-	const at = JSON.stringify(accessToken)
-	const it = JSON.stringify(idToken || '')
-
+export function renderOidcSuccessHtml(): string {
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -59,22 +52,6 @@ export function renderOidcSuccessHtml(
 		<p>Please wait while we redirect you to your dashboard.</p>
 	</div>
 	<script>
-		try {
-			var isSecure = window.location.protocol === 'https:';
-			var secFlag = isSecure ? '; Secure' : '';
-			var at = ${at};
-			if (at) {
-				document.cookie = "access_token=" + encodeURIComponent(at) + "; path=/; max-age=86400; SameSite=Lax" + secFlag;
-			}
-			var it = ${it};
-			if (it) {
-				document.cookie = "id_token=" + encodeURIComponent(it) + "; path=/; max-age=86400; SameSite=Lax" + secFlag;
-			}
-			document.cookie = "auth_provider=keycloak; path=/; max-age=604800; SameSite=Lax" + secFlag;
-			document.cookie = "is_authenticated=true; path=/; max-age=86400; SameSite=Lax" + secFlag;
-		} catch (e) {
-			console.error('Cookie error:', e);
-		}
 		window.location.replace('/');
 	</script>
 </body>

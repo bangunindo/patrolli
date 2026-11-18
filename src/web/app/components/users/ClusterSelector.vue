@@ -5,9 +5,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import appHelper from '@/app/helpers/app.helper'
-import tokenHelper from '@/app/helpers/token.helper'
 import { useAppStore } from '@/stores/app.store'
 import { useAuthStore } from '@/stores/auth.store'
 import { storeToRefs } from 'pinia'
@@ -19,6 +18,10 @@ const modelValue = defineModel<string[]>({
 const authStore = useAuthStore()
 const appStore = useAppStore()
 const { isClusterReadonly } = storeToRefs(authStore)
+
+onMounted(async () => {
+	await authStore.ensureCurrentUser()
+})
 const { activeClusterURL } = storeToRefs(appStore)
 
 const isOpen = ref(false)
@@ -58,11 +61,11 @@ const availableClusters = computed(() => {
 		}
 	}
 
-	// 2. Explicit cluster constraints from token (if present)
-	const decoded = tokenHelper.decodeToken() as any
+	// 2. Explicit cluster constraints from user session claims (if present)
+	const decoded = authStore.user
 	if (decoded?.clusters && Array.isArray(decoded.clusters) && decoded.clusters.length > 0) {
 		const matched = allClusters.filter((c) =>
-			decoded.clusters.some(
+			decoded.clusters!.some(
 				(dc: string) => dc === c.value || dc.replace(/^\//, '') === c.value
 			)
 		)

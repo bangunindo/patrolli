@@ -2,104 +2,76 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { defineEventHandler, getQuery, getRequestHeaders, readBody, setResponseStatus } from 'h3'
+import { defineEventHandler } from 'h3'
 import {
-	forwardToCluster,
-	getClustersConfig,
-	resolveClusterTargets
-} from '@@/server/services/cluster.service'
+	executeClusterRequestsWithAuthRetry,
+	executeSingleClusterRequestWithAuthRetry
+} from '@@/server/services/auth-refresh.service'
+import {
+	findClusterUserByUsername,
+	formatSingleClusterUserMutationResponse,
+	readUserRequestBody,
+	resolveUserClusterContext,
+	respondMultiClusterUserActionResult,
+	respondNoClustersConfigured
+} from '@@/server/modules/users/users.controller'
+import { forwardToCluster } from '@@/server/services/cluster.service'
 
 export default defineEventHandler(async (event) => {
-	const reqHeaders = getRequestHeaders(event)
-	const query = getQuery(event)
-	let body: any = {}
-
-	try {
-		body = await readBody(event)
-	} catch {
-		body = {}
-	}
+	const { reqHeaders, clusterHeader, targetClusters } = resolveUserClusterContext(event)
+	const body = await readUserRequestBody(event)
 
 	if (body && body.allow_sso === undefined) {
 		body.allow_sso = true
 	}
 
-	const clusterHeader =
-		(reqHeaders['x-cluster-url'] as string | undefined) ||
-		(query.cluster as string | undefined) ||
-		null
-
-	const allClusters = getClustersConfig(event)
-	const targetClusters = resolveClusterTargets(clusterHeader, allClusters)
-
 	if (targetClusters.length === 0) {
-		setResponseStatus(event, 502)
-		return {
-			status_code: 502,
-			success: false,
-			error: {
-				title: 'Bad Gateway',
-				detail: 'No clusters configured.'
-			}
-		}
+		return respondNoClustersConfigured(event)
 	}
 
-	// 1. Single cluster target: forward POST directly
 	if (targetClusters.length === 1 && targetClusters[0]) {
 		const singleCluster = targetClusters[0]
-		const res = await forwardToCluster(singleCluster, '/api/v1/users', {
-			method: 'POST',
-			headers: reqHeaders,
-			body
+		const { result: res } = await executeSingleClusterRequestWithAuthRetry(event, {
+			item: singleCluster,
+			reqHeaders,
+			clusterHeader,
+			execute: (cluster, headers) =>
+				forwardToCluster(cluster, '/api/v1/users', {
+					method: 'POST',
+					headers,
+					body
+				})
 		})
 
-		const status = res.status || 201
-		setResponseStatus(event, status)
-
-		const clusterName = singleCluster.name
-		const clusterUrl = singleCluster.clientPath
-		const data = res.data?.data || res.data || {}
-
-		return {
-			status_code: status,
-			success: status >= 200 && status < 300,
-			data: {
-				...data,
-				clusters: [clusterName],
-				cluster_name: clusterName,
-				cluster_url: clusterUrl
-			}
-		}
+		return formatSingleClusterUserMutationResponse(event, singleCluster, res, 201)
 	}
 
-	// 2. Multi-cluster target: create user in each cluster
 	const username = body?.username
 
-	const clusterResults = await Promise.all(
-		targetClusters.map(async (cluster) => {
+	const { results: clusterResults } = await executeClusterRequestsWithAuthRetry(event, {
+		items: targetClusters,
+		reqHeaders,
+		clusterHeader,
+		execute: async (cluster, headers) => {
 			try {
-				// Check if user already exists in this cluster
 				if (username) {
 					try {
-						const searchRes = await forwardToCluster(cluster, '/api/v1/users', {
-							method: 'GET',
-							headers: reqHeaders,
-							query: { username }
-						})
-						const clusterUsers =
-							searchRes.data?.data?.users ||
-							searchRes.data?.users ||
-							(Array.isArray(searchRes.data?.data) ? searchRes.data?.data : []) ||
-							(Array.isArray(searchRes.data) ? searchRes.data : [])
-						const existingUser = clusterUsers.find((u: any) => u.username === username)
-
-						if (existingUser) {
+						const lookup = await findClusterUserByUsername(cluster, username, headers)
+						if (lookup.status === 401) {
+							return {
+								cluster,
+								success: false,
+								alreadyExisted: false,
+								status: 401
+							}
+						}
+						if (lookup.user) {
 							return {
 								cluster,
 								success: true,
 								alreadyExisted: true,
 								status: 200,
-								data: existingUser
+								data: lookup.user
 							}
 						}
 					} catch {
@@ -107,10 +79,9 @@ export default defineEventHandler(async (event) => {
 					}
 				}
 
-				// Create user in this cluster
 				const createRes = await forwardToCluster(cluster, '/api/v1/users', {
 					method: 'POST',
-					headers: reqHeaders,
+					headers,
 					body
 				})
 
@@ -130,37 +101,24 @@ export default defineEventHandler(async (event) => {
 					error: err.message
 				}
 			}
-		})
-	)
+		}
+	})
 
-	const successfulResults = clusterResults.filter((r) => r.success)
-
-	// If all clusters failed, return error response
-	if (successfulResults.length === 0) {
-		const firstFail = clusterResults[0]
-		setResponseStatus(event, firstFail?.status || 500)
-		return {
-			status_code: firstFail?.status || 500,
-			success: false,
-			error: {
-				title: 'User Creation Failed',
-				detail: 'Failed to create user across all specified target clusters.'
+	return respondMultiClusterUserActionResult(event, {
+		results: clusterResults,
+		failureTitle: 'User Creation Failed',
+		failureDetail: 'Failed to create user across all specified target clusters.',
+		buildSuccess: (successfulResults) => {
+			const clusterNames = successfulResults.map((r) => r.cluster.name)
+			const primaryData = successfulResults[0]?.data || {}
+			return {
+				status: 201,
+				data: {
+					...primaryData,
+					clusters: clusterNames,
+					cluster_name: clusterNames.join(', ')
+				}
 			}
 		}
-	}
-
-	// Gather clusters that successfully registered/contained the user
-	const clusterNames = successfulResults.map((r) => r.cluster.name)
-	const primaryData = successfulResults[0]?.data || {}
-
-	setResponseStatus(event, 201)
-	return {
-		status_code: 201,
-		success: true,
-		data: {
-			...primaryData,
-			clusters: clusterNames,
-			cluster_name: clusterNames.join(', ')
-		}
-	}
+	})
 })
