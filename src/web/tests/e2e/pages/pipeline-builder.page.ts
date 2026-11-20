@@ -121,9 +121,13 @@ export class PipelineBuilderPage extends BasePage {
 	}
 
 	async addSourceNode(): Promise<void> {
+		await this.emptyStateCreateButton
+			.or(this.toolbarAddSource)
+			.first()
+			.waitFor({ state: 'visible', timeout: 15_000 })
 		if (await this.emptyStateCreateButton.isVisible()) {
 			await this.emptyStateCreateButton.click()
-		} else if (await this.toolbarAddSource.isVisible()) {
+		} else {
 			await this.toolbarAddSource.click()
 		}
 	}

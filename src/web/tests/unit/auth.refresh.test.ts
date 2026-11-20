@@ -5,6 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as clusterUtils from '@@/server/services/cluster.service'
 import * as apiBaseService from '@@/server/services/apibase.service'
+import * as oidcService from '@@/server/modules/oidc/oidc.service'
 import type { ICluster } from '@@/shared/types/cluster.type'
 
 const ParsedBodySymbol = Symbol.for('h3ParsedBody')
@@ -132,30 +133,27 @@ describe('Nitro Auth Refresh Endpoint (/api/auth/refresh)', () => {
 		expect(cookieStr).toContain('HttpOnly')
 	})
 
-	it('should refresh token for keycloak provider using cookies', async () => {
-		vi.spyOn(clusterUtils, 'getKeycloakConfig').mockReturnValue({
-			host: 'http://keycloak.test/realms/patrolli',
+	it('should refresh token for oidc provider using cookies', async () => {
+		vi.spyOn(clusterUtils, 'getOidcConfig').mockReturnValue({
+			issuer: 'http://idp.test/realms/patrolli',
 			client_id: 'patrolli-test',
 			client_secret: 'secret123',
-			redirect_uri: 'http://localhost:3000/auth/oidc/callback'
+			redirect_uri: 'http://localhost:3000/auth/oidc/callback',
+			scopes: 'openid profile email',
+			token_source: 'access_token',
+			display_name: 'SSO'
 		})
 
-		vi.spyOn(apiBaseService, 'executeHttpRequest').mockResolvedValue({
-			status: 200,
-			statusText: 'OK',
-			headers: {},
-			config: {} as any,
-			data: {
-				access_token: 'new-kc-access-token',
-				refresh_token: 'new-kc-refresh-token',
-				id_token: 'new-kc-id-token'
-			}
+		vi.spyOn(oidcService, 'refreshOidcTokens').mockResolvedValue({
+			access_token: 'new-oidc-access-token',
+			refresh_token: 'new-oidc-refresh-token',
+			id_token: 'new-oidc-id-token'
 		})
 
 		const { default: refreshHandler } = await import('@@/server/api/auth/refresh.post')
 		const mockEvent = createMockEvent(
 			undefined,
-			'refresh_token=old-kc-refresh-token; auth_provider=keycloak'
+			'refresh_token=old-oidc-refresh-token; auth_provider=oidc'
 		)
 
 		vi.stubGlobal('readBody', vi.fn().mockResolvedValue({}))
@@ -171,53 +169,81 @@ describe('Nitro Auth Refresh Endpoint (/api/auth/refresh)', () => {
 
 		const setCookies = mockEvent.node.res.getHeader('set-cookie')
 		const cookieStr = Array.isArray(setCookies) ? setCookies.join('\n') : String(setCookies)
-		expect(cookieStr).toContain('access_token=new-kc-access-token')
-		expect(cookieStr).toContain('refresh_token=new-kc-refresh-token')
+		expect(cookieStr).toContain('access_token=new-oidc-access-token')
+		expect(cookieStr).toContain('refresh_token=new-oidc-refresh-token')
 		expect(cookieStr).toContain('HttpOnly')
 	})
 
-	it('should execute refresh statelessly without in-memory map and set access_token_exp cookie', async () => {
-		vi.spyOn(clusterUtils, 'getKeycloakConfig').mockReturnValue({
-			host: 'http://keycloak.test/realms/patrolli',
+	it('should refresh token for legacy auth_provider=keycloak cookie and via /api/auth/keycloak/refresh', async () => {
+		vi.spyOn(clusterUtils, 'getOidcConfig').mockReturnValue({
+			issuer: 'http://idp.test/realms/patrolli',
 			client_id: 'patrolli-test',
 			client_secret: 'secret123',
-			redirect_uri: 'http://localhost:3000/auth/oidc/callback'
+			redirect_uri: 'http://localhost:3000/auth/oidc/callback',
+			scopes: 'openid profile email',
+			token_source: 'access_token',
+			display_name: 'Keycloak'
+		})
+
+		const refreshSpy = vi.spyOn(oidcService, 'refreshOidcTokens').mockResolvedValue({
+			access_token: 'migrated-oidc-access-token',
+			refresh_token: 'migrated-oidc-refresh-token',
+			id_token: 'migrated-oidc-id-token'
+		})
+
+		const { default: refreshHandler } = await import('@@/server/api/auth/refresh.post')
+		const legacyCookieEvent = createMockEvent(
+			undefined,
+			'refresh_token=legacy-kc-rt; auth_provider=keycloak'
+		)
+		vi.stubGlobal('readBody', vi.fn().mockResolvedValue({}))
+
+		const result1 = await refreshHandler(legacyCookieEvent as any)
+		expect(result1).toMatchObject({ status_code: 200, success: true })
+		const cookies1 = legacyCookieEvent.node.res.getHeader('set-cookie')
+		const cookieStr1 = Array.isArray(cookies1) ? cookies1.join('\n') : String(cookies1)
+		expect(cookieStr1).toContain('access_token=migrated-oidc-access-token')
+		expect(cookieStr1).toContain('auth_provider=oidc')
+
+		const { default: kcRefreshHandler } =
+			await import('@@/server/api/auth/keycloak/refresh.post')
+		const kcEndpointEvent = createMockEvent({ refresh_token: 'direct-kc-rt' })
+		const result2 = await kcRefreshHandler(kcEndpointEvent as any)
+		expect(result2).toMatchObject({ status_code: 200, success: true })
+		expect(refreshSpy).toHaveBeenCalledTimes(2)
+	})
+
+	it('should execute refresh statelessly without in-memory map and set access_token_exp cookie', async () => {
+		vi.spyOn(clusterUtils, 'getOidcConfig').mockReturnValue({
+			issuer: 'http://idp.test/realms/patrolli',
+			client_id: 'patrolli-test',
+			client_secret: 'secret123',
+			redirect_uri: 'http://localhost:3000/auth/oidc/callback',
+			scopes: 'openid profile email',
+			token_source: 'access_token',
+			display_name: 'SSO'
 		})
 
 		const expSecs = Math.floor(Date.now() / 1000) + 300
 		const payloadB64 = Buffer.from(JSON.stringify({ exp: expSecs })).toString('base64url')
 		const jwtWithExp = `hdr.${payloadB64}.sig`
 
-		const execSpy = vi
-			.spyOn(apiBaseService, 'executeHttpRequest')
-			.mockImplementation(async () => {
-				return {
-					status: 200,
-					statusText: 'OK',
-					headers: {},
-					config: {} as any,
-					data: {
-						access_token: jwtWithExp,
-						refresh_token: 'stateless-rt'
-					}
-				}
-			})
+		const refreshSpy = vi
+			.spyOn(oidcService, 'refreshOidcTokens')
+			.mockImplementation(async () => ({
+				access_token: jwtWithExp,
+				refresh_token: 'stateless-rt'
+			}))
 
 		const { default: refreshHandler } = await import('@@/server/api/auth/refresh.post')
 		vi.stubGlobal('readBody', vi.fn().mockResolvedValue({}))
 
-		const ev1 = createMockEvent(
-			undefined,
-			'refresh_token=stateless-rt-1; auth_provider=keycloak'
-		)
-		const ev2 = createMockEvent(
-			undefined,
-			'refresh_token=stateless-rt-1; auth_provider=keycloak'
-		)
+		const ev1 = createMockEvent(undefined, 'refresh_token=stateless-rt-1; auth_provider=oidc')
+		const ev2 = createMockEvent(undefined, 'refresh_token=stateless-rt-1; auth_provider=oidc')
 
 		const [r1, r2] = await Promise.all([refreshHandler(ev1 as any), refreshHandler(ev2 as any)])
 
-		expect(execSpy).toHaveBeenCalledTimes(2)
+		expect(refreshSpy).toHaveBeenCalledTimes(2)
 		expect(r1).toMatchObject({ status_code: 200, success: true })
 		expect(r2).toMatchObject({ status_code: 200, success: true })
 		const cookieStr = Array.isArray(ev1.node.res.getHeader('set-cookie'))
@@ -302,29 +328,28 @@ describe('Nitro Auth Refresh Endpoint (/api/auth/refresh)', () => {
 		expect(String(mockEvent.node.res.getHeader('set-cookie'))).toContain('refreshed-proxy-at')
 	})
 
-	it('should mark session invalid and clear cookies on Keycloak 400 invalid_grant', async () => {
-		vi.spyOn(clusterUtils, 'getKeycloakConfig').mockReturnValue({
-			host: 'http://keycloak.test/realms/patrolli',
+	it('should mark session invalid and clear cookies on OIDC 400 invalid_grant', async () => {
+		vi.spyOn(clusterUtils, 'getOidcConfig').mockReturnValue({
+			issuer: 'http://idp.test/realms/patrolli',
 			client_id: 'patrolli-test',
 			client_secret: 'secret123',
-			redirect_uri: 'http://localhost:3000/auth/oidc/callback'
+			redirect_uri: 'http://localhost:3000/auth/oidc/callback',
+			scopes: 'openid profile email',
+			token_source: 'access_token',
+			display_name: 'SSO'
 		})
 
-		vi.spyOn(apiBaseService, 'executeHttpRequest').mockResolvedValue({
-			status: 400,
-			statusText: 'Bad Request',
-			headers: {},
-			config: {} as any,
-			data: {
-				error: 'invalid_grant',
-				error_description: 'Session not active'
-			}
-		})
+		const oauthErr: any = new Error('Session not active')
+		oauthErr.code = 'OAUTH_RESPONSE_BODY_ERROR'
+		oauthErr.status = 400
+		oauthErr.error = 'invalid_grant'
+		oauthErr.error_description = 'Session not active'
+		vi.spyOn(oidcService, 'refreshOidcTokens').mockRejectedValue(oauthErr)
 
 		const { default: refreshHandler } = await import('@@/server/api/auth/refresh.post')
 		const mockEvent = createMockEvent(
 			undefined,
-			'refresh_token=expired-kc-rt; auth_provider=keycloak'
+			'refresh_token=expired-oidc-rt; auth_provider=oidc'
 		)
 		vi.stubGlobal('readBody', vi.fn().mockResolvedValue({}))
 
@@ -337,6 +362,65 @@ describe('Nitro Auth Refresh Endpoint (/api/auth/refresh)', () => {
 		const setCookies = mockEvent.node.res.getHeader('set-cookie')
 		const cookieStr = Array.isArray(setCookies) ? setCookies.join('\n') : String(setCookies)
 		expect(cookieStr).toContain('refresh_token=;')
+	})
+
+	it('should ignore non-error HTTP status codes on OIDC refresh exceptions and fall back to 502', async () => {
+		vi.spyOn(clusterUtils, 'getOidcConfig').mockReturnValue({
+			issuer: 'http://idp.test/realms/patrolli',
+			client_id: 'patrolli-test',
+			client_secret: 'secret123',
+			redirect_uri: 'http://localhost:3000/auth/oidc/callback',
+			scopes: 'openid profile email',
+			token_source: 'access_token',
+			display_name: 'SSO'
+		})
+
+		const unexpectedErr: any = new Error('Malformed JSON on 200 OK')
+		unexpectedErr.status = 200
+		vi.spyOn(oidcService, 'refreshOidcTokens').mockRejectedValue(unexpectedErr)
+
+		const { default: refreshHandler } = await import('@@/server/api/auth/refresh.post')
+		const mockEvent = createMockEvent(undefined, 'refresh_token=oidc-rt; auth_provider=oidc')
+		vi.stubGlobal('readBody', vi.fn().mockResolvedValue({}))
+
+		const result = await refreshHandler(mockEvent as any)
+		expect(result).toMatchObject({
+			status_code: 502,
+			success: false,
+			is_session_invalid: false
+		})
+	})
+
+	it('should mark session invalid (401) when token_source is id_token and refresh returns opaque access_token without id_token', async () => {
+		vi.spyOn(clusterUtils, 'getOidcConfig').mockReturnValue({
+			issuer: 'http://idp.test/realms/patrolli',
+			client_id: 'patrolli-test',
+			client_secret: 'secret123',
+			redirect_uri: 'http://localhost:3000/auth/oidc/callback',
+			scopes: 'openid profile email',
+			token_source: 'id_token',
+			display_name: 'SSO'
+		})
+
+		vi.spyOn(oidcService, 'refreshOidcTokens').mockResolvedValue({
+			access_token: 'opaque-non-jwt-token',
+			refresh_token: 'new-rt'
+		})
+
+		const { default: refreshHandler } = await import('@@/server/api/auth/refresh.post')
+		const mockEvent = createMockEvent(undefined, 'refresh_token=oidc-rt; auth_provider=oidc')
+		vi.stubGlobal('readBody', vi.fn().mockResolvedValue({}))
+
+		const result = await refreshHandler(mockEvent as any)
+		expect(result).toMatchObject({
+			status_code: 401,
+			success: false,
+			is_session_invalid: true,
+			error: {
+				title: 'OIDC Refresh Error',
+				detail: expect.stringContaining('id_token')
+			}
+		})
 	})
 
 	it('should forward Authorization Bearer without forwarding Cookie header to upstream cluster', async () => {

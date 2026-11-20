@@ -4,7 +4,8 @@
 
 import { type H3Event, deleteCookie, getCookie, parseCookies, setCookie } from 'h3'
 import { isRequestSecure } from '@@/server/services/ssl.service'
-import type { IAuthUser } from '@@/shared/types/auth.type'
+import type { AuthProvider, IAuthUser } from '@@/shared/types/auth.type'
+import { normalizeAuthProvider } from '@@/shared/utils/auth'
 
 const ONE_DAY_SECONDS = 60 * 60 * 24
 const SEVEN_DAYS_SECONDS = ONE_DAY_SECONDS * 7
@@ -41,7 +42,7 @@ export function decodeJwtPayload(token?: string | null): Record<string, any> | n
 	}
 }
 
-export function extractJwtExpirationMs(token?: string | null): number | null {
+function extractJwtExpirationMs(token?: string | null): number | null {
 	const payload = decodeJwtPayload(token)
 	if (!payload || typeof payload.exp !== 'number') return null
 	return payload.exp * 1000
@@ -53,7 +54,7 @@ export function isJwtExpired(token?: string | null, leewaySecs = 30): boolean {
 	return Date.now() >= expMs - leewaySecs * 1000
 }
 
-export function resolveAccessTokenExpiresAtMs(tokens?: IAuthTokens): number | null {
+function resolveAccessTokenExpiresAtMs(tokens?: IAuthTokens): number | null {
 	if (!tokens) return null
 	const jwtExpMs = extractJwtExpirationMs(tokens.access_token)
 	if (jwtExpMs !== null) return jwtExpMs
@@ -122,7 +123,7 @@ export function buildAuthSessionPayload(tokens?: IAuthTokens) {
 export function setAuthCookies(
 	event: H3Event,
 	tokens: IAuthTokens,
-	provider: 'local' | 'keycloak' = 'local',
+	provider: AuthProvider = 'local',
 	activeClusterUrl?: string | null
 ) {
 	const isSecure = isRequestSecure(event)
@@ -195,8 +196,7 @@ export function getAuthCookies(event: H3Event) {
 		access_token: getCookie(event, 'access_token'),
 		refresh_token: getCookie(event, 'refresh_token'),
 		id_token: getCookie(event, 'id_token'),
-		auth_provider:
-			(getCookie(event, 'auth_provider') as 'local' | 'keycloak' | undefined) || null,
+		auth_provider: normalizeAuthProvider(getCookie(event, 'auth_provider')),
 		is_authenticated: getCookie(event, 'is_authenticated') === 'true',
 		active_cluster_url: getCookie(event, 'active_cluster_url') || null
 	}
@@ -213,6 +213,8 @@ export function setUserClustersCookie(event: H3Event, clusters: any[]) {
 	})
 }
 
+export const OIDC_TX_COOKIE_NAME = 'oidc_tx'
+
 const KNOWN_AUTH_COOKIES = [
 	'access_token',
 	'access_token_exp',
@@ -222,7 +224,8 @@ const KNOWN_AUTH_COOKIES = [
 	'auth_provider',
 	'is_authenticated',
 	'active_cluster_url',
-	'user_clusters'
+	'user_clusters',
+	OIDC_TX_COOKIE_NAME
 ]
 
 export function clearAuthCookies(event: H3Event) {

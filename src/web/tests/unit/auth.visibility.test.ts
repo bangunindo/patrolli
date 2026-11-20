@@ -143,7 +143,7 @@ describe('auth-visibility keep-alive plugin', () => {
 			success: true,
 			data: {
 				user: { preferred_username: 'cookie-user', username: 'cookie-user' },
-				auth_provider: 'keycloak'
+				auth_provider: 'oidc'
 			}
 		})
 
@@ -166,7 +166,7 @@ describe('auth-visibility keep-alive plugin', () => {
 			'auth',
 			JSON.stringify({
 				authenticated: true,
-				authProvider: 'keycloak',
+				authProvider: 'oidc',
 				user: { preferred_username: 'stale-localstorage-user', username: 'stale' }
 			})
 		)
@@ -177,7 +177,7 @@ describe('auth-visibility keep-alive plugin', () => {
 			success: true,
 			data: {
 				user: { preferred_username: 'fresh-oidc-user', username: 'fresh-oidc-user' },
-				auth_provider: 'keycloak'
+				auth_provider: 'oidc'
 			}
 		})
 

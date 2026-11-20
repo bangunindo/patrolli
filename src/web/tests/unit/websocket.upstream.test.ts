@@ -4,9 +4,13 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as clusterUtils from '@@/server/services/cluster.service'
+import * as sslService from '@@/server/services/ssl.service'
 import * as authRefreshService from '@@/server/services/auth-refresh.service'
 import { isJwtExpired } from '@@/server/utils/auth-cookies'
 import {
+	clearWebSocketAgentCache,
+	createUpstreamWebSocket,
+	getWebSocketAgent,
 	resolveWebSocketAuthHeader,
 	resolveWebSocketUpstreamUrl
 } from '@@/server/services/websocket.service'
@@ -15,7 +19,7 @@ import type { ICluster } from '@@/shared/types/cluster.type'
 describe('WebSocket Upstream URL Resolution', () => {
 	beforeEach(() => {
 		vi.restoreAllMocks()
-		vi.spyOn(clusterUtils, 'getKeycloakConfig').mockReturnValue(null)
+		vi.spyOn(clusterUtils, 'getOidcConfig').mockReturnValue(null)
 	})
 	const defaultCluster: ICluster = {
 		name: 'patrolli',
@@ -106,11 +110,76 @@ describe('WebSocket Upstream URL Resolution', () => {
 		const refreshSpy = vi.spyOn(authRefreshService, 'performTokenRefresh')
 
 		const authHeader = resolveWebSocketAuthHeader({
-			cookie: `access_token=${expiredJwt}; refresh_token=old-rt; auth_provider=keycloak; active_cluster_url=/patrolli`
+			cookie: `access_token=${expiredJwt}; refresh_token=old-rt; auth_provider=oidc; active_cluster_url=/patrolli`
 		})
 
 		expect(refreshSpy).not.toHaveBeenCalled()
 		expect(authHeader).toBe(`Bearer ${expiredJwt}`)
 		expect(isJwtExpired(expiredJwt)).toBe(true)
+	})
+
+	it('should reuse cached http/https agents, refresh https agent, and drain idle sockets when TLS key changes', () => {
+		clearWebSocketAgentCache()
+		const http1 = getWebSocketAgent(false)
+		const http2 = getWebSocketAgent(false)
+		expect(http1).toBe(http2)
+
+		const keySpy = vi.spyOn(sslService, 'getTlsConnectCacheKey')
+		keySpy.mockReturnValue('true|/ca.pem:100:50')
+		const https1 = getWebSocketAgent(true)
+		const https2 = getWebSocketAgent(true)
+		expect(https1).toBe(https2)
+
+		const idleSocketDestroy = vi.fn()
+		;(https1.freeSockets as any)['example.com:443'] = [{ destroy: idleSocketDestroy }]
+
+		keySpy.mockReturnValue('true|/ca.pem:200:60')
+		const https3 = getWebSocketAgent(true)
+		expect(https3).not.toBe(https1)
+		expect(idleSocketDestroy).toHaveBeenCalledTimes(1)
+		clearWebSocketAgentCache()
+	})
+
+	it('should not throw in getWebSocketAgent(true) when getOidcConfig throws', () => {
+		clearWebSocketAgentCache()
+		vi.spyOn(clusterUtils, 'getOidcConfig').mockImplementation(() => {
+			throw new Error('Configuration file not found or empty')
+		})
+
+		expect(() => getWebSocketAgent(true)).not.toThrow()
+		clearWebSocketAgentCache()
+	})
+
+	it('should not hardcode rejectUnauthorized: false in createUpstreamWebSocket', async () => {
+		const https = await import('node:https')
+		const { EventEmitter } = await import('node:events')
+
+		let capturedOptions: Record<string, any> | undefined
+		const requestSpy = vi.spyOn(https.default, 'request').mockImplementation((opts: any) => {
+			capturedOptions = opts
+			const fakeReq: any = new EventEmitter()
+			fakeReq.end = vi.fn()
+			fakeReq.destroy = vi.fn()
+			fakeReq.setTimeout = vi.fn()
+			return fakeReq
+		})
+
+		try {
+			const agent = getWebSocketAgent(true)
+			const ws = createUpstreamWebSocket('wss://127.0.0.1:1/ws/test', {
+				headers: { authorization: 'Bearer test' },
+				agent
+			})
+			ws.on('error', () => {})
+			ws.terminate()
+
+			expect(requestSpy).toHaveBeenCalledTimes(1)
+			expect(capturedOptions?.agent).toBe(agent)
+			expect(capturedOptions?.rejectUnauthorized).toBeUndefined()
+			expect(capturedOptions?.headers?.authorization).toBe('Bearer test')
+		} finally {
+			requestSpy.mockRestore()
+			clearWebSocketAgentCache()
+		}
 	})
 })

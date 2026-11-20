@@ -96,6 +96,7 @@ if [[ -n "${GITHUB_ENV:-}" ]]; then
 	{
 		echo "E2E_USERNAME=admin"
 		echo "E2E_PASSWORD=${E2E_ADMIN_PASSWORD}"
+		echo "E2E_OIDC_ORIGIN=https://kc.localtest.me:8443"
 	} >> "${GITHUB_ENV}"
 fi
 

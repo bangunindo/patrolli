@@ -6,7 +6,7 @@ import { expect } from '@playwright/test'
 import { STORAGE_STATE, test } from '../../fixtures/test-fixtures'
 
 test.describe('Feature: User Management (/user-management)', () => {
-	test.describe('Multi-Cluster Session (Keycloak SSO)', () => {
+	test.describe('Multi-Cluster Session (OIDC SSO)', () => {
 		test.use({ storageState: STORAGE_STATE.MULTI_CLUSTER })
 
 		test('renders user management page with stats cards, table headers, and action button @smoke', async ({

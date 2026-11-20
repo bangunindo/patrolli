@@ -10,7 +10,8 @@ import appHelper from '@/app/helpers/app.helper'
 import AppInputCluster from '@/components/app/input/AppInputCluster.vue'
 import { useAuthStore } from '@/stores/auth.store'
 import type { ILoginBody } from '@@/shared/types/auth.type'
-import { onMounted, reactive, ref } from 'vue'
+import type { IOidcPublicConfig } from '@@/shared/types/oidc.type'
+import { computed, onMounted, reactive, ref } from 'vue'
 
 definePageMeta({
 	layout: 'auth',
@@ -42,6 +43,23 @@ const togglePasswordView = () => {
 	passwordView.value = !passwordView.value
 }
 
+const defaultOidcConfig: IOidcPublicConfig = {
+	enabled: false,
+	display_name: 'SSO'
+}
+
+const { data: oidcConfigResponse } = await useFetch<{
+	success: boolean
+	data?: IOidcPublicConfig
+}>('/api/auth/oidc/config', {
+	default: () => ({ success: true, data: defaultOidcConfig })
+})
+
+const oidcConfig = computed<IOidcPublicConfig>(() => {
+	const res = oidcConfigResponse.value
+	return res?.success && res.data ? res.data : defaultOidcConfig
+})
+
 onMounted(() => {
 	const defaultCluster = appHelper.getDefaultClusterValue()
 	if (defaultCluster) {
@@ -68,11 +86,11 @@ const doLogin = async () => {
 	}
 }
 
-const keycloakLoading = ref<boolean>(false)
-const loginWithKeycloak = async () => {
+const oidcLoading = ref<boolean>(false)
+const loginWithOidc = async () => {
 	try {
-		keycloakLoading.value = true
-		const response = await authApi.getKeycloakLoginUrl()
+		oidcLoading.value = true
+		const response = await authApi.getOidcLoginUrl()
 		if (response && response.data?.url) {
 			window.location.href = response.data.url
 		} else {
@@ -80,7 +98,7 @@ const loginWithKeycloak = async () => {
 		}
 	} catch (error) {
 		console.error(error)
-		keycloakLoading.value = false
+		oidcLoading.value = false
 	}
 }
 </script>
@@ -89,7 +107,6 @@ const loginWithKeycloak = async () => {
 	<div
 		class="w-full max-w-[480px] bg-white border border-[#E2E8F0] rounded-2xl sm:rounded-3xl lg:rounded-[24px] p-6 sm:p-8 lg:p-10 shadow-[0px_18px_42px_-12px_rgba(0,0,0,0.35)] backdrop-blur-md transition-all duration-200"
 	>
-		<!-- Header: Brand Logo & Title -->
 		<div class="flex flex-col items-center mb-4">
 			<div
 				class="text-[32px] sm:text-[37.6px] font-bold leading-none tracking-[0.089em] select-none mb-3"
@@ -103,7 +120,6 @@ const loginWithKeycloak = async () => {
 			</h1>
 		</div>
 
-		<!-- Login Form -->
 		<form
 			id="kr-login-form"
 			method="POST"
@@ -171,28 +187,28 @@ const loginWithKeycloak = async () => {
 				Sign in
 			</UiButton>
 
-			<!-- Divider: Or continue with -->
-			<div class="relative flex items-center justify-center my-1">
-				<div class="border-t border-[#E2E8F0] dark:border-border w-full absolute"></div>
-				<span
-					class="bg-white dark:bg-card px-3 text-xs text-[#64748B] dark:text-muted-foreground font-normal relative z-10 select-none"
-				>
-					Or continue with
-				</span>
-			</div>
+			<template v-if="oidcConfig.enabled">
+				<div class="relative flex items-center justify-center my-1">
+					<div class="border-t border-[#E2E8F0] dark:border-border w-full absolute"></div>
+					<span
+						class="bg-white dark:bg-card px-3 text-xs text-[#64748B] dark:text-muted-foreground font-normal relative z-10 select-none"
+					>
+						Or continue with
+					</span>
+				</div>
 
-			<!-- SSO: Keycloak Button -->
-			<UiButton
-				id="kr-login-form__keycloak-btn"
-				type="button"
-				variant="outline"
-				class="w-full bg-background"
-				:disabled="keycloakLoading"
-				@click="loginWithKeycloak"
-			>
-				<UiIcon v-if="keycloakLoading" name="loading" class="w-4 h-4 mr-2 animate-spin" />
-				Sign in with Keycloak
-			</UiButton>
+				<UiButton
+					id="kr-login-form__oidc-btn"
+					type="button"
+					variant="outline"
+					class="w-full bg-background"
+					:disabled="oidcLoading"
+					@click="loginWithOidc"
+				>
+					<UiIcon v-if="oidcLoading" name="loading" class="w-4 h-4 mr-2 animate-spin" />
+					Sign in with {{ oidcConfig.display_name }}
+				</UiButton>
+			</template>
 		</form>
 	</div>
 </template>

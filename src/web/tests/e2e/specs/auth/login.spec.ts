@@ -63,14 +63,20 @@ test.describe('Authentication & Session Lifecycle', () => {
 			expect(page.url()).toContain('/account/login')
 		})
 
-		test('logs in via Keycloak SSO and verifies multi-cluster access is active', async ({
+		test('displays OIDC SSO button based on server public config', async ({ authPage }) => {
+			await authPage.gotoLogin()
+			await expect(authPage.oidcButton).toBeVisible({ timeout: 15_000 })
+			await expect(authPage.oidcButton).toContainText('Sign in with')
+		})
+
+		test('logs in via OIDC SSO and verifies multi-cluster access is active', async ({
 			authPage,
 			page
 		}) => {
 			const username = process.env.E2E_USERNAME || 'admin'
 			const password = process.env.E2E_PASSWORD || 'admin'
 
-			await authPage.loginKeycloak(username, password)
+			await authPage.loginOidc(username, password)
 
 			// Wait for redirection back to application shell
 			await expect(page.locator('header nav')).toBeVisible({ timeout: 15_000 })

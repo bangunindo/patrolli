@@ -5,11 +5,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
+import tls from 'node:tls'
 import type { H3Event } from 'h3'
 import { getRequestHeader } from 'h3'
-import YAML from 'yaml'
+import { getDefaultCacheCheckTtlMs, readCachedYamlConfigFile } from './config-file.service'
 
-export interface ISslConfig {
+interface ISslConfig {
 	enabled?: boolean
 	cert?: string
 	key?: string
@@ -17,7 +18,7 @@ export interface ISslConfig {
 	reject_unauthorized?: boolean
 }
 
-export interface ILoadedSslConfig {
+interface ILoadedSslConfig {
 	certPath: string
 	keyPath: string
 	cert: string
@@ -27,47 +28,82 @@ export interface ILoadedSslConfig {
 	rejectUnauthorized?: boolean
 }
 
-function getCandidateConfigFilePaths(configPath?: string): string[] {
-	const explicitPath = configPath || process.env.CONFIG_FILE
-
-	return explicitPath
-		? [explicitPath]
-		: [
-				path.resolve(process.cwd(), 'config-fe.yaml'),
-				path.resolve(process.cwd(), 'config-fe.yml'),
-				'/app/config-fe.yaml',
-				'/config-fe.yaml'
-			]
+interface ICachedCaEntry {
+	mtimeMs: number
+	size: number
+	checkedAt: number
+	content: string
 }
 
-/**
- * Returns raw SSL configuration object from config-fe.yaml if present.
- */
-export function getSslConfig(configPath?: string): ISslConfig | null {
-	const candidatePaths = getCandidateConfigFilePaths(configPath)
+interface ICachedCaStatEntry {
+	checkedAt: number
+	fingerprint: string
+}
 
-	for (const filePath of candidatePaths) {
-		try {
-			if (fs.existsSync(filePath)) {
-				const content = fs.readFileSync(filePath, 'utf-8')
-				if (content.trim()) {
-					const parsed = YAML.parse(content)
-					if (parsed?.ssl && typeof parsed.ssl === 'object') {
-						return parsed.ssl
-					}
-				}
-			}
-		} catch {
-			// Skip to next candidate if error reading file
+const caCertCache = new Map<string, ICachedCaEntry>()
+const caStatCache = new Map<string, ICachedCaStatEntry>()
+
+export function clearCaCertCache(): void {
+	caCertCache.clear()
+	caStatCache.clear()
+}
+
+function readCaCertCached(
+	resolvedPath: string,
+	statTtlMs: number = getDefaultCacheCheckTtlMs()
+): string | null {
+	const now = Date.now()
+	if (statTtlMs > 0) {
+		const cached = caCertCache.get(resolvedPath)
+		if (cached && now - cached.checkedAt < statTtlMs) {
+			return cached.content
 		}
+	}
+
+	try {
+		if (!fs.existsSync(resolvedPath)) {
+			caCertCache.delete(resolvedPath)
+			return null
+		}
+
+		let stat: fs.Stats | null = null
+		try {
+			stat = fs.statSync(resolvedPath)
+		} catch {
+			stat = null
+		}
+
+		if (stat) {
+			const cached = caCertCache.get(resolvedPath)
+			if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+				cached.checkedAt = now
+				return cached.content
+			}
+		}
+
+		const content = fs.readFileSync(resolvedPath, 'utf-8')
+		if (stat) {
+			caCertCache.set(resolvedPath, {
+				mtimeMs: stat.mtimeMs,
+				size: stat.size,
+				checkedAt: now,
+				content
+			})
+		}
+		return content
+	} catch {
+		return null
+	}
+}
+
+export function getSslConfig(configPath?: string): ISslConfig | null {
+	const loaded = readCachedYamlConfigFile(configPath)
+	if (loaded?.parsed?.ssl && typeof loaded.parsed.ssl === 'object') {
+		return loaded.parsed.ssl
 	}
 	return null
 }
 
-/**
- * Reads, resolves file paths, and verifies SSL certificate and key files.
- * Returns ready-to-use cert and key strings/paths for Nuxt devServer and Nitro SSL listeners.
- */
 export function loadSslConfig(configPath?: string): ILoadedSslConfig | null {
 	const ssl = getSslConfig(configPath)
 	if (!ssl || ssl.enabled === false) {
@@ -102,7 +138,6 @@ export function loadSslConfig(configPath?: string): ILoadedSslConfig | null {
 		const cert = fs.readFileSync(certPath, 'utf-8')
 		const key = fs.readFileSync(keyPath, 'utf-8')
 
-		// Populate Nitro node-server native environment variables
 		process.env.NITRO_SSL_CERT = cert
 		process.env.NITRO_SSL_KEY = key
 
@@ -153,9 +188,18 @@ export function loadSslConfig(configPath?: string): ILoadedSslConfig | null {
 	}
 }
 
-/**
- * Checks whether the incoming request or current environment is running securely under HTTPS.
- */
+export function parseForwardedProto(
+	rawHeader: string | string[] | undefined
+): 'http' | 'https' | null {
+	const rawValue = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader
+	if (typeof rawValue !== 'string') return null
+	const firstProto = rawValue.split(',')[0]?.trim().toLowerCase()
+	if (firstProto === 'https' || firstProto === 'http') {
+		return firstProto
+	}
+	return null
+}
+
 export function isRequestSecure(event?: H3Event): boolean {
 	if (process.env.COOKIE_SECURE === 'true') return true
 	if (process.env.COOKIE_SECURE === 'false') return false
@@ -166,18 +210,99 @@ export function isRequestSecure(event?: H3Event): boolean {
 	}
 
 	if (event) {
-		// Check direct TLS socket encryption (standalone direct HTTPS)
 		const socket = event.node?.req?.socket as any
 		if (socket?.encrypted) {
 			return true
 		}
 
-		// Check proxy forwarding header (if reverse proxy / load balancer is present)
-		const proto = getRequestHeader(event, 'x-forwarded-proto')
-		if (proto === 'https') {
+		// Use the first token for multi-hop proxies (e.g. "https, http")
+		if (parseForwardedProto(getRequestHeader(event, 'x-forwarded-proto')) === 'https') {
 			return true
 		}
 	}
 
 	return process.env.NODE_ENV === 'production'
+}
+
+function resolveTlsInputs(extraCaPaths: Array<string | undefined> = []): {
+	rejectUnauthorized: boolean
+	caPaths: string[]
+} {
+	const sslConfig = getSslConfig()
+	const rejectUnauthorized =
+		sslConfig?.reject_unauthorized !== undefined
+			? sslConfig.reject_unauthorized
+			: process.env.NODE_ENV === 'production'
+
+	const seenPaths = new Set<string>()
+	const caPaths: string[] = []
+	const candidates = [sslConfig?.ca, ...extraCaPaths].filter(Boolean) as string[]
+
+	for (const candidate of candidates) {
+		const resolvedPath = path.isAbsolute(candidate)
+			? candidate
+			: path.resolve(process.cwd(), candidate)
+		if (seenPaths.has(resolvedPath)) continue
+		seenPaths.add(resolvedPath)
+		caPaths.push(resolvedPath)
+	}
+
+	return { rejectUnauthorized, caPaths }
+}
+
+export function getTlsConnectCacheKey(
+	extraCaPaths: Array<string | undefined> = [],
+	statTtlMs: number = getDefaultCacheCheckTtlMs()
+): string {
+	const { rejectUnauthorized, caPaths } = resolveTlsInputs(extraCaPaths)
+	const now = Date.now()
+	const parts: string[] = [String(rejectUnauthorized)]
+
+	for (const resolvedPath of caPaths) {
+		if (statTtlMs > 0) {
+			const cachedStat = caStatCache.get(resolvedPath)
+			if (cachedStat && now - cachedStat.checkedAt < statTtlMs) {
+				parts.push(cachedStat.fingerprint)
+				continue
+			}
+		}
+
+		let fingerprint: string
+		try {
+			if (fs.existsSync(resolvedPath)) {
+				const stat = fs.statSync(resolvedPath)
+				fingerprint = `${resolvedPath}:${stat.mtimeMs}:${stat.size}`
+			} else {
+				fingerprint = `${resolvedPath}:missing`
+			}
+		} catch {
+			fingerprint = `${resolvedPath}:unknown`
+		}
+
+		caStatCache.set(resolvedPath, { checkedAt: now, fingerprint })
+		parts.push(fingerprint)
+	}
+
+	return parts.join('|')
+}
+
+export function resolveTlsConnectOptions(extraCaPaths: Array<string | undefined> = []): {
+	rejectUnauthorized: boolean
+	ca?: string[]
+} {
+	const { rejectUnauthorized, caPaths } = resolveTlsInputs(extraCaPaths)
+	const caList: string[] = []
+
+	for (const resolvedPath of caPaths) {
+		const content = readCaCertCached(resolvedPath)
+		if (content !== null) {
+			caList.push(content)
+		}
+	}
+
+	return {
+		rejectUnauthorized,
+		// Extend Node's built-in root CAs rather than replacing them so internal CAs do not break public OIDC/HTTPS endpoints
+		...(caList.length > 0 ? { ca: [...tls.rootCertificates, ...caList] } : {})
+	}
 }
