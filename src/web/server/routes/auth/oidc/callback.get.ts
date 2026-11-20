@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { defineEventHandler } from 'h3'
-import { handleOidcCallback } from '@@/server/modules/auth/auth.controller'
+import { handleOidcCallback } from '@@/server/modules/oidc/oidc.controller'
 
 export default defineEventHandler((event) => {
 	return handleOidcCallback(event)

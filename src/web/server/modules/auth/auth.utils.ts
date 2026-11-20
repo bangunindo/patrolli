@@ -4,18 +4,16 @@
 
 import type { H3Event } from 'h3'
 import { getCookie, getQuery, getRequestHeaders } from 'h3'
+import { normalizeAuthProvider } from '@@/shared/utils/auth'
 import type { AuthProvider } from '@@/shared/types/auth.type'
 
-/**
- * Extracts auth credentials & refresh tokens from request cookies or payload
- */
 export function extractAuthRefreshParams(event: H3Event, body?: any) {
 	const reqHeaders = getRequestHeaders(event)
 	const query = getQuery(event)
 
 	const refreshToken = getCookie(event, 'refresh_token') || body?.refresh_token || null
 	const authProvider: AuthProvider =
-		(getCookie(event, 'auth_provider') as AuthProvider) || body?.auth_provider || 'local'
+		normalizeAuthProvider(getCookie(event, 'auth_provider') || body?.auth_provider) || 'local'
 
 	const clusterHeader =
 		(reqHeaders['x-cluster-url'] as string | undefined) ||
@@ -32,16 +30,10 @@ export function extractAuthRefreshParams(event: H3Event, body?: any) {
 	}
 }
 
-/**
- * Checks whether a path parameter corresponds to a login request
- */
 export function isLoginPath(pathParam: string, fullAuthPath: string): boolean {
 	return pathParam.replace(/\/$/, '') === 'login' || fullAuthPath.includes('/auth/login')
 }
 
-/**
- * Checks whether a path parameter corresponds to a logout request
- */
 export function isLogoutPath(pathParam: string, fullAuthPath: string): boolean {
 	return pathParam.replace(/\/$/, '') === 'logout' || fullAuthPath.includes('/auth/logout')
 }

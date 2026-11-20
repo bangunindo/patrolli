@@ -8,7 +8,6 @@ import {
 	getQuery,
 	getRequestHeaders,
 	readBody,
-	setResponseHeader,
 	setResponseHeaders,
 	setResponseStatus
 } from 'h3'
@@ -18,19 +17,12 @@ import {
 	extractTokenPayload,
 	setAuthCookies
 } from '@@/server/utils/auth-cookies'
-import { renderOidcErrorHtml, renderOidcSuccessHtml } from '@@/server/utils/auth-html'
 import { getClustersConfig, resolveClusterTargets } from '@@/server/services/cluster.service'
 import {
 	executeClusterRequestsWithAuthRetry,
 	performTokenRefresh,
 	sanitizeUnauthenticatedHeaders
 } from '@@/server/services/auth-refresh.service'
-import { exchangeKeycloakCode } from '@@/server/modules/keycloak/keycloak.api'
-import {
-	formatKeycloakConnectionError,
-	getValidatedKeycloakConfig,
-	resolveDynamicOidcRedirectUri
-} from '@@/server/modules/keycloak/keycloak.utils'
 import { verifyUserClusterAccess } from '@@/server/services/cluster-access.service'
 import type { AuthProvider } from '@@/shared/types/auth.type'
 import type { ICluster } from '@@/shared/types/cluster.type'
@@ -87,15 +79,6 @@ export async function establishAuthSession(
 	return buildAuthSessionPayload(tokens)
 }
 
-function respondOidcHtml(event: H3Event, status: number, html: string): string {
-	setResponseStatus(event, status)
-	setResponseHeader(event, 'content-type', 'text/html; charset=utf-8')
-	return html
-}
-
-/**
- * Handles /auth/[...path] multi-cluster authentication route (login, logout, etc.)
- */
 export async function handleAuthProxy(event: H3Event) {
 	const method = event.method
 	const pathParam = event.context.params?.path || ''
@@ -222,9 +205,6 @@ export async function handleAuthProxy(event: H3Event) {
 	}
 }
 
-/**
- * Handles /api/auth/refresh endpoint for local & keycloak token refreshing
- */
 export async function handleAuthRefresh(event: H3Event, forcedProvider?: AuthProvider) {
 	let body: any = {}
 	try {
@@ -268,45 +248,5 @@ export async function handleAuthRefresh(event: H3Event, forcedProvider?: AuthPro
 		status_code: result.status,
 		success: true,
 		data: buildAuthSessionPayload(result.tokens)
-	}
-}
-
-/**
- * Handles /auth/oidc/callback route rendering HTML popup result
- */
-export async function handleOidcCallback(event: H3Event) {
-	const query = getQuery(event)
-	const code = query.code as string | undefined
-	const error = (query.error_description || query.error) as string | undefined
-
-	if (error || !code) {
-		const errMessage = error || 'Authorization code not found in callback query.'
-		return respondOidcHtml(event, 400, renderOidcErrorHtml(errMessage))
-	}
-
-	const { config: kcConfig, errorPayload } = getValidatedKeycloakConfig()
-	if (!kcConfig) {
-		return respondOidcHtml(event, 500, renderOidcErrorHtml(errorPayload.error.detail))
-	}
-
-	const dynamicRedirectUri = resolveDynamicOidcRedirectUri(event, kcConfig.redirect_uri)
-
-	try {
-		const response = await exchangeKeycloakCode(kcConfig, code, dynamicRedirectUri)
-		const data = response.data
-
-		if (response.status >= 400 || !data?.access_token) {
-			const errMessage =
-				data?.error_description ||
-				data?.error ||
-				`Token exchange failed with status ${response.status}`
-			const errStatus = response.status >= 400 ? response.status : 400
-			return respondOidcHtml(event, errStatus, renderOidcErrorHtml(errMessage))
-		}
-
-		await establishAuthSession(event, data, 'keycloak')
-		return respondOidcHtml(event, 200, renderOidcSuccessHtml())
-	} catch (err: any) {
-		return respondOidcHtml(event, 502, renderOidcErrorHtml(formatKeycloakConnectionError(err)))
 	}
 }
