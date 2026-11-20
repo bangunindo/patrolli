@@ -20,7 +20,7 @@ auth:
         issuer: 'https://kc.localtest.me:8443/realms/patrolli'
         client_id: 'patrolli-ssr'
         client_secret: '__E2E_OIDC_SECRET__'
-        redirect_uri: 'http://localhost:3000/auth/oidc/callback'
+        redirect_uri: 'https://localhost:3000/auth/oidc/callback'
         scopes: 'openid profile email'
         token_source: 'access_token'
         display_name: 'Keycloak'
