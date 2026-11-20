@@ -100,7 +100,7 @@ export class BasePage {
 	async expectMultiClusterActive() {
 		const trigger = await this.getActiveClusterTrigger()
 		await trigger.waitFor({ state: 'visible', timeout: 10_000 })
-		// In multi-cluster mode (Keycloak SSO), the selector is enabled and interactive
+		// In multi-cluster mode (OIDC SSO), the selector is enabled and interactive
 		await expect(trigger).not.toHaveClass(/cursor-not-allowed/)
 
 		// Clicking opens options dropdown and reveals cluster options

@@ -5,7 +5,7 @@
 import { test, expect, STORAGE_STATE } from '../../fixtures/test-fixtures'
 
 test.describe('Pipeline Management Feature', () => {
-	test.describe('Multi-Cluster Session (Keycloak SSO)', () => {
+	test.describe('Multi-Cluster Session (OIDC SSO)', () => {
 		test('renders pipeline dashboard with table headers, action buttons, and table structure @smoke', async ({
 			pipelinePage
 		}) => {

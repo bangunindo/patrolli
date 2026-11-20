@@ -10,7 +10,7 @@ export class AuthPage extends BasePage {
 	readonly usernameInput: Locator
 	readonly passwordInput: Locator
 	readonly submitButton: Locator
-	readonly keycloakButton: Locator
+	readonly oidcButton: Locator
 	readonly errorMessage: Locator
 
 	constructor(page: Page) {
@@ -19,7 +19,7 @@ export class AuthPage extends BasePage {
 		this.usernameInput = page.locator('input[name="b-login-form__email"]')
 		this.passwordInput = page.locator('input[name="b-login-form__password"]')
 		this.submitButton = page.locator('#kr-login-form__submit-btn')
-		this.keycloakButton = page.locator('#kr-login-form__keycloak-btn')
+		this.oidcButton = page.locator('#kr-login-form__oidc-btn')
 		this.errorMessage = page.locator('.text-rose-500')
 	}
 
@@ -43,13 +43,14 @@ export class AuthPage extends BasePage {
 		await this.submit()
 	}
 
-	async clickKeycloakSSO() {
-		await this.keycloakButton.click()
+	async clickOidcSSO() {
+		await this.oidcButton.waitFor({ state: 'visible', timeout: 15_000 })
+		await this.oidcButton.click()
 	}
 
-	async loginKeycloak(username: string, password: string) {
+	async loginOidc(username: string, password: string) {
 		await this.gotoLogin()
-		await this.clickKeycloakSSO()
+		await this.clickOidcSSO()
 		await this.page.waitForSelector('#username', { state: 'visible', timeout: 15_000 })
 		await this.page.locator('#username').fill(username)
 		await this.page.locator('#password').fill(password)

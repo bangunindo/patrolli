@@ -120,7 +120,9 @@ export const test = base.extend<ExtendedFixtures>({
 					try {
 						const reqUrl = new URL(request.url())
 						const isLocalOrigin = reqUrl.origin === allowedOrigin
-						const isKeycloakAuth = reqUrl.origin.includes('kc.localtest.me')
+						const oidcOrigin = process.env.E2E_OIDC_ORIGIN || 'kc.localtest.me'
+						const isOidcAuth =
+							reqUrl.origin === oidcOrigin || reqUrl.origin.includes(oidcOrigin)
 						const isStaticCdn =
 							reqUrl.origin.includes('api.iconify.design') ||
 							reqUrl.origin.includes('fonts.googleapis.com') ||
@@ -130,7 +132,7 @@ export const test = base.extend<ExtendedFixtures>({
 							reqUrl.pathname.startsWith('/auth/') ||
 							reqUrl.pathname.startsWith('/_nuxt/')
 
-						if (!isLocalOrigin && !isKeycloakAuth && !isStaticCdn) {
+						if (!isLocalOrigin && !isOidcAuth && !isStaticCdn) {
 							externalViolations.push(`[${request.method()}] ${request.url()}`)
 						} else if (isLocalOrigin && !isAllowedPath) {
 							// Allow same-origin page loads and assets
