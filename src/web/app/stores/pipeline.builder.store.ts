@@ -310,6 +310,8 @@ export const usePipelineBuildStore = defineStore(
 			loading.canvas = true
 			error.value = null
 			isDirty.value = false
+			nodes.value = []
+			edges.value = []
 			selectedNode.value = undefined
 			hostSelectorModalOpen.value = false
 			sinkSelectorModalOpen.value = false
@@ -407,6 +409,7 @@ export const usePipelineBuildStore = defineStore(
 
 				// 3. Reconcile Nodes & Edges from Backend Graph or Fallback Empty States
 				buildGraphRepresentation()
+				isDirty.value = false
 			} catch (err: any) {
 				error.value = err.message || 'Failed to load pipeline builder canvas'
 			} finally {
