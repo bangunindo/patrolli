@@ -3,93 +3,96 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import axios, { type AxiosInstance, type AxiosRequestConfig, type AxiosResponse } from 'axios'
-import fs from 'node:fs'
 import http from 'node:http'
 import https from 'node:https'
-import path from 'node:path'
-import { getKeycloakConfig } from './cluster.service'
-import { getSslConfig } from './ssl.service'
+import { getOidcConfig } from './cluster.service'
+import { getDefaultCacheCheckTtlMs } from './config-file.service'
+import { getTlsConnectCacheKey, resolveTlsConnectOptions } from './ssl.service'
 
-let cachedClient: AxiosInstance | null = null
+let cachedClient: {
+	key: string
+	checkedAt: number
+	client: AxiosInstance
+	httpAgent: http.Agent
+	httpsAgent: https.Agent
+} | null = null
 
-/**
- * Creates an HTTPS Agent configured with SSL certificates and verification rules from config-fe.yaml
- */
-export function createHttpsAgent(): https.Agent {
-	const sslConfig = getSslConfig()
-	const kcConfig = getKeycloakConfig()
+export function resolveOidcCaPath(): string | undefined {
+	try {
+		return getOidcConfig()?.ca_cert_path
+	} catch {
+		return undefined
+	}
+}
 
-	const rejectUnauthorized =
-		sslConfig?.reject_unauthorized !== undefined
-			? sslConfig.reject_unauthorized
-			: process.env.NODE_ENV === 'production'
-
-	const caList: string[] = []
-	const caCandidatePaths = [sslConfig?.ca, kcConfig?.ca_cert_path].filter(Boolean) as string[]
-
-	for (const candidate of caCandidatePaths) {
-		const resolvedPath = path.isAbsolute(candidate)
-			? candidate
-			: path.resolve(process.cwd(), candidate)
-		try {
-			if (fs.existsSync(resolvedPath)) {
-				caList.push(fs.readFileSync(resolvedPath, 'utf-8'))
-			}
-		} catch {
-			// Skip candidate if unreadable
+export function drainAgentIdleSockets(agent?: http.Agent): void {
+	if (!agent) return
+	for (const sockets of Object.values(agent.freeSockets)) {
+		for (const socket of sockets || []) {
+			socket.destroy()
 		}
 	}
+}
+
+export function clearServerHttpClientCache(): void {
+	if (!cachedClient) return
+	cachedClient.httpAgent.destroy()
+	cachedClient.httpsAgent.destroy()
+	cachedClient = null
+}
+
+export function createHttpsAgent(): https.Agent {
+	const oidcCaPath = resolveOidcCaPath()
+	const { rejectUnauthorized, ca } = resolveTlsConnectOptions([oidcCaPath])
 
 	return new https.Agent({
 		rejectUnauthorized,
 		keepAlive: true,
-		ca: caList.length > 0 ? caList : undefined
+		ca
 	})
 }
 
-/**
- * Creates an HTTP Agent with keepAlive enabled
- */
 export function createHttpAgent(): http.Agent {
 	return new http.Agent({
 		keepAlive: true
 	})
 }
 
-/**
- * Returns or creates the singleton server-side Axios client configured with custom TLS agents
- */
-export function getServerHttpClient(): AxiosInstance {
-	if (cachedClient) {
-		return cachedClient
+export function getServerHttpClient(
+	checkTtlMs: number = getDefaultCacheCheckTtlMs()
+): AxiosInstance {
+	const now = Date.now()
+	if (checkTtlMs > 0 && cachedClient && now - cachedClient.checkedAt < checkTtlMs) {
+		return cachedClient.client
 	}
 
-	cachedClient = axios.create({
-		httpAgent: createHttpAgent(),
-		httpsAgent: createHttpsAgent(),
-		validateStatus: () => true, // Return all HTTP statuses without throwing
+	const key = getTlsConnectCacheKey([resolveOidcCaPath()])
+	if (cachedClient && cachedClient.key === key) {
+		cachedClient.checkedAt = now
+		return cachedClient.client
+	}
+
+	const prevHttpsAgent = cachedClient?.httpsAgent
+	const httpAgent = cachedClient?.httpAgent ?? createHttpAgent()
+	const httpsAgent = createHttpsAgent()
+	const client = axios.create({
+		httpAgent,
+		httpsAgent,
+		validateStatus: () => true,
 		timeout: 30000,
-		maxBodyLength: 50 * 1024 * 1024, // 🔒 50 MB safe body limit
-		maxContentLength: 50 * 1024 * 1024 // 🔒 50 MB safe content limit
+		maxBodyLength: 50 * 1024 * 1024,
+		maxContentLength: 50 * 1024 * 1024
 	})
 
-	return cachedClient
+	cachedClient = { key, checkedAt: now, client, httpAgent, httpsAgent }
+	drainAgentIdleSockets(prevHttpsAgent)
+
+	return client
 }
 
-/**
- * Functional wrapper to execute an HTTP request using the server HTTP client
- */
 export async function executeHttpRequest<T = any>(
 	config: AxiosRequestConfig
 ): Promise<AxiosResponse<T>> {
 	const client = getServerHttpClient()
 	return client.request<T>(config)
 }
-
-export const serverHttpClient: AxiosInstance = new Proxy({} as AxiosInstance, {
-	get(_target, prop, receiver) {
-		const client = getServerHttpClient()
-		const value = Reflect.get(client, prop, receiver)
-		return typeof value === 'function' ? value.bind(client) : value
-	}
-})

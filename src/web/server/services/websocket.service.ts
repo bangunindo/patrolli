@@ -2,76 +2,53 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import fs from 'node:fs'
-import http from 'node:http'
-import https from 'node:https'
-import path from 'node:path'
+import type http from 'node:http'
+import type https from 'node:https'
 import WebSocket from 'ws'
-import { getKeycloakConfig } from './cluster.service'
-import { getSslConfig } from './ssl.service'
+import {
+	createHttpAgent,
+	createHttpsAgent,
+	drainAgentIdleSockets,
+	resolveOidcCaPath
+} from './apibase.service'
+import { getTlsConnectCacheKey } from './ssl.service'
 import type { ICluster } from '@@/shared/types/cluster.type'
 
-/**
- * Creates an HTTPS Agent for upstream WebSocket connections
- * configured with SSL certificates and verification rules from config-fe.yaml
- */
-export function createWebSocketHttpsAgent(): https.Agent {
-	const sslConfig = getSslConfig()
-	const kcConfig = getKeycloakConfig()
+let cachedWsHttpAgent: http.Agent | null = null
+let cachedWsHttpsAgent: { key: string; agent: https.Agent } | null = null
 
-	const rejectUnauthorized =
-		sslConfig?.reject_unauthorized !== undefined
-			? sslConfig.reject_unauthorized
-			: process.env.NODE_ENV === 'production'
+export function clearWebSocketAgentCache(): void {
+	cachedWsHttpAgent?.destroy()
+	cachedWsHttpAgent = null
+	cachedWsHttpsAgent?.agent.destroy()
+	cachedWsHttpsAgent = null
+}
 
-	const caList: string[] = []
-	const caCandidatePaths = [sslConfig?.ca, kcConfig?.ca_cert_path].filter(Boolean) as string[]
-
-	for (const candidate of caCandidatePaths) {
-		const resolvedPath = path.isAbsolute(candidate)
-			? candidate
-			: path.resolve(process.cwd(), candidate)
-		try {
-			if (fs.existsSync(resolvedPath)) {
-				caList.push(fs.readFileSync(resolvedPath, 'utf-8'))
-			}
-		} catch {
-			// Skip candidate if unreadable
+export function getWebSocketAgent(isHttpsOrWss: boolean): https.Agent | http.Agent {
+	if (!isHttpsOrWss) {
+		if (!cachedWsHttpAgent) {
+			cachedWsHttpAgent = createHttpAgent()
 		}
+		return cachedWsHttpAgent
 	}
 
-	return new https.Agent({
-		rejectUnauthorized,
-		keepAlive: true,
-		ca: caList.length > 0 ? caList : undefined
-	})
+	const key = getTlsConnectCacheKey([resolveOidcCaPath()])
+	if (cachedWsHttpsAgent && cachedWsHttpsAgent.key === key) {
+		return cachedWsHttpsAgent.agent
+	}
+
+	const prevAgent = cachedWsHttpsAgent?.agent
+	const agent = createHttpsAgent()
+	cachedWsHttpsAgent = { key, agent }
+	drainAgentIdleSockets(prevAgent)
+	return agent
 }
 
-/**
- * Creates an HTTP Agent for upstream WebSocket connections
- */
-export function createWebSocketHttpAgent(): http.Agent {
-	return new http.Agent({
-		keepAlive: true
-	})
-}
-
-/**
- * Resolves the appropriate Agent for an upstream WebSocket URL
- */
-export function getWebSocketAgent(isHttpsOrWss: boolean): https.Agent | http.Agent {
-	return isHttpsOrWss ? createWebSocketHttpsAgent() : createWebSocketHttpAgent()
-}
-
-/**
- * Resolves Bearer authorization header from incoming request headers, cookies, or query parameters
- */
 export function resolveWebSocketAuthHeader(options: {
 	headers?: Record<string, any>
 	cookie?: string | string[]
 	queryToken?: string
 }): string | undefined {
-	// 1. Existing Authorization header
 	const existing =
 		options.headers?.authorization ||
 		options.headers?.Authorization ||
@@ -81,7 +58,6 @@ export function resolveWebSocketAuthHeader(options: {
 		return existing.startsWith('Bearer ') ? existing : `Bearer ${existing}`
 	}
 
-	// 2. Cookie access_token
 	const rawCookie =
 		typeof options.cookie === 'string'
 			? options.cookie
@@ -98,7 +74,6 @@ export function resolveWebSocketAuthHeader(options: {
 		}
 	}
 
-	// 3. Query string token
 	if (options.queryToken) {
 		return `Bearer ${decodeURIComponent(options.queryToken)}`
 	}
@@ -106,9 +81,6 @@ export function resolveWebSocketAuthHeader(options: {
 	return undefined
 }
 
-/**
- * Resolves the upstream URL, stripped path, clean query string, and agent for a target cluster
- */
 export function resolveWebSocketUpstreamUrl(
 	targetCluster: ICluster,
 	rawClientUrl: string
@@ -125,7 +97,7 @@ export function resolveWebSocketUpstreamUrl(
 		parsedPathname = parsed.pathname
 		parsedSearch = parsed.search
 	} catch {
-		// fallback
+		// Fall back to rawClientUrl when URL parsing fails
 	}
 
 	const decodedPath = decodeURIComponent(parsedPathname)
@@ -175,9 +147,6 @@ export function resolveWebSocketUpstreamUrl(
 	}
 }
 
-/**
- * Base factory to create an upstream WebSocket client connection
- */
 export function createUpstreamWebSocket(
 	upstreamUrl: string,
 	options: {
@@ -187,7 +156,6 @@ export function createUpstreamWebSocket(
 ): WebSocket {
 	return new WebSocket(upstreamUrl, {
 		headers: options.headers,
-		agent: options.agent,
-		rejectUnauthorized: false
+		agent: options.agent
 	})
 }
