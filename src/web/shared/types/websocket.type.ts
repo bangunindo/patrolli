@@ -9,4 +9,5 @@ export interface INitroWsSession {
 	upstream?: WebSocket
 	targetCluster?: ICluster
 	path?: string
+	pendingMessages?: string[]
 }

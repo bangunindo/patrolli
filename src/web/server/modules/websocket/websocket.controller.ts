@@ -8,20 +8,32 @@ import { getClustersConfig } from '@@/server/services/cluster.service'
 import { isJwtExpired } from '@@/server/utils/auth-cookies'
 import {
 	createUpstreamWebSocket,
+	normalizeWebSocketCloseCode,
+	normalizeWebSocketCloseReason,
 	resolveWebSocketAuthHeader,
 	resolveWebSocketUpstreamUrl
 } from '@@/server/services/websocket.service'
 import type { INitroWsSession } from '@@/shared/types/websocket.type'
 
-/**
- * In-memory registry of active client peer connections to upstream WebSocket instances.
- */
 const nitroWsSessions = new Map<string, INitroWsSession>()
 
-/**
- * Creates a Nitro defineWebSocketHandler for CrossWS.
- * Handles WebSocket routing, cluster matching, token forwarding, and bidirectional message proxying.
- */
+export const MAX_PENDING_WS_MESSAGES = 50
+
+function closeUpstreamSafely(upstream?: WebSocket): void {
+	if (
+		upstream &&
+		(upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING)
+	) {
+		try {
+			// Prevent unhandled error event when closing a socket before the handshake completes
+			upstream.on('error', () => {})
+			upstream.close()
+		} catch {
+			// Ignore close errors on connecting or closing sockets
+		}
+	}
+}
+
 export function createNitroWebSocketProxy() {
 	return defineWebSocketHandler({
 		upgrade(req) {
@@ -77,13 +89,16 @@ export function createNitroWebSocketProxy() {
 					`[Nitro WS Proxy] Routing client "${rawUrl}" -> Backend "${targetCluster.name}" (${upstreamUrl})`
 				)
 
-				// Resolve Bearer auth from headers, cookie, or query parameters
 				const searchParams = new URLSearchParams(parsedSearch)
 				const queryToken =
 					searchParams.get('token') || searchParams.get('access_token') || undefined
 				const authHeader = resolveWebSocketAuthHeader({
 					headers: peer.request?.headers,
-					cookie: peer.request?.headers?.cookie,
+					cookie:
+						peer.request?.headers?.cookie ||
+						(typeof peer.request?.headers?.get === 'function'
+							? peer.request.headers.get('cookie')
+							: undefined),
 					queryToken
 				})
 
@@ -115,30 +130,46 @@ export function createNitroWebSocketProxy() {
 					agent
 				})
 
+				const pendingMessages: string[] = []
+
 				nitroWsSessions.set(peer.id, {
 					upstream,
 					targetCluster,
-					path: fullUpstreamPath
+					path: fullUpstreamPath,
+					pendingMessages
 				})
 
 				upstream.on('open', () => {
 					console.log(
 						`[Nitro WS Proxy] Connected to backend cluster: ${targetCluster.name} (${upstreamUrl})`
 					)
+					while (pendingMessages.length > 0 && upstream.readyState === WebSocket.OPEN) {
+						const queued = pendingMessages.shift()
+						if (queued !== undefined) {
+							upstream.send(queued)
+						}
+					}
 				})
 
 				upstream.on('message', (data: any, isBinary: boolean) => {
 					const msgStr = isBinary ? data : data.toString('utf-8')
-					console.log(`[WS Message from ${targetCluster.name}]:`, msgStr)
 					peer.send(msgStr)
 				})
 
 				upstream.on('close', (code: number, reason: Buffer) => {
+					const reasonText = reason ? reason.toString() : ''
 					console.log(
-						`[Nitro WS Proxy] Backend cluster ${targetCluster.name} closed connection (${code}): ${reason ? reason.toString() : ''}`
+						`[Nitro WS Proxy] Backend cluster ${targetCluster.name} closed connection (${code}): ${reasonText}`
 					)
 					nitroWsSessions.delete(peer.id)
-					peer.close(code, reason ? reason.toString() : undefined)
+					try {
+						peer.close(
+							normalizeWebSocketCloseCode(code),
+							normalizeWebSocketCloseReason(reasonText)
+						)
+					} catch {
+						// Ignore error if client peer already closed
+					}
 				})
 
 				upstream.on('error', (err: Error) => {
@@ -147,22 +178,36 @@ export function createNitroWebSocketProxy() {
 						err.message
 					)
 					nitroWsSessions.delete(peer.id)
-					peer.close(1011, 'Upstream Error')
+					try {
+						peer.close(1011, 'Upstream Error')
+					} catch {
+						// Ignore error if client peer already closed
+					}
 				})
 			} catch (err: any) {
 				console.error('[Nitro WS Proxy] Failed to initialize upstream:', err.message)
 				nitroWsSessions.delete(peer.id)
-				peer.close(1011, 'Internal Server Error')
+				try {
+					peer.close(1011, 'Internal Server Error')
+				} catch {
+					// Ignore error if client peer already closed
+				}
 			}
 		},
 
 		message(peer: any, message: any) {
 			const text = message.text()
-			console.log('[WS Client Message]:', text)
 			const session = nitroWsSessions.get(peer.id)
 			const upstream = session?.upstream
 			if (upstream && upstream.readyState === WebSocket.OPEN) {
-				upstream.send(message.rawData)
+				upstream.send(text)
+			} else if (upstream && upstream.readyState === WebSocket.CONNECTING) {
+				if (
+					session?.pendingMessages &&
+					session.pendingMessages.length < MAX_PENDING_WS_MESSAGES
+				) {
+					session.pendingMessages.push(text)
+				}
 			}
 		},
 
@@ -171,18 +216,14 @@ export function createNitroWebSocketProxy() {
 				`[Nitro WS Server] Client disconnected (ID: ${peer.id}, Code: ${details?.code}, Reason: ${details?.reason || '-'})`
 			)
 			const session = nitroWsSessions.get(peer.id)
-			if (session?.upstream && session.upstream.readyState === WebSocket.OPEN) {
-				session.upstream.close()
-			}
+			closeUpstreamSafely(session?.upstream)
 			nitroWsSessions.delete(peer.id)
 		},
 
 		error(peer: any, error: any) {
 			console.error(`[Nitro WS Server Error] Peer ${peer.id}:`, error)
 			const session = nitroWsSessions.get(peer.id)
-			if (session?.upstream && session.upstream.readyState === WebSocket.OPEN) {
-				session.upstream.close()
-			}
+			closeUpstreamSafely(session?.upstream)
 			nitroWsSessions.delete(peer.id)
 		}
 	})

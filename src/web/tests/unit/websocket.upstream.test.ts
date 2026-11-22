@@ -3,17 +3,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { EventEmitter } from 'node:events'
+import WebSocket from 'ws'
 import * as clusterUtils from '@@/server/services/cluster.service'
 import * as sslService from '@@/server/services/ssl.service'
 import * as authRefreshService from '@@/server/services/auth-refresh.service'
 import { isJwtExpired } from '@@/server/utils/auth-cookies'
+import * as wsService from '@@/server/services/websocket.service'
 import {
 	clearWebSocketAgentCache,
 	createUpstreamWebSocket,
 	getWebSocketAgent,
+	MAX_WS_CLOSE_REASON_BYTES,
+	normalizeWebSocketCloseCode,
+	normalizeWebSocketCloseReason,
 	resolveWebSocketAuthHeader,
 	resolveWebSocketUpstreamUrl
 } from '@@/server/services/websocket.service'
+import {
+	createNitroWebSocketProxy,
+	MAX_PENDING_WS_MESSAGES
+} from '@@/server/modules/websocket/websocket.controller'
 import type { ICluster } from '@@/shared/types/cluster.type'
 
 describe('WebSocket Upstream URL Resolution', () => {
@@ -26,16 +36,37 @@ describe('WebSocket Upstream URL Resolution', () => {
 		url: 'http://patrolli:8080'
 	}
 
-	it('should strip cluster name prefix and forward /ws/v1 path 1:1', () => {
-		const rawUrl = '/patrolli/ws/v1/processors/subscribe_capture/proc-123'
-		const { upstreamUrl, upstreamProtocol, fullUpstreamPath } = resolveWebSocketUpstreamUrl(
-			defaultCluster,
-			rawUrl
+	it('should route pipeline processor group preview endpoint across distinct clusters via Nitro BFF', () => {
+		const clusterA: ICluster = {
+			key: 'cluster-a',
+			name: 'cluster-a',
+			url: 'http://patrolli-a:8080'
+		}
+		const clusterB: ICluster = {
+			key: 'cluster-b',
+			name: 'cluster-b',
+			url: 'https://patrolli-b.internal:8443/core'
+		}
+
+		const pathA = '/cluster-a/ws/v1/pipelines/pipe-1/canvases/canvas-1/nodes/node-1/preview'
+		const resolvedA = resolveWebSocketUpstreamUrl(clusterA, pathA)
+		expect(resolvedA.upstreamProtocol).toBe('ws:')
+		expect(resolvedA.fullUpstreamPath).toBe(
+			'/ws/v1/pipelines/pipe-1/canvases/canvas-1/nodes/node-1/preview'
+		)
+		expect(resolvedA.upstreamUrl).toBe(
+			'ws://patrolli-a:8080/ws/v1/pipelines/pipe-1/canvases/canvas-1/nodes/node-1/preview'
 		)
 
-		expect(upstreamProtocol).toBe('ws:')
-		expect(fullUpstreamPath).toBe('/ws/v1/processors/subscribe_capture/proc-123')
-		expect(upstreamUrl).toBe('ws://patrolli:8080/ws/v1/processors/subscribe_capture/proc-123')
+		const pathB = '/cluster-b/ws/v1/pipelines/pipe-2/canvases/canvas-2/nodes/node-2/preview'
+		const resolvedB = resolveWebSocketUpstreamUrl(clusterB, pathB)
+		expect(resolvedB.upstreamProtocol).toBe('wss:')
+		expect(resolvedB.fullUpstreamPath).toBe(
+			'/core/ws/v1/pipelines/pipe-2/canvases/canvas-2/nodes/node-2/preview'
+		)
+		expect(resolvedB.upstreamUrl).toBe(
+			'wss://patrolli-b.internal:8443/core/ws/v1/pipelines/pipe-2/canvases/canvas-2/nodes/node-2/preview'
+		)
 	})
 
 	it('should forward any upstream path 1:1 without rewriting', () => {
@@ -116,6 +147,15 @@ describe('WebSocket Upstream URL Resolution', () => {
 		expect(refreshSpy).not.toHaveBeenCalled()
 		expect(authHeader).toBe(`Bearer ${expiredJwt}`)
 		expect(isJwtExpired(expiredJwt)).toBe(true)
+
+		const webHeaders = new Headers({
+			cookie: `access_token=${expiredJwt}; auth_provider=local`
+		})
+		const authFromWebHeaders = resolveWebSocketAuthHeader({
+			headers: webHeaders,
+			cookie: (webHeaders as any).cookie
+		})
+		expect(authFromWebHeaders).toBe(`Bearer ${expiredJwt}`)
 	})
 
 	it('should reuse cached http/https agents, refresh https agent, and drain idle sockets when TLS key changes', () => {
@@ -181,5 +221,138 @@ describe('WebSocket Upstream URL Resolution', () => {
 			requestSpy.mockRestore()
 			clearWebSocketAgentCache()
 		}
+	})
+
+	it('should normalize reserved WebSocket close codes (1004, 1005, 1006, 1015) to 1000', () => {
+		expect(normalizeWebSocketCloseCode(1000)).toBe(1000)
+		expect(normalizeWebSocketCloseCode(1001)).toBe(1001)
+		expect(normalizeWebSocketCloseCode(1011)).toBe(1011)
+		expect(normalizeWebSocketCloseCode(4401)).toBe(4401)
+
+		expect(normalizeWebSocketCloseCode(1004)).toBe(1000)
+		expect(normalizeWebSocketCloseCode(1005)).toBe(1000)
+		expect(normalizeWebSocketCloseCode(1006)).toBe(1000)
+		expect(normalizeWebSocketCloseCode(1015)).toBe(1000)
+		expect(normalizeWebSocketCloseCode(undefined)).toBe(1000)
+		expect(normalizeWebSocketCloseCode(999)).toBe(1000)
+		expect(normalizeWebSocketCloseCode(5000)).toBe(1000)
+	})
+
+	it('should truncate WebSocket close reason safely at UTF-8 character boundaries up to 123 bytes', () => {
+		expect(normalizeWebSocketCloseReason(undefined)).toBeUndefined()
+		expect(normalizeWebSocketCloseReason('')).toBeUndefined()
+		expect(normalizeWebSocketCloseReason(Buffer.from(''))).toBeUndefined()
+
+		const shortReason = 'Normal closure'
+		expect(normalizeWebSocketCloseReason(shortReason)).toBe(shortReason)
+
+		const asciiLong = 'a'.repeat(150)
+		const truncatedAscii = normalizeWebSocketCloseReason(asciiLong)!
+		expect(Buffer.byteLength(truncatedAscii, 'utf-8')).toBe(MAX_WS_CLOSE_REASON_BYTES)
+		expect(truncatedAscii).toBe('a'.repeat(MAX_WS_CLOSE_REASON_BYTES))
+
+		// Multi-byte UTF-8: 'a' (1 byte) + 50 * 'é' (2 bytes each) = 101 bytes, or 62 * 'é' = 124 bytes
+		const twoByteBoundary = 'a' + 'é'.repeat(62)
+		const truncatedTwoByte = normalizeWebSocketCloseReason(twoByteBoundary)!
+		expect(Buffer.byteLength(truncatedTwoByte, 'utf-8')).toBeLessThanOrEqual(
+			MAX_WS_CLOSE_REASON_BYTES
+		)
+		expect(Buffer.byteLength(truncatedTwoByte, 'utf-8')).toBe(123)
+		expect(truncatedTwoByte).not.toContain('\uFFFD')
+
+		// 3-byte UTF-8 character cut mid-sequence at byte 123 (e.g. 121 'a' + '€' (3 bytes) = 124 bytes)
+		const threeByteMidCut = 'a'.repeat(121) + '€'
+		const truncatedThreeByte = normalizeWebSocketCloseReason(threeByteMidCut)!
+		expect(Buffer.byteLength(truncatedThreeByte, 'utf-8')).toBe(121)
+		expect(truncatedThreeByte).toBe('a'.repeat(121))
+		expect(truncatedThreeByte).not.toContain('\uFFFD')
+	})
+
+	it('should cap pendingMessages at MAX_PENDING_WS_MESSAGES (drop newest) while CONNECTING and flush on open', () => {
+		vi.spyOn(clusterUtils, 'getClustersConfig').mockReturnValue([defaultCluster])
+
+		const fakeUpstream: any = new EventEmitter()
+		fakeUpstream.readyState = WebSocket.CONNECTING
+		fakeUpstream.send = vi.fn()
+		fakeUpstream.close = vi.fn()
+
+		vi.spyOn(wsService, 'createUpstreamWebSocket').mockReturnValue(fakeUpstream)
+
+		const handler = createNitroWebSocketProxy() as any
+		const hooks = handler.__websocket__ || handler
+		const peer = {
+			id: 'peer-queue-test',
+			request: {
+				url: '/patrolli/ws/v1/pipelines/p1/canvases/c1/nodes/n1/preview',
+				headers: {}
+			},
+			send: vi.fn(),
+			close: vi.fn()
+		}
+
+		hooks.open?.(peer)
+
+		for (let i = 1; i <= MAX_PENDING_WS_MESSAGES + 10; i++) {
+			hooks.message?.(peer, { text: () => `msg-${i}` })
+		}
+
+		expect(fakeUpstream.send).not.toHaveBeenCalled()
+
+		fakeUpstream.readyState = WebSocket.OPEN
+		fakeUpstream.emit('open')
+
+		expect(fakeUpstream.send).toHaveBeenCalledTimes(MAX_PENDING_WS_MESSAGES)
+		expect(fakeUpstream.send).toHaveBeenNthCalledWith(1, 'msg-1')
+		expect(fakeUpstream.send).toHaveBeenNthCalledWith(
+			MAX_PENDING_WS_MESSAGES,
+			`msg-${MAX_PENDING_WS_MESSAGES}`
+		)
+
+		hooks.close?.(peer, { code: 1000, reason: 'done' })
+		expect(fakeUpstream.close).toHaveBeenCalledTimes(1)
+	})
+
+	it('should close upstream WebSocket when client disconnects or errors while upstream is still CONNECTING', () => {
+		vi.spyOn(clusterUtils, 'getClustersConfig').mockReturnValue([defaultCluster])
+
+		const fakeUpstreamClose: any = new EventEmitter()
+		fakeUpstreamClose.readyState = WebSocket.CONNECTING
+		fakeUpstreamClose.send = vi.fn()
+		fakeUpstreamClose.close = vi.fn()
+
+		const fakeUpstreamError: any = new EventEmitter()
+		fakeUpstreamError.readyState = WebSocket.CONNECTING
+		fakeUpstreamError.send = vi.fn()
+		fakeUpstreamError.close = vi.fn()
+
+		const createSpy = vi
+			.spyOn(wsService, 'createUpstreamWebSocket')
+			.mockReturnValueOnce(fakeUpstreamClose)
+			.mockReturnValueOnce(fakeUpstreamError)
+
+		const handler = createNitroWebSocketProxy() as any
+		const hooks = handler.__websocket__ || handler
+
+		const peer1 = {
+			id: 'peer-early-close',
+			request: { url: '/patrolli/ws/v1/preview', headers: {} },
+			send: vi.fn(),
+			close: vi.fn()
+		}
+		hooks.open?.(peer1)
+		hooks.close?.(peer1, { code: 1001, reason: 'going away' })
+		expect(fakeUpstreamClose.close).toHaveBeenCalledTimes(1)
+		expect(() => fakeUpstreamClose.emit('error', new Error('aborted'))).not.toThrow()
+
+		const peer2 = {
+			id: 'peer-early-error',
+			request: { url: '/patrolli/ws/v1/preview', headers: {} },
+			send: vi.fn(),
+			close: vi.fn()
+		}
+		hooks.open?.(peer2)
+		hooks.error?.(peer2, new Error('client error'))
+		expect(fakeUpstreamError.close).toHaveBeenCalledTimes(1)
+		expect(createSpy).toHaveBeenCalledTimes(2)
 	})
 })
