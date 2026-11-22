@@ -291,7 +291,7 @@ Run the same command for `patrolli-b-1` and `patrolli-c-1`.
 
 ## 3. Start the web interface
 
-The web interface reads the list of clusters from `config-fe.yaml`. Create the Compose file and the configuration file:
+The web interface reads the list of clusters from `config-web.yaml`. Create the Compose file and the configuration file:
 
 ::: code-group
 
@@ -306,7 +306,7 @@ services:
         ports:
             - "3000:3000"
         volumes:
-            - ./config-fe.yaml:/app/config-fe.yaml:ro
+            - ./config-web.yaml:/app/config-web.yaml:ro
         networks:
             - patrolli
 
@@ -315,7 +315,7 @@ networks:
         external: true
 ```
 
-```yaml [web/config-fe.yaml]
+```yaml [web/config-web.yaml]
 clusters:
     - name: Cluster A
       url: http://patrolli-a-1:8080
@@ -339,7 +339,7 @@ docker compose -f web/compose.yaml up -d
 
 1. **Open the web interface**
 
-    Open `http://192.168.1.10:3000` in a browser. The **Cluster** list shows the clusters from `config-fe.yaml`.
+    Open `http://192.168.1.10:3000` in a browser. The **Cluster** list shows the clusters from `config-web.yaml`.
 
     ![The sign-in page lists Cluster A, Cluster B, and Cluster C](./assets/multiple-cluster/sign-in-clusters.png)
 
@@ -367,7 +367,7 @@ The **Sign in with Keycloak** button works after you set up single sign-on. Sing
 
     - **Check the node:** run `docker ps --filter name=patrolli-c-1`. If the node is not running, read its log with `docker logs patrolli-c-1`.
     - **Check the web interface log:** run `docker logs patrolli-web 2>&1 | grep "Cluster C"`. A line such as `getaddrinfo ENOTFOUND patrolli-c-1` means that the name in `url` does not resolve from the `patrolli-web` container.
-    - **Check the address:** the `url` in `web/config-fe.yaml` must point to a node that has the `api` block in its `config.yaml`.
+    - **Check the address:** the `url` in `web/config-web.yaml` must point to a node that has the `api` block in its `config.yaml`.
 
 ## Remove the deployment
 

@@ -84,7 +84,7 @@ export function getValidatedOidcConfig():
 		return {
 			hasRawConfig: Boolean(oidcConfig),
 			errorPayload: createOidcConfigErrorPayload(
-				'OIDC configuration is missing or incomplete in config-fe.yaml'
+				'OIDC configuration is missing or incomplete in config-web.yaml'
 			)
 		}
 	}
@@ -93,7 +93,7 @@ export function getValidatedOidcConfig():
 		return {
 			hasRawConfig: true,
 			errorPayload: createOidcConfigErrorPayload(
-				'OIDC issuer must be a valid http or https URL in config-fe.yaml'
+				'OIDC issuer must be a valid http or https URL in config-web.yaml'
 			)
 		}
 	}
@@ -103,7 +103,7 @@ export function getValidatedOidcConfig():
 		return {
 			hasRawConfig: true,
 			errorPayload: createOidcConfigErrorPayload(
-				'OIDC scopes must include "openid" in config-fe.yaml'
+				'OIDC scopes must include "openid" in config-web.yaml'
 			)
 		}
 	}
@@ -116,7 +116,7 @@ export function getValidatedOidcConfig():
 		return {
 			hasRawConfig: true,
 			errorPayload: createOidcConfigErrorPayload(
-				`OIDC redirect_uri must be omitted, "${OIDC_CALLBACK_PATH}", or a valid http(s) URL with path "${OIDC_CALLBACK_PATH}" (without credentials, query, or hash) in config-fe.yaml`
+				`OIDC redirect_uri must be omitted, "${OIDC_CALLBACK_PATH}", or a valid http(s) URL with path "${OIDC_CALLBACK_PATH}" (without credentials, query, or hash) in config-web.yaml`
 			)
 		}
 	}

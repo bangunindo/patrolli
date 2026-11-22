@@ -44,10 +44,10 @@ export function getCandidateConfigFilePaths(configPath?: string): string[] {
 	return explicitPath
 		? [explicitPath]
 		: [
-				path.resolve(process.cwd(), 'config-fe.yaml'),
-				path.resolve(process.cwd(), 'config-fe.yml'),
-				'/app/config-fe.yaml',
-				'/config-fe.yaml'
+				path.resolve(process.cwd(), 'config-web.yaml'),
+				path.resolve(process.cwd(), 'config-web.yml'),
+				'/app/config-web.yaml',
+				'/config-web.yaml'
 			]
 }
 

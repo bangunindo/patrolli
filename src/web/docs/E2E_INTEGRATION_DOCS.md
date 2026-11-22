@@ -38,7 +38,7 @@ src/web/dev/
 │   │   ├── patrolli-0-config.template.yaml
 │   │   └── patrolli-1-config.template.yaml
 │   ├── frontend/
-│   │   └── config-fe.template.yaml
+│   │   └── config-web.template.yaml
 │   └── keycloak/
 │       └── realm-config.template.json
 ├── .env                             # (Gitignored) Ephemeral secrets for docker compose
@@ -57,11 +57,11 @@ No TLS private keys or static secrets are stored in Git:
 2. **`./dev/setup.sh`**:
     - Runs `ssl.sh`.
     - Generates random ephemeral secrets (`E2E_JWT_SECRET`, `E2E_OIDC_SECRET`, `E2E_SECRET_KEY`, `E2E_SECRET_KEY_1`, `E2E_POSTGRES_PASSWORD`, `E2E_KC_BOOTSTRAP_PASSWORD`, `E2E_ADMIN_PASSWORD`) and writes them to `dev/.env` (`chmod 600`). All values can be overridden via environment variables before running the script.
-    - Renders all `*.template.*` files into `dev/.generated/` (with `chmod 600` on `config-fe.yaml`) and copies `config-fe.yaml` to `src/web/config-fe.yaml` (if it does not exist yet, or always overwrites when passed the `--force` flag).
+    - Renders all `*.template.*` files into `dev/.generated/` (with `chmod 600` on `config-web.yaml`) and copies `config-web.yaml` to `src/web/config-web.yaml` (if it does not exist yet, or always overwrites when passed the `--force` flag).
     - If `GITHUB_ENV` is active (in GitHub Actions), masks passwords (`::add-mask::`) and exports `E2E_USERNAME=admin` and `E2E_PASSWORD=${E2E_ADMIN_PASSWORD}`.
 3. **`playwright.config.ts`**:
     - Locally, if `E2E_PASSWORD` is not already set in the shell, `playwright.config.ts` reads only `E2E_ADMIN_PASSWORD` from `dev/.env` (using `node:util` `parseEnv`) without loading other backend secrets into the Playwright environment.
-    - The frontend config file can be pointed via the `CONFIG_FILE` env var, falling back to `src/web/config-fe.yaml` by default.
+    - The frontend config file can be pointed via the `CONFIG_FILE` env var, falling back to `src/web/config-web.yaml` by default.
 
 ---
 
@@ -143,7 +143,7 @@ The GHCR packages must stay **public** so forks can pull without logging in. `tr
 2. Resolves the core image as described above and exports `PATROLLI_CORE_IMAGE` and `PATROLLI_CORE_PULL_POLICY` for Compose.
 3. Runs `pnpm install --frozen-lockfile` and `./dev/setup.sh --force`.
 4. Starts the stack with `docker compose up -d --wait`, then polls the two core `/health` endpoints and the Keycloak realm. Only Postgres has a healthcheck, so `--wait` alone returns too early.
-5. Installs Chromium with `pnpm exec playwright install chromium --with-deps` and runs `pnpm test:e2e` with `CONFIG_FILE=dev/.generated/config-fe.yaml`. `CI=true` makes Playwright use one worker and two retries.
+5. Installs Chromium with `pnpm exec playwright install chromium --with-deps` and runs `pnpm test:e2e` with `CONFIG_FILE=dev/.generated/config-web.yaml`. `CI=true` makes Playwright use one worker and two retries.
 6. On failure, prints the backend logs and uploads `test-results` (traces and screenshots) as the `playwright-report` artifact, kept for 7 days.
 
 Reference timings on a 22-core machine with nothing cached: `pnpm install --frozen-lockfile` 45s, Chromium download 25s, stack start 45s, e2e run 3 minutes (including a 20s Nuxt build).
@@ -157,7 +157,7 @@ Reference timings on a 22-core machine with nothing cached: `pnpm install --froz
 - **Prettier & ESLint (`pnpm lint`)**:
     - `src/web/.prettierignore` ignores `dev` so Compose/YAML/JSON config files do not trigger formatting errors when running `prettier --check .`.
 - **Docker Build Hygiene (`src/web/.dockerignore`)**:
-    - `.env`, `.env.*`, `config-fe.yaml`, `config-fe.yml`, and `dev` are included in `src/web/.dockerignore` so local E2E artifacts are not bundled into the production `src/web/Dockerfile` image build.
+    - `.env`, `.env.*`, `config-web.yaml`, `config-web.yml`, and `dev` are included in `src/web/.dockerignore` so local E2E artifacts are not bundled into the production `src/web/Dockerfile` image build.
 
 ---
 

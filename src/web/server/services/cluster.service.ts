@@ -24,7 +24,7 @@ import { getCandidateConfigFilePaths, readCachedYamlConfigFile } from './config-
 /**
  * Parses raw cluster configuration from various formats (YAML string, JSON string, Array of objects, Record map).
  * Supports:
- * - config-fe.yaml file content:
+ * - config-web.yaml file content:
  *     clusters:
  *       - name: 'patrolli'
  *         url: 'http://patrolli:8080'
@@ -187,7 +187,7 @@ export function getOidcConfig(configPath?: string): IOidcConfig | null {
 		}
 	} else if (auth?.keycloak) {
 		warnConfigOnce(
-			'[Patrolli-FE Config] "auth.keycloak" is deprecated in config-fe.yaml; migrate to "auth.oidc".'
+			'[Patrolli-FE Config] "auth.keycloak" is deprecated in config-web.yaml; migrate to "auth.oidc".'
 		)
 		const kc = auth.keycloak
 		const clientSecret = String(kc.client_secret || '').trim()
@@ -404,7 +404,7 @@ export async function handleClusterMutation(event: H3Event) {
 			success: false,
 			error: {
 				title: 'Bad Gateway',
-				detail: 'No clusters configured. Please configure clusters in config-fe.yaml or environment variables.'
+				detail: 'No clusters configured. Please configure clusters in config-web.yaml or environment variables.'
 			}
 		}
 		setResponseStatus(event, 502)

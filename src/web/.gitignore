@@ -60,7 +60,7 @@ config/config.json
 
 /init.sql
 
-/config-fe.yaml
+/config-web.yaml
 /*compose.yml
 Dockerfile.*
 

@@ -23,7 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 describe('Cluster Config Parser', () => {
 	const originalEnv = process.env
-	const exampleConfigPath = path.resolve(process.cwd(), 'config-fe.example.yaml')
+	const exampleConfigPath = path.resolve(process.cwd(), 'config-web.example.yaml')
 
 	beforeEach(() => {
 		process.env = { ...originalEnv }
@@ -98,7 +98,7 @@ describe('Cluster Config Parser', () => {
 		expect(result[1].name).toBe('patrolli2')
 	})
 
-	it('should read from config-fe.example.yaml file if present', () => {
+	it('should read from config-web.example.yaml file if present', () => {
 		process.env.CONFIG_FILE = exampleConfigPath
 		const clusters = getClustersConfig()
 		expect(clusters.length).toBeGreaterThanOrEqual(1)
@@ -141,7 +141,7 @@ clusters:
 		expect(() => getClustersConfig()).toThrow('Configuration file not found or empty')
 	})
 
-	it('should read oidc configuration from config-fe.example.yaml', () => {
+	it('should read oidc configuration from config-web.example.yaml', () => {
 		process.env.CONFIG_FILE = exampleConfigPath
 		const oidc = getOidcConfig()
 		expect(oidc).not.toBeNull()

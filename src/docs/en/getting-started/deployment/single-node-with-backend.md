@@ -187,7 +187,7 @@ The output looks like this:
 
 ## 3. Start the web interface
 
-The web interface reads the address of the REST API from `config-fe.yaml`. Create the Compose file and the configuration file:
+The web interface reads the address of the REST API from `config-web.yaml`. Create the Compose file and the configuration file:
 
 ::: code-group
 
@@ -202,7 +202,7 @@ services:
         ports:
             - "3000:3000"
         volumes:
-            - ./config-fe.yaml:/app/config-fe.yaml:ro
+            - ./config-web.yaml:/app/config-web.yaml:ro
         networks:
             - patrolli
 
@@ -211,7 +211,7 @@ networks:
         external: true
 ```
 
-```yaml [web/config-fe.yaml]
+```yaml [web/config-web.yaml]
 clusters:
     - name: Patrolli
       url: http://patrolli-1:8080
@@ -231,7 +231,7 @@ docker compose -f web/compose.yaml up -d
 
 1. **Open the web interface**
 
-    Open `http://192.168.1.10:3000` in a browser. The **Cluster** list shows **Patrolli**, the name from `config-fe.yaml`.
+    Open `http://192.168.1.10:3000` in a browser. The **Cluster** list shows **Patrolli**, the name from `config-web.yaml`.
 
     ![The sign-in page with Patrolli as the cluster](./assets/single-node-with-backend/sign-in.png)
 

@@ -175,7 +175,7 @@ Open `https://192.168.1.10:8443/admin/` and sign in with `keycloak-admin` and `c
 
 ## 4. Connect the web interface
 
-Mount the CA in the `patrolli-web` container, and add the `auth` block to `config-fe.yaml`. The highlighted lines are new. Replace `REPLACE_WITH_CLIENT_SECRET` with the client secret that you copied.
+Mount the CA in the `patrolli-web` container, and add the `auth` block to `config-web.yaml`. The highlighted lines are new. Replace `REPLACE_WITH_CLIENT_SECRET` with the client secret that you copied.
 
 ::: code-group
 
@@ -190,7 +190,7 @@ services:
         ports:
             - "3000:3000"
         volumes:
-            - ./config-fe.yaml:/app/config-fe.yaml:ro
+            - ./config-web.yaml:/app/config-web.yaml:ro
             - ../certs/ca.crt:/certs/ca.crt:ro
         networks:
             - patrolli
@@ -200,7 +200,7 @@ networks:
         external: true
 ```
 
-```yaml{9-19} [web/config-fe.yaml]
+```yaml{9-19} [web/config-web.yaml]
 clusters:
     - name: Cluster A
       url: http://patrolli-a-1:8080
@@ -406,7 +406,7 @@ global:
 
 :::
 
-- **`issuer`:** the realm address that Keycloak writes into every token, which is `KC_HOSTNAME` followed by `/realms/patrolli`. It is the same address as `host` in `config-fe.yaml`.
+- **`issuer`:** the realm address that Keycloak writes into every token, which is `KC_HOSTNAME` followed by `/realms/patrolli`. It is the same address as `host` in `config-web.yaml`.
 - **`jwks_url`:** where the node downloads the public keys of the realm. Keycloak lists both addresses, as `issuer` and `jwks_uri`, at `https://192.168.1.10:8443/realms/patrolli/.well-known/openid-configuration`.
 - **`audience`:** the client ID. The audience mapper from the previous section puts it into every access token.
 - **`username_claim_path`:** the token claim that the node compares with Patrolli usernames. `preferred_username` is the Keycloak username.
