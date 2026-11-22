@@ -438,34 +438,14 @@ describe('Pipeline Builder - Processor Group Feature', () => {
 
 		await flushPromises()
 
-		// 1. Open 3-dots action menu
 		const actionButton = wrapper.find('button[title="Actions"]')
 		expect(actionButton.exists()).toBe(true)
 		await actionButton.trigger('click')
 		await flushPromises()
 
-		// 2. Expect 4 action menu items are rendered
-		expect(wrapper.text()).toContain('Preview Data')
-		expect(wrapper.text()).toContain('View / Edit')
-		expect(wrapper.text()).toContain('Disable')
-		expect(wrapper.text()).toContain('Delete')
-
-		// 3. Click "Preview Data" from dropdown
-		const menuButtons = wrapper.findAll('.shadow-xl button')
-		const previewBtn = menuButtons.find((b) => b.text().includes('Preview Data'))
-		expect(previewBtn).toBeDefined()
-
-		await previewBtn!.trigger('click')
-		await flushPromises()
-
-		expect(store.previewDataModal.isOpen).toBe(true)
-		expect(store.previewDataModal.processorId).toBe('proc-detail-1')
-
-		// 4. Open menu again and click "View / Edit"
-		await actionButton.trigger('click')
-		await flushPromises()
-
 		const updatedMenuButtons = wrapper.findAll('.shadow-xl button')
+		expect(updatedMenuButtons.length).toBe(3)
+		expect(updatedMenuButtons.some((b) => b.text().includes('Preview Data'))).toBe(false)
 		const viewEditBtn = updatedMenuButtons.find((b) => b.text().includes('View / Edit'))
 		expect(viewEditBtn).toBeDefined()
 
@@ -474,6 +454,9 @@ describe('Pipeline Builder - Processor Group Feature', () => {
 
 		expect(processorStore.processorModalShow).toBe(true)
 		expect(processorStore.currentProcessor?.processor_id).toBe('proc-detail-1')
+		;(wrapper.vm as any).handleOpenPreviewData()
+		expect(store.previewDataModal.isOpen).toBe(true)
+		expect(store.previewDataModal.nodeId).toBe(procNode.id)
 	})
 
 	it('ProcessorGroupDrawer Add Processor opens modal form and saves processor via saveGraph', async () => {
@@ -1017,119 +1000,386 @@ describe('Pipeline Builder - Processor Group Feature', () => {
 		expect(disabledSpan?.classes()).toContain('line-through')
 	})
 
-	it('renders PreviewDataModal with processor sequence and switches target processor on click', async () => {
-		const pinia = createPinia()
-		setActivePinia(pinia)
+	it('connects PreviewDataModal to Nitro BFF pipeline node preview WebSocket endpoint and handles PR #61 protocol', async () => {
+		const createdSockets: Array<{
+			url: string
+			sent: string[]
+			readyState: number
+			onopen: ((ev: any) => void) | null
+			onmessage: ((ev: any) => void) | null
+			onclose: ((ev: any) => void) | null
+			onerror: ((ev: any) => void) | null
+			send: ReturnType<typeof vi.fn>
+			close: ReturnType<typeof vi.fn>
+		}> = []
 
-		const store = usePipelineBuildStore(pinia)
-		store.selectedNode = {
-			id: 'proc-group-node-1',
-			type: 'processor',
-			data: {
+		const OriginalWebSocket = globalThis.WebSocket
+		class MockWebSocket {
+			static CONNECTING = 0
+			static OPEN = 1
+			static CLOSING = 2
+			static CLOSED = 3
+
+			url: string
+			readyState = MockWebSocket.CONNECTING
+			sent: string[] = []
+			onopen: ((ev: any) => void) | null = null
+			onmessage: ((ev: any) => void) | null = null
+			onclose: ((ev: any) => void) | null = null
+			onerror: ((ev: any) => void) | null = null
+
+			send = vi.fn((payload: string) => {
+				this.sent.push(payload)
+			})
+			close = vi.fn(() => {
+				this.readyState = MockWebSocket.CLOSED
+			})
+
+			constructor(url: string) {
+				this.url = url
+				createdSockets.push(this)
+			}
+		}
+
+		vi.stubGlobal('WebSocket', MockWebSocket)
+
+		try {
+			const pinia = createPinia()
+			setActivePinia(pinia)
+
+			const store = usePipelineBuildStore(pinia)
+			store.pipelineId = 'pipe-uuid-1'
+			store.canvasId = 'canvas-uuid-1'
+			store.clusterUrl = 'http://cluster-alpha.internal:8080/cluster-alpha'
+			store.isDirty = true
+
+			const node = {
+				id: 'node-uuid-1',
+				node_id: 'node-uuid-1',
+				type: 'processor',
+				data: {
+					name: 'Group Alpha',
+					processors: [
+						{
+							processor_id: 'proc-uuid-1',
+							name: 'Filter Step',
+							module: 'attribute_filter',
+							status: true,
+							config: {
+								type: 'attribute_filter',
+								config: { match: { key: 'env' } }
+							}
+						},
+						{
+							processor_id: 'proc-uuid-2',
+							name: 'Drop Step',
+							module: 'drop_attributes',
+							status: true,
+							config: {
+								type: 'drop_attributes',
+								config: { keys: ['secret'] }
+							}
+						}
+					]
+				}
+			} as any
+			store.nodes = [node]
+			store.selectedNode = node
+
+			store.openPreviewDataModal('node-uuid-1')
+
+			const wrapper = mount(PreviewDataModal, {
+				global: {
+					plugins: [pinia]
+				}
+			})
+
+			await flushPromises()
+			expect(wrapper.text()).toContain('Preview Data Mode')
+			expect(wrapper.text()).toContain('Group Alpha')
+			expect(wrapper.text()).toContain('Processors in Sequence')
+			expect(wrapper.text()).toContain('Record Before')
+			expect(wrapper.text()).toContain('Record After')
+			expect(wrapper.text()).toContain('Filter Step')
+			expect(wrapper.text()).toContain('Drop Step')
+			expect(wrapper.text()).not.toContain('Target')
+
+			expect(createdSockets.length).toBe(1)
+			const sock = createdSockets[0]!
+
+			expect(sock.url).toContain(
+				'/cluster-alpha/ws/v1/pipelines/pipe-uuid-1/canvases/canvas-uuid-1/nodes/node-uuid-1/preview'
+			)
+			expect(sock.url).not.toContain('cluster-alpha.internal:8080')
+
+			sock.readyState = MockWebSocket.OPEN
+			sock.onopen?.(new Event('open'))
+			await flushPromises()
+
+			expect(sock.sent.length).toBe(1)
+			const initialDraft = JSON.parse(sock.sent[0]!)
+			expect(initialDraft).toEqual({
+				type: 'draft',
+				id: 1,
 				processors: [
 					{
-						processor_id: 'proc-1',
-						name: 'Filter Processor',
-						module: 'attribute_filter',
-						status: true
+						processor_id: 'proc-uuid-1',
+						name: 'Filter Step',
+						adm_status: 1,
+						config: {
+							type: 'attribute_filter',
+							config: { match: { key: 'env' } }
+						}
 					},
 					{
-						processor_id: 'proc-2',
-						name: 'Drop Processor',
-						module: 'drop_attributes',
-						status: true
+						processor_id: 'proc-uuid-2',
+						name: 'Drop Step',
+						adm_status: 1,
+						config: {
+							type: 'drop_attributes',
+							config: { keys: ['secret'] }
+						}
 					}
 				]
+			})
+
+			sock.onmessage?.({
+				data: JSON.stringify({ type: 'reset', draft_id: 1 })
+			})
+			sock.onmessage?.({
+				data: JSON.stringify({
+					type: 'record',
+					draft_id: 1,
+					sample: 10,
+					index: 0,
+					before: { msg: 'hello' },
+					after: [{ msg: 'hello-transformed' }],
+					error: null
+				})
+			})
+			sock.onmessage?.({
+				data: JSON.stringify({
+					type: 'record',
+					draft_id: 1,
+					sample: 11,
+					index: 0,
+					before: { msg: 'split-me' },
+					after: [{ part: 1 }, { part: 2 }],
+					error: 'processor Lookup: attribute lookup skipped a rule'
+				})
+			})
+			sock.onmessage?.({
+				data: JSON.stringify({
+					type: 'record',
+					draft_id: 1,
+					sample: 12,
+					index: 0,
+					before: { msg: 'drop-me' },
+					after: [],
+					error: null
+				})
+			})
+			await wrapper.vm.$nextTick()
+
+			expect((wrapper.vm as any).capturedRecords.length).toBe(3)
+			expect((wrapper.vm as any).capturedRecords[0].status).toBe('200 OK')
+			expect((wrapper.vm as any).capturedRecords[1].status).toBe('WARNING')
+			expect((wrapper.vm as any).capturedRecords[2].status).toBe('FILTERED')
+
+			const recordCard = wrapper
+				.findAll('.cursor-pointer')
+				.find((el) => el.text().includes('Record #2'))
+			expect(recordCard).toBeDefined()
+			await recordCard?.trigger('click')
+			await wrapper.vm.$nextTick()
+
+			expect(wrapper.text()).toContain('Back to List')
+			expect(wrapper.text()).toContain('Viewing Record #2')
+			expect(wrapper.text()).toContain('2 Records')
+			expect(wrapper.text()).toContain('attribute lookup skipped a rule')
+			expect(wrapper.text()).toContain('"part": 1')
+			expect(wrapper.text()).toContain('"part": 2')
+
+			sock.onmessage?.({
+				data: JSON.stringify({ type: 'evict', sample: 10 })
+			})
+			await wrapper.vm.$nextTick()
+			expect((wrapper.vm as any).capturedRecords.length).toBe(2)
+			expect((wrapper.vm as any).capturedRecords.some((r: any) => r.sample === 10)).toBe(
+				false
+			)
+			expect((wrapper.vm as any).selectedRecordIndex).toBe(0)
+			expect(wrapper.text()).toContain('Viewing Record #2')
+
+			sock.onmessage?.({
+				data: JSON.stringify({
+					type: 'record',
+					draft_id: 1,
+					sample: 13,
+					index: 0,
+					before: { msg: 'after-evict' },
+					after: [{ msg: 'after-evict-out' }],
+					error: null
+				})
+			})
+			await wrapper.vm.$nextTick()
+			expect((wrapper.vm as any).capturedRecords.length).toBe(3)
+			expect((wrapper.vm as any).capturedRecords.map((r: any) => r.id)).toEqual([2, 3, 4])
+
+			const backBtn = wrapper.findAll('button').find((b) => b.text().includes('Back to List'))
+			expect(backBtn).toBeDefined()
+			await backBtn?.trigger('click')
+			await wrapper.vm.$nextTick()
+			expect(wrapper.text()).not.toContain('Viewing Record #2')
+
+			const stopBtn = wrapper.find('button[title="Stop pooling"]')
+			expect(stopBtn.exists()).toBe(true)
+			await stopBtn.trigger('click')
+			await wrapper.vm.$nextTick()
+
+			expect((wrapper.vm as any).isPooling).toBe(false)
+			expect(sock.close).not.toHaveBeenCalled()
+			expect(JSON.parse(sock.sent[sock.sent.length - 1]!)).toEqual({ type: 'pause' })
+
+			store.toggleProcessorStatus('node-uuid-1', 'proc-uuid-2')
+			await wrapper.vm.$nextTick()
+
+			const secondDraft = JSON.parse(sock.sent[sock.sent.length - 1]!)
+			expect(secondDraft.type).toBe('draft')
+			expect(secondDraft.id).toBe(2)
+			expect(secondDraft.processors[1].adm_status).toBe(0)
+
+			const recordCard3 = wrapper
+				.findAll('.cursor-pointer')
+				.find((el) => el.text().includes('Record #3'))
+			await recordCard3?.trigger('click')
+			await wrapper.vm.$nextTick()
+			expect((wrapper.vm as any).viewMode).toBe('detail')
+
+			sock.onmessage?.({
+				data: JSON.stringify({ type: 'reset', draft_id: 2 })
+			})
+			await wrapper.vm.$nextTick()
+			expect((wrapper.vm as any).viewMode).toBe('list')
+			expect(wrapper.text()).toContain('Sorry, Data not found.')
+
+			const startBtn = wrapper.find('button[title="Start pooling"]')
+			expect(startBtn.exists()).toBe(true)
+			await startBtn.trigger('click')
+			await wrapper.vm.$nextTick()
+
+			expect((wrapper.vm as any).isPooling).toBe(true)
+			expect(JSON.parse(sock.sent[sock.sent.length - 1]!)).toEqual({ type: 'resume' })
+
+			const closeBtn = wrapper.find('button[title="Close Modal"]')
+			await closeBtn.trigger('click')
+			expect(store.previewDataModal.isOpen).toBe(false)
+
+			store.openPreviewDataModal('node-uuid-1')
+			await flushPromises()
+			expect(createdSockets.length).toBe(2)
+			const sock2 = createdSockets[1]!
+			sock2.readyState = MockWebSocket.OPEN
+			sock2.onopen?.(new Event('open'))
+			await flushPromises()
+			expect(JSON.parse(sock2.sent[0]!).id).toBe(1)
+
+			wrapper.unmount()
+		} finally {
+			vi.stubGlobal('WebSocket', OriginalWebSocket)
+		}
+	})
+
+	it('does not endlessly reconnect when WebSocket closes and resolves cluster prefix from pipeline detail canvases', async () => {
+		const createdSockets: Array<{
+			url: string
+			readyState: number
+			onopen: ((ev: any) => void) | null
+			onmessage: ((ev: any) => void) | null
+			onclose: ((ev: any) => void) | null
+			onerror: ((ev: any) => void) | null
+		}> = []
+
+		const OriginalWebSocket = globalThis.WebSocket
+		class MockWebSocket {
+			static CONNECTING = 0
+			static OPEN = 1
+			static CLOSING = 2
+			static CLOSED = 3
+
+			url: string
+			readyState = MockWebSocket.CONNECTING
+			onopen: ((ev: any) => void) | null = null
+			onmessage: ((ev: any) => void) | null = null
+			onclose: ((ev: any) => void) | null = null
+			onerror: ((ev: any) => void) | null = null
+			send = vi.fn()
+			close = vi.fn(() => {
+				this.readyState = MockWebSocket.CLOSED
+			})
+
+			constructor(url: string) {
+				this.url = url
+				createdSockets.push(this)
 			}
-		} as any
+		}
 
-		store.openPreviewDataModal('proc-group-node-1', 'proc-1')
+		vi.stubGlobal('WebSocket', MockWebSocket)
+		vi.useFakeTimers()
 
-		const wrapper = mount(PreviewDataModal, {
-			global: {
-				plugins: [pinia]
-			}
-		})
+		try {
+			const pinia = createPinia()
+			setActivePinia(pinia)
 
-		await wrapper.vm.$nextTick()
+			const store = usePipelineBuildStore(pinia)
+			store.pipelineId = '01a20432-ce26-7722-8401-a8c612d9b9b5'
+			store.canvasId = '01a20432-ce27-7526-8944-4ef281914f9a'
+			store.clusterUrl = null
+			store.pipelineDetail = {
+				pipeline_id: '01a20432-ce26-7722-8401-a8c612d9b9b5',
+				canvases: [
+					{
+						canvas_id: '01a20432-ce27-7526-8944-4ef281914f9a',
+						cluster_url: '/patrolli',
+						cluster_name: 'patrolli'
+					}
+				]
+			} as any
 
-		// Modal should be visible
-		expect(wrapper.text()).toContain('Preview Data Mode')
-		expect(wrapper.text()).toContain('Processors in Sequence')
-		expect(wrapper.text()).toContain('Record Before')
-		expect(wrapper.text()).toContain('Record After')
-		expect(wrapper.text()).toContain('Add Processor')
-		expect(wrapper.text()).toContain('Select All Processor')
+			const node = {
+				id: '01a20432-f6f6-74f9-b72a-c09131dab030',
+				node_id: '01a20432-f6f6-74f9-b72a-c09131dab030',
+				type: 'processor',
+				data: { processors: [] }
+			} as any
+			store.nodes = [node]
+			store.selectedNode = node
 
-		// Processors rendered in sequence
-		expect(wrapper.text()).toContain('Filter Processor')
-		expect(wrapper.text()).toContain('Drop Processor')
+			store.openPreviewDataModal('01a20432-f6f6-74f9-b72a-c09131dab030')
 
-		// Initially target is proc-1
-		expect(wrapper.text()).toContain('Target')
+			const wrapper = mount(PreviewDataModal, {
+				global: {
+					plugins: [pinia]
+				}
+			})
 
-		// Click on second processor card
-		const procCards = wrapper
-			.findAll('.cursor-pointer')
-			.filter((card) => card.text().includes('Drop Processor'))
-		expect(procCards.length).toBeGreaterThan(0)
-		await procCards[0].trigger('click')
-		await wrapper.vm.$nextTick()
+			await flushPromises()
+			expect(createdSockets.length).toBe(1)
+			expect(createdSockets[0]!.url).toContain(
+				'/patrolli/ws/v1/pipelines/01a20432-ce26-7722-8401-a8c612d9b9b5/canvases/01a20432-ce27-7526-8944-4ef281914f9a/nodes/01a20432-f6f6-74f9-b72a-c09131dab030/preview'
+			)
 
-		// Target should now be proc-2
-		expect((wrapper.vm as any).selectedProcessorId).toBe('proc-2')
+			createdSockets[0]!.onclose?.({ code: 1006, reason: '', wasClean: false })
+			await vi.advanceTimersByTimeAsync(5000)
+			await flushPromises()
 
-		// Simulate captured records arriving via WebSocket
-		;(wrapper.vm as any).capturedRecords = [
-			{
-				id: 1,
-				time: '13:41:02',
-				status: '200 OK',
-				statusType: 'success',
-				message_in: { user_id: 1024, event: 'click' },
-				message_out: { user_id: '[MASKED]', event: 'click' }
-			}
-		]
-		await wrapper.vm.$nextTick()
+			expect(createdSockets.length).toBe(1)
+			expect((wrapper.vm as any).isPooling).toBe(false)
 
-		// In list view, Record #1 should be visible
-		expect(wrapper.text()).toContain('Record #1')
-		expect(wrapper.text()).toContain('13:41:02')
-
-		// Click on the record card to enter detail view
-		const recordCard = wrapper
-			.findAll('.cursor-pointer')
-			.find((el) => el.text().includes('Record #1'))
-		expect(recordCard).toBeDefined()
-		await recordCard?.trigger('click')
-		await wrapper.vm.$nextTick()
-
-		// In detail view, Back to List should appear
-		expect(wrapper.text()).toContain('Back to List')
-		expect(wrapper.text()).toContain('Viewing Record #1')
-		expect(wrapper.text()).toContain('[MASKED]')
-
-		// Click Back to List to return to list mode
-		const backBtn = wrapper.findAll('button').find((b) => b.text().includes('Back to List'))
-		expect(backBtn).toBeDefined()
-		await backBtn?.trigger('click')
-		await wrapper.vm.$nextTick()
-
-		// Now Back to List is hidden, Record #1 card is visible again
-		expect(wrapper.text()).not.toContain('Viewing Record #1')
-
-		// Test Data Not Found state when capturedRecords is empty and isPooling is false
-		;(wrapper.vm as any).capturedRecords = []
-		;(wrapper.vm as any).isPooling = false
-		await wrapper.vm.$nextTick()
-		expect(wrapper.text()).toContain('Sorry, Data not found.')
-		expect(wrapper.text()).toContain(
-			'Check your configuration filters or wait for fresh polling entries.'
-		)
-
-		// Close modal
-		const closeBtn = wrapper.find('button[title="Close Modal"]')
-		await closeBtn.trigger('click')
-		expect(store.previewDataModal.isOpen).toBe(false)
+			wrapper.unmount()
+		} finally {
+			vi.useRealTimers()
+			vi.stubGlobal('WebSocket', OriginalWebSocket)
+		}
 	})
 })

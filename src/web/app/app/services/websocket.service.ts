@@ -7,10 +7,10 @@ import { useAuthStore } from '@/stores/auth.store'
 /* global AddEventListenerOptions, BufferSource */
 interface AppWebSocketOptions {
 	protocols?: string | string[]
-	reconnectInterval?: number // Initial reconnect interval (ms)
-	maxReconnectInterval?: number // Maximum reconnect interval (ms)
-	reconnectDecay?: number // Exponential backoff decay factor
-	maxRetries?: number // Maximum reconnect attempts
+	reconnectInterval?: number
+	maxReconnectInterval?: number
+	reconnectDecay?: number
+	maxRetries?: number
 }
 
 export function normalizeWebSocketUrl(rawUrl: string): string {
@@ -21,11 +21,9 @@ export function normalizeWebSocketUrl(rawUrl: string): string {
 
 	let finalUrl = rawUrl
 
-	// 1. Relative path: '/ws/...' -> 'ws(s)://hostname:port/ws/...'
 	if (rawUrl.startsWith('/')) {
 		finalUrl = `${defaultWsProto}//${window.location.host}${rawUrl}`
 	} else if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
-		// 2. HTTP/HTTPS URL -> WS/WSS URL
 		try {
 			const parsed = new URL(rawUrl)
 			parsed.protocol = isPageHttps || rawUrl.startsWith('https://') ? 'wss:' : 'ws:'
@@ -34,7 +32,7 @@ export function normalizeWebSocketUrl(rawUrl: string): string {
 			finalUrl = rawUrl.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')
 		}
 	} else if (isPageHttps && rawUrl.startsWith('ws://')) {
-		// 3. Upgrade ws:// to wss:// if current page is served over HTTPS (Mixed Content prevention)
+		// Upgrade ws:// to wss:// if current page is served over HTTPS (Mixed Content prevention)
 		finalUrl = rawUrl.replace(/^ws:\/\//, 'wss://')
 	}
 
@@ -139,7 +137,6 @@ export class AppWebSocket extends EventTarget {
 		}
 	}
 
-	// --- Type Safety Overloads for addEventListener ---
 	public override addEventListener(
 		type: 'open' | 'error',
 		listener: (event: Event) => void,
@@ -163,9 +160,6 @@ export class AppWebSocket extends EventTarget {
 		super.addEventListener(type, listener, options)
 	}
 
-	/**
-	 * Send data to WebSocket server
-	 */
 	public send(data: string | Blob | BufferSource): void {
 		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
 			this.ws.send(data)
@@ -174,15 +168,14 @@ export class AppWebSocket extends EventTarget {
 		}
 	}
 
-	/**
-	 * Close connection permanently (without reconnecting)
-	 */
 	public close(code?: number, reason?: string): void {
 		this.isExplicitlyClosed = true
 		this.connectAttemptId++
 		this.clearReconnectTimeout()
 		if (this.ws) {
+			this.cleanup()
 			this.ws.close(code, reason)
+			this.ws = null
 		}
 	}
 

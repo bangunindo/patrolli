@@ -111,6 +111,24 @@ export interface ISinkNodeData {
 	type: string
 }
 
+export function mapProcessorsForPreviewDraft(rawProcessors: IGroupProcessorItem[] = []) {
+	return rawProcessors.map((p) => {
+		let cfg = p.config
+		if (!cfg || !cfg.type) {
+			cfg = {
+				type: cfg?.module || p.module || 'null',
+				...(cfg?.config !== undefined ? { config: cfg.config } : {})
+			}
+		}
+		return {
+			processor_id: p.processor_id || generateUuidV7(),
+			name: p.name || 'Processor',
+			adm_status: p.status !== false ? 1 : 0,
+			config: cfg
+		}
+	})
+}
+
 export const usePipelineBuildStore = defineStore(
 	'pipelineBuild',
 	() => {
@@ -242,7 +260,6 @@ export const usePipelineBuildStore = defineStore(
 		const previewDataModal = ref<{
 			isOpen: boolean
 			nodeId?: string
-			processorId?: string
 		}>({
 			isOpen: false
 		})
@@ -323,6 +340,19 @@ export const usePipelineBuildStore = defineStore(
 
 				if (detailRes?.success && detailRes.data) {
 					pipelineDetail.value = detailRes.data
+					if (!clusterUrl.value) {
+						const detailData = detailRes.data as any
+						const detailCluster =
+							detailData?.cluster_url ||
+							detailData?.cluster_name ||
+							detailData?.canvases?.[0]?.cluster_url ||
+							detailData?.canvases?.[0]?.cluster_name ||
+							(graphRes?.data as any)?.cluster_url ||
+							(graphRes?.data as any)?.cluster_name
+						if (detailCluster) {
+							clusterUrl.value = String(detailCluster)
+						}
+					}
 					nodeTasks.push(fetchPipelineItems())
 					if (detailRes.data.sink_ids?.length) {
 						nodeTasks.push(
@@ -1134,11 +1164,10 @@ export const usePipelineBuildStore = defineStore(
 			node.data.activeCount = procs.filter((p) => p.status !== false).length
 		}
 
-		function openPreviewDataModal(nodeId?: string, processorId?: string) {
+		function openPreviewDataModal(nodeId?: string) {
 			previewDataModal.value = {
 				isOpen: true,
-				nodeId: nodeId || selectedNode.value?.id,
-				processorId
+				nodeId: nodeId || selectedNode.value?.id
 			}
 		}
 
