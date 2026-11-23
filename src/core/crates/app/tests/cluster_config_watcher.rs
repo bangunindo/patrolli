@@ -1394,6 +1394,7 @@ async fn leader_promotion_does_not_trigger_spurious_reinitialization() -> Result
 #[tokio::test]
 async fn standby_clears_caches_and_repromotion_reloads_all_resources() -> Result<()> {
     setup::setup_logging();
+    setup::setup_mib().await;
     let (_db, db_pool) = setup::setup_db().await;
 
     let node_id = Uuid::now_v7();
@@ -1489,6 +1490,7 @@ async fn standby_clears_caches_and_repromotion_reloads_all_resources() -> Result
 #[tokio::test]
 async fn lock_flap_preserves_existing_item_stats_and_sweeps_deleted_items() -> Result<()> {
     setup::setup_logging();
+    setup::setup_mib().await;
     let (_db, db_pool) = setup::setup_db().await;
 
     let node_id = Uuid::now_v7();
@@ -1603,5 +1605,258 @@ async fn lock_flap_preserves_existing_item_stats_and_sweeps_deleted_items() -> R
         "mark-and-sweep reload must preserve total_records across a lock flap"
     );
 
+    node.stop().await
+}
+
+// ── node lock and watcher together ────────────────────────────────────────────
+//
+// The tests above drive `NodeState` by hand. Here a real `NodeLock` drives it,
+// for what only the two of them together decide.
+
+/// A running `NodeLock`, on the state a watcher follows.
+struct LockTask {
+    token: CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl LockTask {
+    fn start(
+        db_pool: &deadpool_postgres::Pool,
+        node_id: Uuid,
+        name: &str,
+        state: &Arc<cluster::NodeState>,
+    ) -> Self {
+        let token = CancellationToken::new();
+        let lock = cluster::node_lock::NodeLock::new(
+            db_pool.clone(),
+            token.clone(),
+            CancellationToken::new(),
+            patrolli::config::cluster::Cluster {
+                node_id,
+                node_name: name.to_string(),
+                heartbeat_timeout: setup::CLUSTER_HEARTBEAT_TIMEOUT,
+                heartbeat_interval: setup::CLUSTER_HEARTBEAT_INTERVAL,
+                inter_node: patrolli::config::cluster::InterNode::default(),
+                metadata: patrolli::config::cluster::NodeMetadata {
+                    advertise_address: "127.0.0.1:0".to_string(),
+                },
+            },
+            state.clone(),
+        );
+        Self {
+            token,
+            task: tokio::spawn(lock.run()),
+        }
+    }
+
+    async fn stop(self) -> Result<()> {
+        self.token.cancel();
+        self.task.await?;
+        Ok(())
+    }
+}
+
+/// How many times the watcher reporting to `workers` ran `initialize` as far as
+/// its cluster nodes.
+fn initialize_count(workers: &DummyWorkerManager) -> usize {
+    workers
+        .forwarder_calls
+        .lock()
+        .iter()
+        .filter(|c| matches!(c, ForwarderCall::CloseAll))
+        .count()
+}
+
+/// A heartbeat held up past `heartbeat_timeout` on a session that survives
+/// (a network stall shorter than the TCP timeout, a paused process) keeps the
+/// node lock, so the node never leaves `Main`. The leader meanwhile fails its
+/// hosts over, purges its `cluster_logs` and deletes its row. The node has to
+/// notice from its next heartbeat and reload: nothing else tells it, and with
+/// `max_active_nodes` it comes back as the spare, so nothing moves back either.
+#[tokio::test]
+async fn a_node_expired_while_holding_its_lock_reloads_its_configuration() -> Result<()> {
+    setup::setup_logging();
+    setup::setup_mib().await;
+    let (_db, db_pool) = setup::setup_db().await;
+    let mut conn = db_pool.get().await?;
+
+    // The stall: a BEFORE INSERT row trigger runs ahead of the ON CONFLICT check,
+    // before the heartbeat takes any row lock, so sleeping in it holds one
+    // node's heartbeat up without blocking the leader on that node's row.
+    conn.batch_execute(
+        "CREATE TABLE heartbeat_stall (node_id uuid PRIMARY KEY, secs float8 NOT NULL); \
+         CREATE FUNCTION stall_heartbeat() RETURNS trigger AS $$ \
+         DECLARE stall float8; \
+         BEGIN \
+           SELECT secs INTO stall FROM heartbeat_stall WHERE node_id = NEW.node_id; \
+           IF stall IS NOT NULL THEN PERFORM pg_sleep(stall); END IF; \
+           RETURN NEW; \
+         END $$ LANGUAGE plpgsql; \
+         CREATE TRIGGER trg_stall_heartbeat BEFORE INSERT ON cluster_nodes \
+         FOR EACH ROW EXECUTE FUNCTION stall_heartbeat();",
+    )
+    .await?;
+    conn.execute(
+        "INSERT INTO configs (key, val, last_updated) \
+         VALUES ('cluster', '{\"max_active_nodes\": 1}', now()) \
+         ON CONFLICT (key) DO UPDATE SET val = EXCLUDED.val, last_updated = now()",
+        &[],
+    )
+    .await?;
+
+    let node_a = Uuid::now_v7();
+    let node_b = Uuid::now_v7();
+
+    // node_b leads; it only needs its lock.
+    let b_state = Arc::new(cluster::NodeState::default());
+    let b_lock = LockTask::start(&db_pool, node_b, "node_b", &b_state);
+    eventually(async || {
+        ensure!(
+            b_state.is(cluster::NodeStateType::Leader),
+            "node_b is {:?}, waiting for it to lead",
+            b_state.get_state()
+        );
+        Ok(())
+    })
+    .await;
+
+    // node_a owns both hosts, which makes it the active node and node_b the spare.
+    let tx = conn.transaction().await?;
+    tx.execute(
+        "INSERT INTO cluster_nodes(node_id, name, op_status, last_heartbeat, metadata) \
+         VALUES ($1, 'node_a', 1, now(), '{\"advertise_address\": \"127.0.0.1:0\"}')",
+        &[&node_a],
+    )
+    .await?;
+    let processor_id = setup::create_processor(&tx, "proc_1").await?;
+    for i in 1..=2 {
+        setup::create_data(
+            &tx,
+            &format!("host_{i}"),
+            &format!("endpoint_{i}"),
+            &format!("item_{i}"),
+            Some(processor_id),
+            Some(node_a),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+
+    // `start_node` begins as a hand-set Leader; hand the state to a real lock,
+    // which takes it to Main under a new epoch, and let that reload finish.
+    let node = start_node(&db_pool, node_a, "node_a").await?;
+    node.initialized().await;
+    node.state.set_state(cluster::NodeStateType::LostConnection);
+    let a_lock = LockTask::start(&db_pool, node_a, "node_a", &node.state);
+    node.wait_for("node_a is main and has reloaded", |n| {
+        n.state.is(cluster::NodeStateType::Main)
+            && initialize_count(&n.workers) == 2
+            && cache_sizes(&n.cache) == [2, 2, 2, 1]
+    })
+    .await;
+    let epoch = node.state.main_epoch().context("node_a must be main")?;
+
+    // Hold node_a's next heartbeat up for three times the heartbeat timeout.
+    conn.execute(
+        "INSERT INTO heartbeat_stall VALUES ($1, $2)",
+        &[
+            &node_a,
+            &(setup::CLUSTER_HEARTBEAT_TIMEOUT.as_secs_f64() * 3.0),
+        ],
+    )
+    .await?;
+    eventually(async || {
+        let stalled: i64 = conn
+            .query_one(
+                "SELECT count(*) FROM pg_stat_activity \
+                 WHERE datname = current_database() AND wait_event = 'PgSleep'",
+                &[],
+            )
+            .await?
+            .try_get(0)?;
+        ensure!(stalled == 1, "waiting for node_a's heartbeat to stall");
+        Ok(())
+    })
+    .await;
+    // only that one heartbeat
+    conn.execute("DELETE FROM heartbeat_stall", &[]).await?;
+
+    // The leader writes node_a off: hosts to the spare, row gone.
+    eventually(async || {
+        let rows: i64 = conn
+            .query_one(
+                "SELECT count(*) FROM cluster_nodes WHERE node_id = $1",
+                &[&node_a],
+            )
+            .await?
+            .try_get(0)?;
+        let on_b: i64 = conn
+            .query_one(
+                "SELECT count(*) FROM hosts WHERE monitored_by = $1",
+                &[&node_b],
+            )
+            .await?
+            .try_get(0)?;
+        ensure!(
+            rows == 0 && on_b == 2,
+            "waiting for node_a to be expired: {rows} row, {on_b} hosts on node_b"
+        );
+        Ok(())
+    })
+    .await;
+    // The lock was never lost, which is the whole problem: nothing changed for
+    // the watcher, and it still holds the hosts node_b now monitors.
+    assert_eq!(node.state.main_epoch(), Some(epoch));
+    assert_eq!(cache_sizes(&node.cache), [2, 2, 2, 1]);
+
+    // A change made while node_a has no row reaches no log of its.
+    let tx = conn.transaction().await?;
+    setup::create_lookup_table(
+        &tx,
+        "during-stall",
+        &processor_source(&["host"], 100),
+        &hash_key(&["host"]),
+        1,
+    )
+    .await?;
+    tx.commit().await?;
+
+    // The heartbeat goes through: node_a reloads without having lost its lock,
+    // drops the hosts it no longer owns and picks up what it missed.
+    node.wait_for("node_a reloads what it holds", |n| {
+        cache_sizes(&n.cache) == [0, 0, 0, 1] && n.tables().len() == 1
+    })
+    .await;
+    assert!(node.state.is_main(), "node_a must not have lost its lock");
+    assert_ne!(
+        node.state.main_epoch(),
+        Some(epoch),
+        "an expired heartbeat must start a new main epoch"
+    );
+    eventually(async || {
+        let row = conn
+            .query_opt(
+                "SELECT op_status FROM cluster_nodes WHERE node_id = $1",
+                &[&node_a],
+            )
+            .await?
+            .context("waiting for node_a to register again")?;
+        let op_status: i16 = row.try_get(0)?;
+        ensure!(op_status == 1, "node_a is {op_status}, waiting for active");
+        Ok(())
+    })
+    .await;
+    // it came back as the spare
+    let on_b: i64 = conn
+        .query_one(
+            "SELECT count(*) FROM hosts WHERE monitored_by = $1",
+            &[&node_b],
+        )
+        .await?
+        .try_get(0)?;
+    assert_eq!(on_b, 2, "a returning node gets nothing back");
+
+    a_lock.stop().await?;
+    b_lock.stop().await?;
     node.stop().await
 }

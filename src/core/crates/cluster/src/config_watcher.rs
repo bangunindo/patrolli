@@ -1248,6 +1248,19 @@ impl ConfigWatcher {
         Ok(())
     }
 
+    /// The main epoch this watcher loaded its configuration under is over:
+    /// whatever it holds has to be loaded again before it is trusted.
+    fn end_epoch(&mut self) {
+        if self.node_lock.is_main() {
+            // lost and taken again between two polls, or renewed by the node lock
+            // after the leader expired this node
+            warn!("node lock epoch changed, configuration will be reloaded");
+        } else {
+            warn!("node lock is lost, config will not update");
+        }
+        self.initialized = false;
+    }
+
     #[tracing::instrument(skip_all, fields(node_id = %self.node_id, node = %self.node_name))]
     pub async fn run(mut self) {
         'root_loop: loop {
@@ -1300,16 +1313,14 @@ impl ConfigWatcher {
             info!("starting config watcher");
             loop {
                 if self.node_lock.main_epoch() != Some(epoch) {
-                    warn!("node lock is lost, config will not update");
-                    self.initialized = false;
+                    self.end_epoch();
                     continue 'root_loop;
                 }
                 let initializing = !self.initialized;
                 match self.poll(epoch).await {
                     Ok(()) => {}
                     Err(ConfigWatcherError::NodeLockLost) => {
-                        warn!("node lock is lost, config will not update");
-                        self.initialized = false;
+                        self.end_epoch();
                         continue 'root_loop;
                     }
                     Err(ConfigWatcherError::Other(e)) => {

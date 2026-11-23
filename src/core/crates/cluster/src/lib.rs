@@ -101,6 +101,10 @@ fn pack_node_state(state: NodeStateType, epoch: u64) -> u64 {
     ((epoch & NODE_STATE_EPOCH_MASK) << 8) | (state as u8 as u64)
 }
 
+fn next_main_epoch(epoch: u64) -> u64 {
+    epoch.wrapping_add(1) & NODE_STATE_EPOCH_MASK
+}
+
 fn unpack_node_state(raw: u64) -> (NodeStateType, u64) {
     let state = NodeStateType::try_from(raw as u8).unwrap();
     (state, raw >> 8)
@@ -108,7 +112,8 @@ fn unpack_node_state(raw: u64) -> (NodeStateType, u64) {
 
 /// Shared node role state, packing the current [`NodeStateType`] (low 8 bits)
 /// with a monotonic main-lock epoch (high 56 bits) so polling tasks can detect
-/// a lock drop and reacquisition that finished between polls.
+/// a lock drop and reacquisition that finished between polls, or a tenure the
+/// node lock renewed because the leader expired this node meanwhile.
 pub struct NodeState(AtomicU64);
 
 impl Default for NodeState {
@@ -129,7 +134,8 @@ impl NodeState {
     /// (`Main` or `Leader`), or `None` otherwise.
     ///
     /// The epoch increments each time the node enters `Main`/`Leader` from a
-    /// non-main state (`Standby`/`LostConnection`), and stays unchanged across
+    /// non-main state (`Standby`/`LostConnection`) and on
+    /// [`renew_main_epoch`](Self::renew_main_epoch), and stays unchanged across
     /// `Main <-> Leader` transitions.
     pub fn main_epoch(&self) -> Option<u64> {
         let (state, epoch) = unpack_node_state(self.0.load(Ordering::Acquire));
@@ -142,7 +148,7 @@ impl NodeState {
             .try_update(Ordering::AcqRel, Ordering::Acquire, |raw| {
                 let (prev, epoch) = unpack_node_state(raw);
                 let next_epoch = if !prev.is_main() && state.is_main() {
-                    epoch.wrapping_add(1) & NODE_STATE_EPOCH_MASK
+                    next_main_epoch(epoch)
                 } else {
                     epoch
                 };
@@ -153,6 +159,22 @@ impl NodeState {
         if prev_state != state {
             info!(from = ?prev_state, to = ?state, "node state changed");
         }
+    }
+
+    /// Starts a new main-lock epoch without leaving `Main`/`Leader`, for a
+    /// tenure that kept the lock but can no longer trust what it loaded (the
+    /// leader expired this node while its heartbeat was held up). Polling
+    /// tasks then reload as they do after a lock flap. Does nothing while the
+    /// node is not main: entering main starts an epoch by itself.
+    pub fn renew_main_epoch(&self) {
+        _ = self
+            .0
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |raw| {
+                let (state, epoch) = unpack_node_state(raw);
+                state
+                    .is_main()
+                    .then(|| pack_node_state(state, next_main_epoch(epoch)))
+            });
     }
 
     pub fn is_main(&self) -> bool {
@@ -646,6 +668,33 @@ mod tests {
         state.set_state(NodeStateType::Main);
         assert_eq!(state.main_epoch(), Some(1));
         assert!(state.is_main());
+    }
+
+    #[test]
+    fn renewing_the_main_epoch_keeps_the_state_and_needs_the_lock() {
+        let state = NodeState::default();
+        // Not main: nothing to renew, and no epoch appears.
+        state.renew_main_epoch();
+        assert_eq!(state.get_state(), NodeStateType::LostConnection);
+        assert_eq!(state.main_epoch(), None);
+        state.set_state(NodeStateType::Standby);
+        state.renew_main_epoch();
+        assert_eq!(state.get_state(), NodeStateType::Standby);
+
+        // The renewals above were no-ops, so entering main is still epoch 1.
+        state.set_state(NodeStateType::Main);
+        assert_eq!(state.main_epoch(), Some(1));
+
+        // Main: a new epoch, same state.
+        state.renew_main_epoch();
+        assert_eq!(state.get_state(), NodeStateType::Main);
+        assert_eq!(state.main_epoch(), Some(2));
+
+        // Leader too.
+        state.set_state(NodeStateType::Leader);
+        state.renew_main_epoch();
+        assert_eq!(state.get_state(), NodeStateType::Leader);
+        assert_eq!(state.main_epoch(), Some(3));
     }
 
     #[test]

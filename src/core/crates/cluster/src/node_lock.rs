@@ -406,10 +406,15 @@ impl NodeLock {
         }
         // we're main now, so we're no longer a standby
         self.release_standby(&client, !fresh).await?;
+        let expire_after = self.cluster.heartbeat_timeout.as_secs_f64();
         let mut ticker = time::interval(self.cluster.heartbeat_interval);
         ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+        // the first heartbeat of a tenure follows whatever the previous one left
+        // behind, and entering main starts an epoch anyway
+        let mut first_tick = true;
         loop {
-            let mut leader_lock = self.node_lock.is(NodeStateType::Leader);
+            let was_leader = self.node_lock.is(NodeStateType::Leader);
+            let mut leader_lock = was_leader;
             if !leader_lock {
                 leader_lock = client
                     .query_one_scalar(
@@ -423,22 +428,39 @@ impl NodeLock {
                 .transaction()
                 .await
                 .context("failed to start transaction")?;
-            tx.execute(
-                "INSERT INTO cluster_nodes(node_id, name, op_status, last_heartbeat, metadata) \
-                VALUES ($1, $2, 1, now(), $3) \
-                ON CONFLICT (node_id) DO UPDATE SET \
-                name = EXCLUDED.name, \
-                op_status = CASE WHEN cluster_nodes.op_status = 0 THEN 1 ELSE cluster_nodes.op_status END, \
-                last_heartbeat = EXCLUDED.last_heartbeat, \
-                metadata = EXCLUDED.metadata",
-                &[
-                    &self.cluster.node_id,
-                    &self.cluster.node_name,
-                    &node_metadata,
-                ],
-            )
-            .await
-            .context("failed to update node info")?;
+            // `prev` reads the statement's snapshot, so it is the heartbeat this one
+            // replaces (none: the row was deleted). It is judged against the clock
+            // at the time the upsert is done, not the transaction's `now()`, which
+            // a statement that was held up on its way would leave in the past.
+            let expired: bool = tx
+                .query_one(
+                    "WITH prev AS (\
+                        SELECT last_heartbeat FROM cluster_nodes WHERE node_id = $1\
+                    ), beat AS (\
+                        INSERT INTO cluster_nodes(node_id, name, op_status, last_heartbeat, metadata) \
+                        VALUES ($1, $2, 1, now(), $3) \
+                        ON CONFLICT (node_id) DO UPDATE SET \
+                        name = EXCLUDED.name, \
+                        op_status = CASE WHEN cluster_nodes.op_status = 0 THEN 1 ELSE cluster_nodes.op_status END, \
+                        last_heartbeat = EXCLUDED.last_heartbeat, \
+                        metadata = EXCLUDED.metadata \
+                        RETURNING 1\
+                    ) \
+                    SELECT COALESCE(\
+                        (SELECT last_heartbeat FROM prev) + make_interval(secs := $4) < clock_timestamp(), \
+                        true) \
+                    FROM beat",
+                    &[
+                        &self.cluster.node_id,
+                        &self.cluster.node_name,
+                        &node_metadata,
+                        &expire_after,
+                    ],
+                )
+                .await
+                .context("failed to update node info")?
+                .try_get(0)
+                .context("failed to read the previous heartbeat")?;
             if leader_lock && !self.node_lock.is(NodeStateType::Leader) {
                 tx.execute("UPDATE cluster_nodes SET is_leader = false", &[])
                     .await
@@ -451,6 +473,18 @@ impl NodeLock {
                 .context("failed to update leader status")?;
             }
             tx.commit().await.context("failed to commit transaction")?;
+            // A heartbeat this late kept the session, and with it the node lock,
+            // but a leader that saw it expired has moved our hosts, purged our
+            // cluster logs and deleted our row: what the watcher holds is no longer
+            // what the logs can bring up to date. Only after the commit, so the
+            // reload finds the row. A node that led throughout was judged by nobody.
+            if expired && !first_tick && !was_leader {
+                warn!(
+                    "heartbeat expired while holding the node lock, configuration will be reloaded"
+                );
+                self.node_lock.renew_main_epoch();
+            }
+            first_tick = false;
             if leader_lock {
                 self.node_lock.set_state(NodeStateType::Leader);
                 let tx = client
