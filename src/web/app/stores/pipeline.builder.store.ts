@@ -6,11 +6,14 @@ import { defineStore } from 'pinia'
 import { computed, reactive, ref } from 'vue'
 import axios from 'axios'
 import pipelinesApi from '@/app/api/pipelines.api'
-import hostsApi from '@/app/api/hosts.api'
-import sinksApi from '@/app/api/sinks.api'
 import itemsApi from '@/app/api/items.api'
 import processorsApi from '@/app/api/processors.api'
 import appHelper from '@/app/helpers/app.helper'
+import { DEFAULT_PAGE_SIZE, fetchAllPages } from '@/app/helpers/pagination.helper'
+import {
+	createHostsPaginatedResource,
+	createSinksPaginatedResource
+} from '@/app/helpers/pipeline-resource.helper'
 import { generateUuidV7 } from '@/app/helpers/uuid.helper'
 import { useAppStore } from '@/stores/app.store'
 import { useProcessorStore } from '@/stores/processors.store'
@@ -134,41 +137,87 @@ export const usePipelineBuildStore = defineStore(
 		const error = ref<string | null>(null)
 		const successMessage = ref<string | null>(null)
 
-		// Available lists for adding/editing nodes
-		const availableHosts = ref<any[]>([])
-		const availableSinks = ref<any[]>([])
-		const pipelineItems = ref<any[]>([])
-		const loadingItems = ref(false)
-
-		const hostById = computed(() => {
-			const map = new Map<string, any>()
-			for (const h of availableHosts.value) {
-				if (h?.host_id) map.set(h.host_id, h)
-			}
-			return map
-		})
-
-		const sinkById = computed(() => {
-			const map = new Map<string, any>()
-			for (const s of availableSinks.value) {
-				if (s?.sink_id) map.set(s.sink_id, s)
-			}
-			return map
-		})
-
-		function resolveHostNames(hostIds: string[]): string[] {
-			const lookup = hostById.value
-			return hostIds.map((hid) => lookup.get(hid)?.name || hid)
-		}
-
 		const hostSelectorModalOpen = ref(false)
 		const sinkSelectorModalOpen = ref(false)
 		const selectorError = ref<string | null>(null)
 		const loadingResources = reactive({
 			hosts: false,
+			hostsMore: false,
 			sinks: false,
+			sinksMore: false,
 			updatingSubset: false
 		})
+
+		const hostsResource = createHostsPaginatedResource({
+			defaultErrorMessage: 'Failed to load available hosts.',
+			mapItem: (h) => h,
+			getId: (h) => h.host_id,
+			onError: (err, stage) => {
+				if (stage === 'first') {
+					console.error('Failed to refresh available hosts:', err)
+					selectorError.value = 'Failed to load available hosts.'
+				} else {
+					console.error('Failed to load more hosts:', err)
+				}
+			},
+			onLoadingChange: (isLoading, isMore) => {
+				loadingResources.hosts = isLoading
+				loadingResources.hostsMore = isMore
+			}
+		})
+
+		const sinksResource = createSinksPaginatedResource({
+			defaultErrorMessage: 'Failed to load available sinks.',
+			mapItem: (s) => s,
+			getId: (s) => s.sink_id,
+			onError: (err, stage) => {
+				if (stage === 'first') {
+					console.error('Failed to refresh available sinks:', err)
+					selectorError.value = 'Failed to load available sinks.'
+				} else {
+					console.error('Failed to load more sinks:', err)
+				}
+			},
+			onLoadingChange: (isLoading, isMore) => {
+				loadingResources.sinks = isLoading
+				loadingResources.sinksMore = isMore
+			}
+		})
+
+		const availableHosts = hostsResource.items
+		const availableHostsTotal = hostsResource.total
+		const hostsSearchQuery = hostsResource.searchQuery
+
+		const availableSinks = sinksResource.items
+		const availableSinksTotal = sinksResource.total
+		const sinksSearchQuery = sinksResource.searchQuery
+
+		const pipelineItems = ref<any[]>([])
+		const loadingItems = ref(false)
+
+		function buildEntityMap(cache: Record<string, any>, list: any[], idKey: string) {
+			const map = new Map<string, any>()
+			for (const [id, item] of Object.entries(cache)) {
+				map.set(id, item)
+			}
+			for (const item of list) {
+				if (item?.[idKey]) map.set(item[idKey], item)
+			}
+			return map
+		}
+
+		const hostById = computed(() =>
+			buildEntityMap(hostsResource.cache.value, availableHosts.value, 'host_id')
+		)
+
+		const sinkById = computed(() =>
+			buildEntityMap(sinksResource.cache.value, availableSinks.value, 'sink_id')
+		)
+
+		function resolveHostNames(hostIds: string[]): string[] {
+			const lookup = hostById.value
+			return hostIds.map((hid) => lookup.get(hid)?.name || hid)
+		}
 		const subsetConfirmation = ref<{
 			isOpen: boolean
 			kind: 'hosts' | 'sinks'
@@ -230,80 +279,16 @@ export const usePipelineBuildStore = defineStore(
 			isDirty.value = true
 		}
 
-		const RESOURCE_PAGE_LIMIT = 100
-		const MAX_RESOURCE_PAGES = 50
+		const BUILDER_HOST_HYDRATION_LIMIT = 200
+		const BUILDER_SINK_HYDRATION_LIMIT = 100
+		let builderLoadSeq = 0
 
-		async function fetchAllPages<T>(
-			fetchPage: (limit: number, offset: number) => Promise<{ items: T[]; total?: number }>
-		): Promise<T[]> {
-			const firstPage = await fetchPage(RESOURCE_PAGE_LIMIT, 0)
-			const collected: T[] = [...firstPage.items]
-			if (
-				firstPage.items.length === 0 ||
-				firstPage.items.length < RESOURCE_PAGE_LIMIT ||
-				(typeof firstPage.total === 'number' && collected.length >= firstPage.total)
-			) {
-				return collected
-			}
-
-			if (typeof firstPage.total === 'number' && firstPage.total > collected.length) {
-				const totalPages = Math.min(
-					MAX_RESOURCE_PAGES,
-					Math.ceil(firstPage.total / RESOURCE_PAGE_LIMIT)
-				)
-				const pagePromises: Promise<{ items: T[]; total?: number }>[] = []
-				for (let page = 1; page < totalPages; page++) {
-					pagePromises.push(fetchPage(RESOURCE_PAGE_LIMIT, page * RESOURCE_PAGE_LIMIT))
-				}
-				const remainingPages = await Promise.all(pagePromises)
-				for (const pageRes of remainingPages) {
-					collected.push(...pageRes.items)
-				}
-				return collected
-			}
-
-			for (let page = 1; page < MAX_RESOURCE_PAGES; page++) {
-				const offset = page * RESOURCE_PAGE_LIMIT
-				const { items, total } = await fetchPage(RESOURCE_PAGE_LIMIT, offset)
-				collected.push(...items)
-				if (
-					items.length === 0 ||
-					items.length < RESOURCE_PAGE_LIMIT ||
-					(typeof total === 'number' && collected.length >= total)
-				) {
-					break
-				}
-			}
-			return collected
-		}
-
-		async function fetchAllHosts(clusterURLs?: string[]): Promise<any[]> {
-			return fetchAllPages(async (limit, offset) => {
-				const res = await hostsApi.getHosts(
-					offset > 0 ? { limit, offset } : { limit },
-					clusterURLs
-				)
-				return {
-					items: res?.data?.hosts || [],
-					total: res?.data?.total
-				}
-			})
-		}
-
-		async function fetchAllSinks(clusterURLs?: string[]): Promise<any[]> {
-			return fetchAllPages(async (limit, offset) => {
-				const res = await sinksApi.getSinks(
-					offset > 0 ? { limit, offset } : { limit },
-					clusterURLs
-				)
-				return {
-					items: res?.data?.sinks || [],
-					total: res?.data?.total
-				}
-			})
+		function getClusterUrls(): string[] | undefined {
+			return clusterUrl.value ? [clusterUrl.value] : undefined
 		}
 
 		async function loadBuilder(pId: string, cId: string, cluster?: string) {
+			const loadSeq = ++builderLoadSeq
 			pipelineId.value = pId
 			canvasId.value = cId
 			clusterUrl.value = cluster || null
@@ -315,29 +300,35 @@ export const usePipelineBuildStore = defineStore(
 			sinkSelectorModalOpen.value = false
 			selectorError.value = null
 			subsetConfirmation.value.isOpen = false
+			hostsResource.reset()
+			sinksResource.reset()
 
-			const cUrls = clusterUrl.value ? [clusterUrl.value] : undefined
+			const cUrls = getClusterUrls()
 
 			try {
 				const shouldFetchGraph = Boolean(cId && cId !== 'default')
 
-				const [detailRes, hostsList, sinksList, graphRes] = await Promise.all([
+				const [detailRes, , , graphRes] = await Promise.all([
 					pipelinesApi.getPipelineById(pId, cUrls),
-					fetchAllHosts(cUrls).catch(() => [] as any[]),
-					fetchAllSinks(cUrls).catch(() => [] as any[]),
+					hostsResource.fetchFirst(cUrls, ''),
+					sinksResource.fetchFirst(cUrls, ''),
 					shouldFetchGraph
 						? pipelinesApi.getPipelineGraph({ pipeline_id: pId, canvas_id: cId }, cUrls)
 						: Promise.resolve(undefined)
 				])
-
-				availableHosts.value = hostsList
-				availableSinks.value = sinksList
 
 				const nodeTasks: Promise<unknown>[] = []
 
 				if (detailRes?.success && detailRes.data) {
 					pipelineDetail.value = detailRes.data
 					nodeTasks.push(fetchPipelineItems())
+					if (detailRes.data.sink_ids?.length) {
+						nodeTasks.push(
+							sinksResource.hydrateByIds(detailRes.data.sink_ids, cUrls, {
+								maxIds: BUILDER_SINK_HYDRATION_LIMIT
+							})
+						)
+					}
 				}
 
 				if (graphRes?.success && graphRes.data) {
@@ -407,6 +398,24 @@ export const usePipelineBuildStore = defineStore(
 
 				// 3. Reconcile Nodes & Edges from Backend Graph or Fallback Empty States
 				buildGraphRepresentation()
+
+				if (detailRes?.success && detailRes.data?.host_ids?.length) {
+					void hostsResource
+						.hydrateByIds(detailRes.data.host_ids, cUrls, {
+							maxIds: BUILDER_HOST_HYDRATION_LIMIT
+						})
+						.then(() => {
+							if (loadSeq !== builderLoadSeq) return
+							const resolvedNames = resolveHostNames(
+								pipelineDetail.value?.host_ids || []
+							)
+							for (const node of nodes.value as any[]) {
+								if (node.type === 'source' && node.data) {
+									node.data.hosts = resolvedNames
+								}
+							}
+						})
+				}
 			} catch (err: any) {
 				error.value = err.message || 'Failed to load pipeline builder canvas'
 			} finally {
@@ -1529,7 +1538,7 @@ export const usePipelineBuildStore = defineStore(
 							pipeline_id: pId,
 							canvas_id: cId,
 							node_id: nodeId,
-							query: { limit: RESOURCE_PAGE_LIMIT }
+							query: { limit: DEFAULT_PAGE_SIZE }
 						},
 						clusterURLs
 					)
@@ -1862,20 +1871,23 @@ export const usePipelineBuildStore = defineStore(
 			selectorError.value = null
 		}
 
+		function searchSelectorHosts(search = '') {
+			return hostsResource.fetchFirst(getClusterUrls(), search)
+		}
+
+		function loadMoreSelectorHosts() {
+			return hostsResource.loadMore(getClusterUrls())
+		}
+
+		function resolveAllSelectorHostIds(search = ''): Promise<string[]> {
+			return hostsResource.resolveAllIds(getClusterUrls(), search)
+		}
+
 		async function openHostSelectorModal() {
 			selectorError.value = null
 			hostSelectorModalOpen.value = true
-			if (loadingResources.hosts) return
-			loadingResources.hosts = true
-			const cUrls = clusterUrl.value ? [clusterUrl.value] : undefined
-			try {
-				availableHosts.value = await fetchAllHosts(cUrls)
-			} catch (err) {
-				console.error('Failed to refresh available hosts:', err)
-				selectorError.value = 'Failed to load available hosts.'
-			} finally {
-				loadingResources.hosts = false
-			}
+			if (loadingResources.hosts && hostsSearchQuery.value === '') return
+			await searchSelectorHosts('')
 		}
 
 		function closeHostSelectorModal() {
@@ -1884,20 +1896,23 @@ export const usePipelineBuildStore = defineStore(
 			selectorError.value = null
 		}
 
+		function searchSelectorSinks(search = '') {
+			return sinksResource.fetchFirst(getClusterUrls(), search)
+		}
+
+		function loadMoreSelectorSinks() {
+			return sinksResource.loadMore(getClusterUrls())
+		}
+
+		function resolveAllSelectorSinkIds(search = ''): Promise<string[]> {
+			return sinksResource.resolveAllIds(getClusterUrls(), search)
+		}
+
 		async function openSinkSelectorModal() {
 			selectorError.value = null
 			sinkSelectorModalOpen.value = true
-			if (loadingResources.sinks) return
-			loadingResources.sinks = true
-			const cUrls = clusterUrl.value ? [clusterUrl.value] : undefined
-			try {
-				availableSinks.value = await fetchAllSinks(cUrls)
-			} catch (err) {
-				console.error('Failed to refresh available sinks:', err)
-				selectorError.value = 'Failed to load available sinks.'
-			} finally {
-				loadingResources.sinks = false
-			}
+			if (loadingResources.sinks && sinksSearchQuery.value === '') return
+			await searchSelectorSinks('')
 		}
 
 		function closeSinkSelectorModal() {
@@ -2331,7 +2346,11 @@ export const usePipelineBuildStore = defineStore(
 			error,
 			successMessage,
 			availableHosts,
+			availableHostsTotal,
+			hostsSearchQuery,
 			availableSinks,
+			availableSinksTotal,
+			sinksSearchQuery,
 			hostById,
 			sinkById,
 			pipelineItems,
@@ -2343,8 +2362,14 @@ export const usePipelineBuildStore = defineStore(
 			subsetConfirmation,
 			openHostSelectorModal,
 			closeHostSelectorModal,
+			searchSelectorHosts,
+			loadMoreSelectorHosts,
+			resolveAllSelectorHostIds,
 			openSinkSelectorModal,
 			closeSinkSelectorModal,
+			searchSelectorSinks,
+			loadMoreSelectorSinks,
+			resolveAllSelectorSinkIds,
 			clearSelectorError,
 			cancelSubsetConfirmation,
 			applyPipelineHosts,
