@@ -28,7 +28,7 @@ async fn link(h: &Harness, source: Uuid, target: Uuid) {
         .unwrap()
         .execute(
             "INSERT INTO template_links (template_link_id, template_id, link_to_template_id)
-             VALUES (uuidv7(), $1, $2)",
+             VALUES (patrolli_uuidv7(), $1, $2)",
             &[&source, &target],
         )
         .await
@@ -166,7 +166,7 @@ async fn distinguishes_host_and_template_with_the_same_uuid() {
                  VALUES ($1, 'matching host', 1, now()) RETURNING host_id
              )
              INSERT INTO host_templates (host_template_id, host_id)
-             SELECT uuidv7(), host_id FROM new_host",
+             SELECT patrolli_uuidv7(), host_id FROM new_host",
             &[&id],
         )
         .await
@@ -200,7 +200,7 @@ async fn create_source_item(h: &Harness, template: Uuid) -> Uuid {
         .query_one(
             "INSERT INTO items (item_id, host_template_id, type, adm_status,
                                 name, schedule, timeout_ms, config, last_updated)
-             SELECT uuidv7(), host_template_id, 'dummy', 1,
+             SELECT patrolli_uuidv7(), host_template_id, 'dummy', 1,
                     'template item', '1s', 1000, '{}'::jsonb, now()
              FROM host_templates WHERE template_id = $1 AND host_id IS NULL
              RETURNING item_id",

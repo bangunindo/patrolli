@@ -185,6 +185,9 @@ global:
   #     insecure_skip_verify: false
   #     ca_cert_path: /etc/patrolli/db-ca.crt
   #   db_pool_size: 20
+  #   # A node refuses to start on a PostgreSQL server older than 14. true lets
+  #   # it start anyway, with a warning: older servers are untested.
+  #   db_skip_version_check: false
   #   watcher_interval: 5            # seconds between config-change polls
   #   # The REST API. Omit this whole block on the nodes that should not serve
   #   # it: one node per cluster is enough. `enabled` defaults to true when the

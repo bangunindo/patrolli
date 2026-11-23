@@ -320,6 +320,9 @@ pub struct Backend {
     pub db_tls: Option<super::Tls>,
     #[serde(default = "default_db_pool_size")]
     pub db_pool_size: usize,
+    /// Start on a PostgreSQL server older than `db::MIN_POSTGRES_VERSION`.
+    #[serde(default)]
+    pub db_skip_version_check: bool,
     pub cluster: Cluster,
     #[serde(
         with = "crate::common::serde::duration_seconds",
