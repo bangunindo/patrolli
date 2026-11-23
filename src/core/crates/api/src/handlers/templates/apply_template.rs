@@ -270,7 +270,7 @@ pub async fn apply_template(
     let bulk_sql = r#"
         WITH new_ht AS (
             INSERT INTO host_templates (host_template_id, host_id, template_id)
-            SELECT uuidv7(), h.host_id, t.template_id
+            SELECT patrolli_uuidv7(), h.host_id, t.template_id
             FROM unnest($1::uuid[]) AS h(host_id)
             CROSS JOIN unnest($2::uuid[]) AS t(template_id)
             RETURNING host_template_id, template_id
@@ -281,7 +281,7 @@ pub async fn apply_template(
             name, schedule, timeout_ms, config, labels, last_updated
         )
         SELECT
-            uuidv7() AS item_id,
+            patrolli_uuidv7() AS item_id,
             nht.host_template_id,
             ti.item_id AS template_item_id,
             NULL::uuid AS listener_id,
