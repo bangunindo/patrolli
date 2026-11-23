@@ -15,6 +15,7 @@ use patrolli_cluster as cluster;
 use patrolli_cluster::inter;
 use setup::eventually;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
@@ -32,11 +33,23 @@ struct DummyWorkerManager {
     forwarder_calls: Mutex<Vec<ForwarderCall>>,
     /// Every monitor config that changed what was applied, in order.
     monitor_configs: Mutex<Vec<MonitorConfig>>,
+    /// How often the watcher closed every sink: once per `initialize`, a few
+    /// steps in (and once more on entering standby).
+    sink_close_alls: AtomicUsize,
+    /// Run by the first `close_all_sink`, which puts a test in the middle of
+    /// `initialize`: lookup tables and processors loaded, nothing else yet.
+    on_close_all_sink: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 #[async_trait]
 impl patrolli_sink::WorkerManager for DummyWorkerManager {
-    async fn close_all_sink(&self) {}
+    async fn close_all_sink(&self) {
+        self.sink_close_alls.fetch_add(1, Ordering::Relaxed);
+        let hook = self.on_close_all_sink.lock().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
 
     async fn add(&self, _conf: Sink) -> Result<()> {
         Ok(())
@@ -879,6 +892,17 @@ async fn start_node(
     node_id: Uuid,
     name: &str,
 ) -> Result<WatchedNode> {
+    start_node_with(db_pool, node_id, name, |_, _| {}).await
+}
+
+/// [`start_node`], with `prepare` run on the node's workers and state before
+/// its watcher starts, for what has to be in place by its first step.
+async fn start_node_with(
+    db_pool: &deadpool_postgres::Pool,
+    node_id: Uuid,
+    name: &str,
+    prepare: impl FnOnce(&DummyWorkerManager, &Arc<cluster::NodeState>),
+) -> Result<WatchedNode> {
     let mut conn = db_pool.get().await?;
     let tx = conn.transaction().await?;
     tx.execute(
@@ -897,6 +921,7 @@ async fn start_node(
     let token = CancellationToken::new();
     let state = Arc::new(cluster::NodeState::default());
     state.set_state(cluster::NodeStateType::Leader);
+    prepare(&workers, &state);
     let watcher = cluster::config_watcher::ConfigWatcher {
         initialized: false,
         sinks: workers.clone(),
@@ -1603,6 +1628,152 @@ async fn lock_flap_preserves_existing_item_stats_and_sweeps_deleted_items() -> R
     assert_eq!(
         snap.total_records, 42,
         "mark-and-sweep reload must preserve total_records across a lock flap"
+    );
+
+    node.stop().await
+}
+
+// ── the lock changing in the middle of a load ─────────────────────────────────
+
+/// One host, endpoint and item owned by `node_id`, and a processor, for a load
+/// that has something in each cache to show how far it got.
+async fn register_node_with_data(db_pool: &deadpool_postgres::Pool, node_id: Uuid) -> Result<()> {
+    let mut conn = db_pool.get().await?;
+    let tx = conn.transaction().await?;
+    tx.execute(
+        "INSERT INTO cluster_nodes(node_id, name, op_status, last_heartbeat, metadata) \
+         VALUES ($1, 'node_1', 1, now(), '{\"advertise_address\": \"127.0.0.1:0\"}')",
+        &[&node_id],
+    )
+    .await?;
+    let processor_id = setup::create_processor(&tx, "proc_1").await?;
+    setup::create_data(
+        &tx,
+        "host_1",
+        "endpoint_1",
+        "item_1",
+        Some(processor_id),
+        Some(node_id),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn op_status(db_pool: &deadpool_postgres::Pool, node_id: Uuid) -> Result<i16> {
+    let conn = db_pool.get().await?;
+    Ok(conn
+        .query_one(
+            "SELECT op_status FROM cluster_nodes WHERE node_id = $1",
+            &[&node_id],
+        )
+        .await?
+        .try_get(0)?)
+}
+
+/// Losing the node lock in the middle of `initialize` abandons the load where
+/// it stands. It must not run to its end and mark the node active: by then the
+/// row may belong to the standby that took the lock. Once the lock is back the
+/// load starts over and completes.
+#[tokio::test]
+async fn a_lock_lost_during_initialization_abandons_the_load() -> Result<()> {
+    setup::setup_logging();
+    setup::setup_mib().await;
+    let (_db, db_pool) = setup::setup_db().await;
+
+    let node_id = Uuid::now_v7();
+    register_node_with_data(&db_pool, node_id).await?;
+    let node = start_node_with(&db_pool, node_id, "node_1", |workers, state| {
+        let state = state.clone();
+        *workers.on_close_all_sink.lock() = Some(Box::new(move || {
+            state.set_state(cluster::NodeStateType::LostConnection)
+        }));
+    })
+    .await?;
+
+    node.wait_for("the lock is lost mid-load", |n| {
+        n.state.is(cluster::NodeStateType::LostConnection)
+    })
+    .await;
+    // Several poll intervals: long enough for a load that carried on to finish.
+    sleep(Duration::from_millis(700)).await;
+    assert!(
+        node.workers.monitor_configs.lock().is_empty(),
+        "the load must not run to its last step without the lock"
+    );
+    assert_eq!(
+        cache_sizes(&node.cache),
+        [0, 0, 0, 1],
+        "the load must stop after the step that lost the lock"
+    );
+    assert_eq!(initialize_count(&node.workers), 0);
+    assert_eq!(
+        op_status(&db_pool, node_id).await?,
+        2,
+        "an abandoned load must leave the node initializing, not active"
+    );
+
+    // The lock comes back: a whole new load, from its first step.
+    node.state.set_state(cluster::NodeStateType::Main);
+    node.initialized().await;
+    node.wait_for("the load completes", |n| {
+        cache_sizes(&n.cache) == [1, 1, 1, 1]
+    })
+    .await;
+    eventually(async || {
+        let status = op_status(&db_pool, node_id).await?;
+        ensure!(status == 1, "node is {status}, waiting for active");
+        Ok(())
+    })
+    .await;
+    assert_eq!(node.workers.sink_close_alls.load(Ordering::Relaxed), 2);
+    assert_eq!(initialize_count(&node.workers), 1);
+
+    node.stop().await
+}
+
+/// A lock lost and taken again in the middle of `initialize` is a new epoch,
+/// although the node is main at every check that follows: the load under way
+/// is abandoned rather than finished and then repeated.
+#[tokio::test]
+async fn a_lock_flap_during_initialization_restarts_the_load() -> Result<()> {
+    setup::setup_logging();
+    setup::setup_mib().await;
+    let (_db, db_pool) = setup::setup_db().await;
+
+    let node_id = Uuid::now_v7();
+    register_node_with_data(&db_pool, node_id).await?;
+    let node = start_node_with(&db_pool, node_id, "node_1", |workers, state| {
+        let state = state.clone();
+        *workers.on_close_all_sink.lock() = Some(Box::new(move || {
+            state.set_state(cluster::NodeStateType::LostConnection);
+            state.set_state(cluster::NodeStateType::Leader);
+        }));
+    })
+    .await?;
+
+    node.initialized().await;
+    node.wait_for("the load completes", |n| {
+        cache_sizes(&n.cache) == [1, 1, 1, 1]
+    })
+    .await;
+    eventually(async || {
+        let status = op_status(&db_pool, node_id).await?;
+        ensure!(status == 1, "node is {status}, waiting for active");
+        Ok(())
+    })
+    .await;
+    // Several poll intervals: long enough for a second full load to show up.
+    sleep(Duration::from_millis(700)).await;
+    assert_eq!(
+        node.workers.sink_close_alls.load(Ordering::Relaxed),
+        2,
+        "the load must have started twice"
+    );
+    assert_eq!(
+        initialize_count(&node.workers),
+        1,
+        "only the load under the new epoch may reach its end"
     );
 
     node.stop().await

@@ -154,6 +154,20 @@ pub struct Cluster {
 
 impl Cluster {
     pub fn validate(&mut self) -> Result<()> {
+        // a zero period panics in the heartbeat ticker
+        anyhow::ensure!(
+            !self.heartbeat_interval.is_zero(),
+            "cluster.heartbeat_interval must be at least 1 second"
+        );
+        // At or below the interval, a healthy node is expired between two of its
+        // own heartbeats: the leader moves its hosts away and deletes it, it
+        // registers and reloads again, every interval.
+        anyhow::ensure!(
+            self.heartbeat_timeout > self.heartbeat_interval,
+            "cluster.heartbeat_timeout ({}s) must be greater than cluster.heartbeat_interval ({}s)",
+            self.heartbeat_timeout.as_secs(),
+            self.heartbeat_interval.as_secs()
+        );
         self.metadata.validate()?;
         self.inter_node.validate()?;
         Ok(())
@@ -396,5 +410,62 @@ impl Backend {
         });
         let _ = config.get_pg_config()?;
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cluster(heartbeat_interval: u64, heartbeat_timeout: u64) -> Cluster {
+        Cluster {
+            node_id: Uuid::nil(),
+            node_name: "node".to_string(),
+            heartbeat_timeout: Duration::from_secs(heartbeat_timeout),
+            heartbeat_interval: Duration::from_secs(heartbeat_interval),
+            metadata: NodeMetadata {
+                advertise_address: "127.0.0.1:4636".to_string(),
+            },
+            inter_node: InterNode::default(),
+        }
+    }
+
+    #[test]
+    fn the_default_heartbeat_settings_validate() {
+        let mut config: Cluster = serde_yaml_ng::from_str(
+            "node_id: 019d8eec-203e-7e83-895e-6a07d6f2f58e\n\
+             node_name: node\n\
+             metadata:\n  advertise_address: 127.0.0.1:4636\n",
+        )
+        .unwrap();
+        assert!(config.heartbeat_timeout > config.heartbeat_interval);
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn a_heartbeat_timeout_has_to_outlast_the_interval() {
+        // the smallest margin whole seconds allow
+        cluster(1, 2).validate().unwrap();
+        cluster(5, 15).validate().unwrap();
+
+        for (interval, timeout) in [(5, 5), (5, 3), (1, 0)] {
+            let err = cluster(interval, timeout)
+                .validate()
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                err,
+                format!(
+                    "cluster.heartbeat_timeout ({timeout}s) must be greater than \
+                     cluster.heartbeat_interval ({interval}s)"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_heartbeat_interval_is_rejected() {
+        let err = cluster(0, 15).validate().unwrap_err().to_string();
+        assert_eq!(err, "cluster.heartbeat_interval must be at least 1 second");
     }
 }

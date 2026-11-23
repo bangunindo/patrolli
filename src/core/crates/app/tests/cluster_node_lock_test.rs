@@ -1312,3 +1312,84 @@ async fn test_standby_takeover_updates_node_name_and_restores_active_status() ->
     node_b.stop().await?;
     Ok(())
 }
+
+/// The leader's stale check must never apply to the leader itself. Its own
+/// heartbeat is written just before its leader tasks, in another transaction:
+/// held up between the two, it would otherwise find its own row stale, take
+/// itself for dead (no live node, so no host is placed), mark itself inactive,
+/// purge its own cluster logs and delete its own row. A `heartbeat_timeout` of
+/// zero stands in for that delay: every heartbeat is stale by the time anyone
+/// looks at it.
+#[tokio::test]
+async fn test_leader_never_expires_itself() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+    let node_id = Uuid::now_v7();
+    let token = CancellationToken::new();
+    let shutdown = CancellationToken::new();
+    let state = Arc::new(cluster::NodeState::default());
+    let lock = node_lock_with_timeout(
+        &db_pool,
+        &token,
+        &shutdown,
+        node_id,
+        "leader-node",
+        &state,
+        Duration::ZERO,
+    );
+    let task = tokio::spawn(async move { lock.run().await });
+    eventually(async || {
+        ensure!(
+            state.is(cluster::NodeStateType::Leader),
+            "expected node to become leader, got {:?}",
+            state.get_state()
+        );
+        Ok(())
+    })
+    .await;
+    let epoch = state.main_epoch();
+
+    // With no host to keep the row, an expired node is deleted, and a stale one
+    // is inactive from the leader tasks until its next heartbeat: either would
+    // show within a tick.
+    let conn = db_pool.get().await.context("failed to get connection")?;
+    let quiet_until = tokio::time::Instant::now() + QUIET;
+    while tokio::time::Instant::now() < quiet_until {
+        let op_status: Option<i16> = conn
+            .query_opt(
+                "SELECT op_status FROM cluster_nodes WHERE node_id = $1",
+                &[&node_id],
+            )
+            .await?
+            .map(|row| row.try_get(0))
+            .transpose()?;
+        assert_eq!(
+            op_status,
+            Some(1),
+            "the leader must keep its row, and keep it active"
+        );
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    // It counts itself live, so it places hosts on itself...
+    create_hosts(&db_pool, 3).await?;
+    wait_for_host_counts(&db_pool, HashMap::from([(Some(node_id), 3)])).await;
+    // ...and the logs of that placement outlive the tick that wrote them.
+    let logs: i64 = conn
+        .query_one(
+            "SELECT count(*) FROM cluster_logs WHERE node_id = $1",
+            &[&node_id],
+        )
+        .await?
+        .try_get(0)?;
+    assert!(logs > 0, "the leader must not purge its own cluster logs");
+    assert_eq!(
+        state.main_epoch(),
+        epoch,
+        "a leader is expired by nobody, so it has nothing to reload"
+    );
+
+    token.cancel();
+    task.await?;
+    Ok(())
+}
