@@ -19,7 +19,7 @@ const route = useRoute()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 const pipelineBuildStore = usePipelineBuildStore()
-const { isDarkMode, activeClusterURL } = storeToRefs(appStore)
+const { activeClusterURL } = storeToRefs(appStore)
 const { isClusterReadonly, user } = storeToRefs(authStore)
 
 const isMobileMenuOpen = ref(false)
@@ -155,24 +155,6 @@ onMounted(async () => {
 
 			<!-- Right: Controls & User Profile -->
 			<div class="flex items-center gap-3">
-				<!-- Figma-style Dark mode pill switch (w-10 h-5) -->
-				<div class="flex items-center">
-					<button
-						type="button"
-						role="switch"
-						:aria-checked="isDarkMode"
-						class="relative inline-flex h-5 w-10 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-						:class="isDarkMode ? 'bg-primary' : 'bg-slate-300 dark:bg-slate-700'"
-						:title="isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'"
-						@click="isDarkMode = !isDarkMode"
-					>
-						<span
-							class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-[0_2px_4px_rgba(0,35,11,0.2)] transition-transform duration-200"
-							:class="isDarkMode ? 'translate-x-5' : 'translate-x-0.5'"
-						/>
-					</button>
-				</div>
-
 				<!-- Desktop Cluster Selector -->
 				<div class="hidden md:flex items-center pl-1">
 					<AppInputCluster
