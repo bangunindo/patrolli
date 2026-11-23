@@ -8,7 +8,7 @@ pub mod schema;
 
 use crate::config::sensitive::{SecretKeys, SensitiveFields, header};
 use crate::config::{endpoint, listener, sink};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use deadpool_postgres::{ClientWrapper, Object, Pool};
 use refinery::embed_migrations;
 use tracing::{info, warn};
@@ -26,6 +26,44 @@ pub enum AdvisoryLock {
 }
 
 const NOT_ON_ACTIVE_KEY: &str = r#"strpos(replace(config::text, $1, ''), '"enc:v1:') > 0"#;
+
+/// Oldest PostgreSQL major version patrolli is tested against.
+pub const MIN_POSTGRES_VERSION: i32 = 14;
+
+/// `server_version_num` is `major * 10000 + minor` from PostgreSQL 10 on.
+fn is_supported(server_version_num: i32) -> bool {
+    server_version_num / 10_000 >= MIN_POSTGRES_VERSION
+}
+
+/// Refuses a server older than [`MIN_POSTGRES_VERSION`], before anything is
+/// written to it. With `skip` (`global.backend.db_skip_version_check`) an older
+/// server is let through with a warning.
+pub async fn check_server_version(pool: &Pool, skip: bool) -> Result<()> {
+    let client = pool.get().await.context("failed to get db connection")?;
+    let row = client
+        .query_one(
+            "SELECT current_setting('server_version_num')::int4, current_setting('server_version')",
+            &[],
+        )
+        .await
+        .context("failed to read the database server version")?;
+    let (version_num, version): (i32, String) = (row.get(0), row.get(1));
+    if is_supported(version_num) {
+        return Ok(());
+    }
+    if !skip {
+        bail!(
+            "PostgreSQL {version} is not supported, patrolli needs {MIN_POSTGRES_VERSION} or newer \
+             (set global.backend.db_skip_version_check to run on it anyway)"
+        );
+    }
+    warn!(
+        version = %version,
+        minimum = MIN_POSTGRES_VERSION,
+        "database server is older than the supported minimum, version check skipped"
+    );
+    Ok(())
+}
 
 pub async fn run_migrations(pool: &Pool) -> Result<()> {
     info!("connecting to database");
@@ -240,5 +278,19 @@ async fn reencrypt_table<C: SensitiveFields>(
         if rows.len() < BATCH {
             return Ok(reencrypted);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_check_compares_the_major_version() {
+        assert!(is_supported(MIN_POSTGRES_VERSION * 10_000));
+        assert!(is_supported(MIN_POSTGRES_VERSION * 10_000 + 3));
+        assert!(is_supported((MIN_POSTGRES_VERSION + 1) * 10_000));
+        assert!(!is_supported(MIN_POSTGRES_VERSION * 10_000 - 1));
+        assert!(!is_supported((MIN_POSTGRES_VERSION - 1) * 10_000 + 25));
     }
 }

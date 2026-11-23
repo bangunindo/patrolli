@@ -802,6 +802,7 @@ async fn backend_run(global_conf: config::global::Global) -> Result<()> {
         }
     };
     // TODO: db_pool.status() -> incorporate to internal_metrics
+    db::check_server_version(&db_pool, backend_conf.db_skip_version_check).await?;
     db::run_migrations(&db_pool).await?;
     db::reencrypt_secrets(&db_pool, &secret_keys).await?;
     let shutdown = setup_shutdown(global_conf.shutdown_timeout);
