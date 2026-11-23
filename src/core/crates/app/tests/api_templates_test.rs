@@ -4,6 +4,8 @@
 
 mod setup;
 
+use std::time::Duration;
+
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 use setup::api::{Harness, TestUser, send};
@@ -169,19 +171,7 @@ async fn distinguishes_host_and_template_with_the_same_uuid() {
         )
         .await
         .unwrap();
-    let source_item: Uuid = client
-        .query_one(
-            "INSERT INTO items (item_id, host_template_id, type, adm_status,
-                                name, schedule, timeout_ms, config, last_updated)
-             SELECT uuidv7(), host_template_id, 'dummy', 1,
-                    'template item', '1s', 1000, '{}'::jsonb, now()
-             FROM host_templates WHERE template_id = $1 AND host_id IS NULL
-             RETURNING item_id",
-            &[&id],
-        )
-        .await
-        .unwrap()
-        .get(0);
+    let source_item = create_source_item(&h, id).await;
 
     let (status, body) = apply(&h, &user, &[id], &[id]).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -200,4 +190,87 @@ async fn distinguishes_host_and_template_with_the_same_uuid() {
         .unwrap()
         .get(0);
     assert_eq!(copied, source_item);
+}
+
+async fn create_source_item(h: &Harness, template: Uuid) -> Uuid {
+    h.pool
+        .get()
+        .await
+        .unwrap()
+        .query_one(
+            "INSERT INTO items (item_id, host_template_id, type, adm_status,
+                                name, schedule, timeout_ms, config, last_updated)
+             SELECT uuidv7(), host_template_id, 'dummy', 1,
+                    'template item', '1s', 1000, '{}'::jsonb, now()
+             FROM host_templates WHERE template_id = $1 AND host_id IS NULL
+             RETURNING item_id",
+            &[&template],
+        )
+        .await
+        .unwrap()
+        .get(0)
+}
+
+async fn assert_apply_lock_timeout(lock_sql: &str, table: Option<&str>, detail: &str) {
+    let h = Harness::start().await;
+    let user = h.user("alice").await;
+    let host = create(&h, &user, "host", "new host").await;
+    let template = create(&h, &user, "template", "selected template").await;
+    create_source_item(&h, template).await;
+    let mut blocker = h.pool.get().await.unwrap();
+    let tx = blocker.transaction().await.unwrap();
+    tx.batch_execute(lock_sql).await.unwrap();
+
+    let response = h
+        .request(Method::POST, "/api/v1/templates/apply", &user)
+        .json(&json!({"host_ids": [host], "template_ids": [template]}))
+        .timeout(Duration::from_secs(12))
+        .send()
+        .await
+        .expect("apply did not return a lock timeout response before the client deadline");
+    let status = response.status();
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(status, StatusCode::LOCKED, "{body}");
+    assert_eq!(body["error"]["title"], "Database lock timeout");
+    assert!(
+        body["error"]["detail"].as_str().unwrap().contains(detail),
+        "{body}"
+    );
+    assert_eq!(body["error"]["data"]["table"].as_str(), table, "{body}");
+
+    tx.rollback().await.unwrap();
+    assert!(applied_templates(&h, host).await.is_empty());
+    let (status, body) = apply(&h, &user, &[host], &[template]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(applied_templates(&h, host).await, [template]);
+}
+
+#[tokio::test]
+async fn reports_a_timeout_acquiring_the_host_lock() {
+    assert_apply_lock_timeout(
+        "SELECT host_id FROM hosts FOR UPDATE",
+        Some("hosts"),
+        "hosts table",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn reports_a_timeout_acquiring_the_template_lock() {
+    assert_apply_lock_timeout(
+        "SELECT template_id FROM templates FOR UPDATE",
+        Some("templates"),
+        "templates table",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn reports_a_timeout_during_bulk_apply_without_guessing_the_table() {
+    assert_apply_lock_timeout(
+        "SELECT item_id FROM items FOR UPDATE",
+        None,
+        "applying the templates",
+    )
+    .await;
 }

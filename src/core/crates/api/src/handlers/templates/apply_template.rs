@@ -9,6 +9,7 @@ use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
+use tokio_postgres::error::SqlState;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -19,6 +20,31 @@ pub struct ApplyTemplatesRequest {
 }
 
 type EmptyResponse = ();
+
+fn apply_db_result<T>(
+    result: Result<T, tokio_postgres::Error>,
+    op: &'static str,
+    action: &str,
+    table: Option<&str>,
+) -> Result<T, ResponseError> {
+    match result {
+        Err(error) if error.code() == Some(&SqlState::LOCK_NOT_AVAILABLE) => {
+            let response =
+                ResponseError::from_status(StatusCode::LOCKED).with_title("Database lock timeout");
+            Err(match table {
+                Some(table) => response
+                    .with_detail(format!(
+                        "Timed out waiting for a lock on the {table} table while {action}."
+                    ))
+                    .with_data(serde_json::json!({ "table": table })),
+                None => response.with_detail(format!(
+                    "Timed out waiting for a database lock while {action}."
+                )),
+            })
+        }
+        other => other.ctx(op),
+    }
+}
 
 /// Apply multiple templates to multiple hosts
 ///
@@ -35,6 +61,7 @@ type EmptyResponse = ();
         (status = 400, description = "No host IDs or template IDs provided", body = ResponseError),
         (status = 404, description = "One or more hosts/templates not found", body = ResponseError),
         (status = 409, description = "One or more hosts already have a connection to a template", body = ResponseError),
+        (status = 423, description = "Database lock timeout", body = ResponseError),
         (status = 500, description = "Internal server error", body = ResponseError)
     ),
     tag = "templates",
@@ -61,15 +88,21 @@ pub async fn apply_template(
     let mut client = state.db_pool.get().await.ctx("get database connection")?;
 
     let tx = client.transaction().await.ctx("start transaction")?;
+    tx.batch_execute("SET LOCAL lock_timeout = '5s'")
+        .await
+        .ctx("set transaction lock timeout")?;
 
     // Lock all host rows and verify existence
-    let host_rows = tx
-        .query(
+    let host_rows = apply_db_result(
+        tx.query(
             "SELECT host_id, name FROM hosts WHERE host_id = ANY($1) FOR UPDATE",
             &[&payload.host_ids],
         )
-        .await
-        .ctx("acquire lock on hosts")?;
+        .await,
+        "acquire lock on hosts",
+        "checking the selected hosts",
+        Some("hosts"),
+    )?;
 
     let mut host_name_map: HashMap<Uuid, String> = HashMap::with_capacity(host_rows.len());
     for row in &host_rows {
@@ -88,13 +121,16 @@ pub async fn apply_template(
     }
 
     // Lock all template rows and verify existence
-    let template_rows = tx
-        .query(
+    let template_rows = apply_db_result(
+        tx.query(
             "SELECT template_id, name FROM templates WHERE template_id = ANY($1) FOR UPDATE",
             &[&payload.template_ids],
         )
-        .await
-        .ctx("acquire lock on templates")?;
+        .await,
+        "acquire lock on templates",
+        "checking the selected templates",
+        Some("templates"),
+    )?;
 
     let mut template_name_map: HashMap<Uuid, String> = HashMap::with_capacity(template_rows.len());
     for row in &template_rows {
@@ -135,10 +171,13 @@ pub async fn apply_template(
             AND template_id = ANY($1::uuid[])
         "#;
 
-        let template_conflict_rows = tx
-            .query(template_conflict_statement, &[&payload.template_ids])
-            .await
-            .ctx("execute template conflict check query")?;
+        let template_conflict_rows = apply_db_result(
+            tx.query(template_conflict_statement, &[&payload.template_ids])
+                .await,
+            "execute template conflict check query",
+            "checking template inheritance",
+            Some("template_links"),
+        )?;
 
         if !template_conflict_rows.is_empty() {
             let mut conflicting_template_ids: BTreeSet<Uuid> = BTreeSet::new();
@@ -191,10 +230,13 @@ pub async fn apply_template(
         WHERE is_template AND node_id = ANY($2::uuid[])
     "#;
 
-    let conflicting_rows = tx
-        .query(check_statement, &[&payload.host_ids, &payload.template_ids])
-        .await
-        .ctx("execute connection check query")?;
+    let conflicting_rows = apply_db_result(
+        tx.query(check_statement, &[&payload.host_ids, &payload.template_ids])
+            .await,
+        "execute connection check query",
+        "checking for existing host and template connections",
+        None,
+    )?;
 
     let conflicting_host_names: Vec<String> = conflicting_rows
         .iter()
@@ -259,11 +301,20 @@ pub async fn apply_template(
             ON ti.host_template_id = template_ht.host_template_id
     "#;
 
-    tx.execute(bulk_sql, &[&payload.host_ids, &payload.template_ids])
-        .await
-        .ctx("execute bulk apply")?;
+    apply_db_result(
+        tx.execute(bulk_sql, &[&payload.host_ids, &payload.template_ids])
+            .await,
+        "execute bulk apply",
+        "applying the templates",
+        None,
+    )?;
 
-    tx.commit().await.ctx("commit transaction")?;
+    apply_db_result(
+        tx.commit().await,
+        "commit transaction",
+        "committing the template application",
+        None,
+    )?;
 
     Ok(ResponseData::from_status(StatusCode::OK))
 }

@@ -3506,6 +3506,16 @@
               }
             }
           },
+          "423": {
+            "description": "Database lock timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
