@@ -1311,10 +1311,33 @@ impl ConfigWatcher {
                 }
             };
             info!("starting config watcher");
+            let mut paused = false;
             loop {
-                if self.node_lock.main_epoch() != Some(epoch) {
-                    self.end_epoch();
-                    continue 'root_loop;
+                match self.node_lock.snapshot() {
+                    (state, current) if state.is_main() && current == epoch => {
+                        if paused {
+                            info!("node lock is back with nothing missed, config updates resume");
+                            paused = false;
+                        }
+                    }
+                    // The node lock may yet take the lock again under this same
+                    // epoch, when nothing was missed meanwhile. Until it does, or
+                    // starts another, keep what is loaded and read nothing.
+                    (NodeStateType::LostConnection, current) if current == epoch => {
+                        if !paused {
+                            warn!("node lock is lost, config will not update");
+                            paused = true;
+                        }
+                        tokio::select! {
+                            _ = self.token.cancelled() => return,
+                            _ = sleep(Duration::from_secs(1)) => {},
+                        }
+                        continue;
+                    }
+                    _ => {
+                        self.end_epoch();
+                        continue 'root_loop;
+                    }
                 }
                 let initializing = !self.initialized;
                 match self.poll(epoch).await {

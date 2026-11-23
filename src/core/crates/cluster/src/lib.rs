@@ -134,7 +134,8 @@ impl NodeState {
     /// (`Main` or `Leader`), or `None` otherwise.
     ///
     /// The epoch increments each time the node enters `Main`/`Leader` from a
-    /// non-main state (`Standby`/`LostConnection`) and on
+    /// non-main state (`Standby`/`LostConnection`), unless that is a
+    /// [`resume_main`](Self::resume_main), and on
     /// [`renew_main_epoch`](Self::renew_main_epoch), and stays unchanged across
     /// `Main <-> Leader` transitions.
     pub fn main_epoch(&self) -> Option<u64> {
@@ -159,6 +160,39 @@ impl NodeState {
         if prev_state != state {
             info!(from = ?prev_state, to = ?state, "node state changed");
         }
+    }
+
+    /// Enters `Main`/`Leader` under the epoch the node last held, for a lock
+    /// taken again after a lost connection with nothing missed in between (the
+    /// node lock decides that). Polling tasks that loaded under that epoch carry
+    /// on with what they hold. With no earlier epoch to continue, or from
+    /// `Standby`, which clears what was loaded, this is [`set_state`](Self::set_state).
+    pub fn resume_main(&self, state: NodeStateType) {
+        debug_assert!(state.is_main());
+        let prev_raw = self
+            .0
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |raw| {
+                let (prev, epoch) = unpack_node_state(raw);
+                let next_epoch =
+                    if prev.is_main() || (prev == NodeStateType::LostConnection && epoch != 0) {
+                        epoch
+                    } else {
+                        next_main_epoch(epoch)
+                    };
+                Some(pack_node_state(state, next_epoch))
+            })
+            .unwrap();
+        let (prev_state, _) = unpack_node_state(prev_raw);
+        if prev_state != state {
+            info!(from = ?prev_state, to = ?state, "node state changed");
+        }
+    }
+
+    /// The state and the epoch last started, read together. Unlike
+    /// [`main_epoch`](Self::main_epoch) the epoch is there in any state: it is
+    /// the one a lost connection may yet continue.
+    pub fn snapshot(&self) -> (NodeStateType, u64) {
+        unpack_node_state(self.0.load(Ordering::Acquire))
     }
 
     /// Starts a new main-lock epoch without leaving `Main`/`Leader`, for a
@@ -694,6 +728,31 @@ mod tests {
         state.set_state(NodeStateType::Leader);
         state.renew_main_epoch();
         assert_eq!(state.get_state(), NodeStateType::Leader);
+        assert_eq!(state.main_epoch(), Some(3));
+    }
+
+    #[test]
+    fn resuming_continues_the_epoch_a_lost_connection_interrupted() {
+        let state = NodeState::default();
+        // No tenure yet: nothing to continue, so this is a first epoch.
+        state.resume_main(NodeStateType::Main);
+        assert_eq!(state.main_epoch(), Some(1));
+
+        // Lost and resumed: same epoch, as Main or as Leader.
+        state.set_state(NodeStateType::LostConnection);
+        assert_eq!(state.main_epoch(), None);
+        assert_eq!(state.snapshot(), (NodeStateType::LostConnection, 1));
+        state.resume_main(NodeStateType::Leader);
+        assert_eq!(state.snapshot(), (NodeStateType::Leader, 1));
+
+        // Lost and taken without resuming: a new one.
+        state.set_state(NodeStateType::LostConnection);
+        state.set_state(NodeStateType::Main);
+        assert_eq!(state.main_epoch(), Some(2));
+
+        // Standby cleared what was loaded: resuming from it starts over.
+        state.set_state(NodeStateType::Standby);
+        state.resume_main(NodeStateType::Main);
         assert_eq!(state.main_epoch(), Some(3));
     }
 

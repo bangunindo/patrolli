@@ -5,6 +5,7 @@
 use super::balancer::{self, Move, NodeLoad};
 use super::{NodeState, NodeStateType};
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use deadpool_postgres::{ClientWrapper, GenericClient, Object, Pool, Transaction};
 use patrolli::config::cluster::{Cluster as ClusterConfig, ClusterPolicy};
 use patrolli::db::AdvisoryLock;
@@ -31,6 +32,11 @@ pub struct NodeLock {
     standby_client: Option<ClientWrapper>,
     /// Last good `configs.cluster`, re-read by the leader every tick.
     policy: ClusterPolicy,
+    /// The heartbeat this process last committed, kept across a lost connection
+    /// and dropped whenever the node goes standby. If the row still carries it
+    /// when the lock is taken again, no other process held the lock meanwhile:
+    /// a main writes its heartbeat before its watcher touches anything.
+    last_heartbeat: Option<DateTime<Utc>>,
 }
 
 fn advisory_key(kind: AdvisoryLock, identity: &str) -> i64 {
@@ -87,6 +93,7 @@ impl NodeLock {
             node_lock,
             standby_client: None,
             policy: ClusterPolicy::default(),
+            last_heartbeat: None,
         }
     }
 
@@ -409,8 +416,8 @@ impl NodeLock {
         let expire_after = self.cluster.heartbeat_timeout.as_secs_f64();
         let mut ticker = time::interval(self.cluster.heartbeat_interval);
         ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-        // the first heartbeat of a tenure follows whatever the previous one left
-        // behind, and entering main starts an epoch anyway
+        // the first heartbeat of a tenure decides how it starts (see below); later
+        // ones only watch for the leader having expired this node
         let mut first_tick = true;
         loop {
             let was_leader = self.node_lock.is(NodeStateType::Leader);
@@ -432,7 +439,7 @@ impl NodeLock {
             // replaces (none: the row was deleted). It is judged against the clock
             // at the time the upsert is done, not the transaction's `now()`, which
             // a statement that was held up on its way would leave in the past.
-            let expired: bool = tx
+            let row = tx
                 .query_one(
                     "WITH prev AS (\
                         SELECT last_heartbeat FROM cluster_nodes WHERE node_id = $1\
@@ -444,23 +451,33 @@ impl NodeLock {
                         op_status = CASE WHEN cluster_nodes.op_status = 0 THEN 1 ELSE cluster_nodes.op_status END, \
                         last_heartbeat = EXCLUDED.last_heartbeat, \
                         metadata = EXCLUDED.metadata \
-                        RETURNING 1\
+                        RETURNING last_heartbeat\
                     ) \
                     SELECT COALESCE(\
                         (SELECT last_heartbeat FROM prev) + make_interval(secs := $4) < clock_timestamp(), \
-                        true) \
+                        true), \
+                        COALESCE((SELECT last_heartbeat FROM prev) = $5::timestamptz, false), \
+                        beat.last_heartbeat \
                     FROM beat",
                     &[
                         &self.cluster.node_id,
                         &self.cluster.node_name,
                         &node_metadata,
                         &expire_after,
+                        &self.last_heartbeat,
                     ],
                 )
                 .await
-                .context("failed to update node info")?
+                .context("failed to update node info")?;
+            let expired: bool = row
                 .try_get(0)
                 .context("failed to read the previous heartbeat")?;
+            // the row still carried the heartbeat this process wrote last
+            let untouched: bool = row
+                .try_get(1)
+                .context("failed to compare the previous heartbeat")?;
+            let heartbeat: DateTime<Utc> =
+                row.try_get(2).context("failed to read the heartbeat")?;
             if leader_lock && !self.node_lock.is(NodeStateType::Leader) {
                 tx.execute("UPDATE cluster_nodes SET is_leader = false", &[])
                     .await
@@ -473,6 +490,16 @@ impl NodeLock {
                 .context("failed to update leader status")?;
             }
             tx.commit().await.context("failed to commit transaction")?;
+            // only once committed: after a commit that failed, the row may or may
+            // not carry it, and not matching is the answer that reloads
+            self.last_heartbeat = Some(heartbeat);
+            // A lock taken again after a lost connection continues the tenure it
+            // interrupted when nothing can have been missed: the leader has not
+            // expired this node (its cluster logs are all still there), and no
+            // other process was main on this id in between (none read those logs
+            // away). The watcher then carries on from the logs instead of closing
+            // every listener and sink to load what it already holds.
+            let resume = first_tick && untouched && !expired;
             // A heartbeat this late kept the session, and with it the node lock,
             // but a leader that saw it expired has moved our hosts, purged our
             // cluster logs and deleted our row: what the watcher holds is no longer
@@ -485,16 +512,24 @@ impl NodeLock {
                 self.node_lock.renew_main_epoch();
             }
             first_tick = false;
+            let state = if leader_lock {
+                NodeStateType::Leader
+            } else {
+                NodeStateType::Main
+            };
+            if resume {
+                info!("node lock taken again with nothing missed, configuration kept");
+                self.node_lock.resume_main(state);
+            } else {
+                self.node_lock.set_state(state);
+            }
             if leader_lock {
-                self.node_lock.set_state(NodeStateType::Leader);
                 let tx = client
                     .transaction()
                     .await
                     .context("failed to start transaction")?;
                 self.leader_tasks(&tx).await?;
                 tx.commit().await.context("failed to commit transaction")?;
-            } else {
-                self.node_lock.set_state(NodeStateType::Main);
             }
             tokio::select! {
                 _ = self.token.cancelled() => break,
@@ -508,13 +543,18 @@ impl NodeLock {
     pub async fn run(mut self) {
         loop {
             match self.main_loop().await {
-                Ok(_) => self.node_lock.set_state(NodeStateType::Standby),
+                Ok(_) => {
+                    self.last_heartbeat = None;
+                    self.node_lock.set_state(NodeStateType::Standby)
+                }
                 Err(e) => {
                     if is_connection_error(&e) {
                         warn!(error = %format!("{e:#}"), "database connection lost");
                         self.node_lock.set_state(NodeStateType::LostConnection);
                     } else {
                         error!(error = %format!("{e:#}"), "node lock loop failed");
+                        // standby clears what the watcher holds: nothing to resume
+                        self.last_heartbeat = None;
                         self.node_lock.set_state(NodeStateType::Standby);
                     }
                 }

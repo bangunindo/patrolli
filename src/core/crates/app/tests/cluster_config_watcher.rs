@@ -1633,6 +1633,62 @@ async fn lock_flap_preserves_existing_item_stats_and_sweeps_deleted_items() -> R
     node.stop().await
 }
 
+/// A lock the node lock takes again under the same epoch (a reconnect that
+/// missed nothing) costs no reload: while it is gone the watcher reads nothing
+/// and keeps what it holds, and once it is back the cluster logs bring it up to
+/// date, without closing a listener or a sink.
+#[tokio::test]
+async fn a_resumed_lock_keeps_the_loaded_configuration() -> Result<()> {
+    setup::setup_logging();
+    setup::setup_mib().await;
+    let (_db, db_pool) = setup::setup_db().await;
+
+    let node_id = Uuid::now_v7();
+    register_node_with_data(&db_pool, node_id).await?;
+    let node = start_node(&db_pool, node_id, "node_1").await?;
+    node.initialized().await;
+    node.wait_for("the load completes", |n| {
+        cache_sizes(&n.cache) == [1, 1, 1, 1]
+    })
+    .await;
+    assert_eq!(initialize_count(&node.workers), 1);
+
+    // The connection is lost, and something changes meanwhile.
+    node.state.set_state(cluster::NodeStateType::LostConnection);
+    let mut conn = db_pool.get().await?;
+    let tx = conn.transaction().await?;
+    setup::create_lookup_table(
+        &tx,
+        "during-outage",
+        &processor_source(&["host"], 100),
+        &hash_key(&["host"]),
+        1,
+    )
+    .await?;
+    tx.commit().await?;
+    // Several poll intervals: the watcher has seen the lock gone by now.
+    sleep(Duration::from_millis(700)).await;
+    assert_eq!(
+        cache_sizes(&node.cache),
+        [1, 1, 1, 1],
+        "a lost connection must not drop what is loaded"
+    );
+    assert!(node.tables().is_empty(), "nothing is read without the lock");
+
+    // Back under the same epoch: the change arrives through the logs.
+    node.state.resume_main(cluster::NodeStateType::Leader);
+    node.wait_for("the missed change is applied", |n| n.tables().len() == 1)
+        .await;
+    assert_eq!(
+        initialize_count(&node.workers),
+        1,
+        "a resumed lock must not reload the configuration"
+    );
+    assert_eq!(node.workers.sink_close_alls.load(Ordering::Relaxed), 1);
+
+    node.stop().await
+}
+
 // ── the lock changing in the middle of a load ─────────────────────────────────
 
 /// One host, endpoint and item owned by `node_id`, and a processor, for a load

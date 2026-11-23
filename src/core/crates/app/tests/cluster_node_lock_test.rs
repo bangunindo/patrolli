@@ -1139,15 +1139,50 @@ async fn test_invalid_cluster_policy_keeps_last_good_policy() -> Result<()> {
     Ok(())
 }
 
-/// Killing the leader's Postgres backend connection mid-run must cause it to
-/// drop its lock tenure (`main_epoch` advances), recover cleanly without
-/// split-brain, and keep both nodes active (`op_status = 1`) with all hosts
-/// balanced.
+/// Terminate the Postgres backend holding `AdvisoryLock::Leader` in this test
+/// database: the leader's node-lock session, and only that.
+async fn terminate_leader_backend(conn: &deadpool_postgres::Object) -> Result<()> {
+    let terminated: i64 = conn
+        .query_one(
+            "SELECT count(*) FROM ( \
+                SELECT pg_terminate_backend(pid) \
+                FROM pg_locks \
+                WHERE locktype = 'advisory' \
+                  AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+                  AND objsubid = 1 \
+                  AND classid = 0 \
+                  AND objid = $1 \
+            ) t",
+            &[&(patrolli::db::AdvisoryLock::Leader as u32)],
+        )
+        .await?
+        .try_get(0)?;
+    ensure!(terminated == 1, "expected to terminate one leader backend");
+    Ok(())
+}
+
+/// Wait for `state` to lose the node lock and then hold it again.
+async fn wait_for_lock_flap(state: &cluster::NodeState) {
+    // the retry sleeps a second before it reconnects, so this is not missed
+    eventually(async || {
+        ensure!(!state.is_main(), "waiting for the node to lose its lock");
+        Ok(())
+    })
+    .await;
+    wait_until_main(state).await;
+}
+
+/// Killing the leader's Postgres backend connection mid-run drops its lock.
+/// It reconnects well within `heartbeat_timeout` and nobody held its lock in
+/// between, so it missed nothing: the tenure continues under the same
+/// `main_epoch` (the watcher keeps what it loaded), without split-brain, with
+/// both nodes active (`op_status = 1`) and all hosts balanced.
 #[tokio::test]
 async fn test_leader_recovers_after_postgres_backend_termination() -> Result<()> {
     setup::setup_logging();
     let (_db, db_pool) = setup::setup_db().await;
-    let timeout = setup::CLUSTER_HEARTBEAT_TIMEOUT;
+    // far beyond the second or two the reconnect takes
+    let timeout = Duration::from_secs(30);
     let node_1 = RunningNode::start(&db_pool, Uuid::now_v7(), "node-1", timeout);
     let node_2 = RunningNode::start(&db_pool, Uuid::now_v7(), "node-2", timeout);
     wait_until_main(&node_1.state).await;
@@ -1169,35 +1204,16 @@ async fn test_leader_recovers_after_postgres_backend_termination() -> Result<()>
     })
     .await;
 
-    // Terminate ONLY the Postgres backend holding `AdvisoryLock::Leader` (= 2) in this test DB.
     let conn = db_pool.get().await.context("failed to get connection")?;
-    let terminated: i64 = conn
-        .query_one(
-            "SELECT count(*) FROM ( \
-                SELECT pg_terminate_backend(pid) \
-                FROM pg_locks \
-                WHERE locktype = 'advisory' \
-                  AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) \
-                  AND objsubid = 1 \
-                  AND classid = 0 \
-                  AND objid = $1 \
-            ) t",
-            &[&(patrolli::db::AdvisoryLock::Leader as u32)],
-        )
-        .await?
-        .try_get(0)?;
-    assert_eq!(terminated, 1, "expected to terminate one leader backend");
+    terminate_leader_backend(&conn).await?;
+    wait_for_lock_flap(&nodes[killed_idx].state).await;
+    assert_eq!(
+        nodes[killed_idx].state.main_epoch(),
+        Some(old_epoch),
+        "a reconnect that missed nothing must continue its main epoch"
+    );
 
-    // The killed node must cycle through a new main_epoch and recover cleanly.
     eventually(async || {
-        let epoch = nodes[killed_idx]
-            .state
-            .main_epoch()
-            .context("waiting for killed node to reconnect and re-acquire main lock")?;
-        ensure!(
-            epoch != old_epoch,
-            "killed node must advance main_epoch after backend termination"
-        );
         let leader_count = nodes
             .iter()
             .filter(|n| n.state.is(cluster::NodeStateType::Leader))
@@ -1235,6 +1251,76 @@ async fn test_leader_recovers_after_postgres_backend_termination() -> Result<()>
 
     node_1.stop().await?;
     node_2.stop().await?;
+    Ok(())
+}
+
+/// A reconnect continues its main epoch only when nothing can have been
+/// missed. A heartbeat on the row that this process did not write means another
+/// process was main on the id in between, and read its cluster logs away.
+#[tokio::test]
+async fn test_reconnect_after_another_holder_starts_a_new_epoch() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+    let node = RunningNode::start(&db_pool, Uuid::now_v7(), "node-1", Duration::from_secs(30));
+    eventually(async || {
+        ensure!(
+            node.state.is(cluster::NodeStateType::Leader),
+            "waiting for the node to lead"
+        );
+        Ok(())
+    })
+    .await;
+    let old_epoch = node.state.main_epoch().context("leader has an epoch")?;
+
+    let conn = db_pool.get().await.context("failed to get connection")?;
+    terminate_leader_backend(&conn).await?;
+    // The dead session writes no more heartbeats, and the retry is a second
+    // away: this is what a standby's first heartbeat would have left.
+    conn.execute(
+        "UPDATE cluster_nodes SET last_heartbeat = last_heartbeat + interval '1 millisecond' \
+         WHERE node_id = $1",
+        &[&node.node_id],
+    )
+    .await?;
+    wait_for_lock_flap(&node.state).await;
+    assert_ne!(
+        node.state.main_epoch(),
+        Some(old_epoch),
+        "a heartbeat from another holder must start a new main epoch"
+    );
+
+    node.stop().await?;
+    Ok(())
+}
+
+/// The other half: a reconnect that comes after the node's heartbeat expired
+/// starts a new epoch, since the leader may have purged its cluster logs. A
+/// `heartbeat_timeout` of zero makes every reconnect that late.
+#[tokio::test]
+async fn test_reconnect_after_expiry_starts_a_new_epoch() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+    let node = RunningNode::start(&db_pool, Uuid::now_v7(), "node-1", Duration::ZERO);
+    eventually(async || {
+        ensure!(
+            node.state.is(cluster::NodeStateType::Leader),
+            "waiting for the node to lead"
+        );
+        Ok(())
+    })
+    .await;
+    let old_epoch = node.state.main_epoch().context("leader has an epoch")?;
+
+    let conn = db_pool.get().await.context("failed to get connection")?;
+    terminate_leader_backend(&conn).await?;
+    wait_for_lock_flap(&node.state).await;
+    assert_ne!(
+        node.state.main_epoch(),
+        Some(old_epoch),
+        "a reconnect past the heartbeat timeout must start a new main epoch"
+    );
+
+    node.stop().await?;
     Ok(())
 }
 
