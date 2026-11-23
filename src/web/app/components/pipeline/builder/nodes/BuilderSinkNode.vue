@@ -22,7 +22,7 @@ const menuRef = ref<HTMLElement | null>(null)
 
 const selectedSink = computed(() => {
 	if (!props.data?.sinkId) return null
-	return store.availableSinks.find((s) => s.sink_id === props.data.sinkId)
+	return store.sinkById.get(props.data.sinkId) || null
 })
 
 const sinkSubtitle = computed(() => {

@@ -181,18 +181,16 @@ export class PipelinePage extends BasePage {
 		}
 
 		// Select Hosts
-		const selectorItems = this.modalDialog.locator(
-			'.h-\\[220px\\] .divide-y > div, .max-h-\\[220px\\] > div'
-		)
+		const selectorItems = this.modalDialog.locator('.h-\\[220px\\] .cursor-pointer')
 		await this.buttonSelectHosts.click()
 		await this.modalDialog
-			.locator('.h-\\[220px\\], .max-h-\\[220px\\], button[role="checkbox"]')
+			.locator('.h-\\[220px\\], button[role="checkbox"]')
 			.first()
 			.waitFor({ state: 'visible', timeout: 5000 })
 			.catch(() => null)
 
 		if (data.hostName) {
-			const hostSearch = this.modalDialog.getByPlaceholder(/search host by name or ip/i)
+			const hostSearch = this.modalDialog.getByPlaceholder(/search host by name/i)
 			await hostSearch.fill(data.hostName)
 			const targetHost = selectorItems.filter({ hasText: data.hostName }).first()
 			await targetHost.waitFor({ state: 'visible', timeout: 5000 })
