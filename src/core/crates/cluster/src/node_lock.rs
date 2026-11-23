@@ -179,8 +179,11 @@ impl NodeLock {
             .as_secs_f64()
             .min(expire_after);
         tx.execute(
-            "UPDATE cluster_nodes SET op_status = 0 WHERE last_heartbeat + make_interval(secs := $1) < now()",
-            &[&stale_after],
+            "UPDATE cluster_nodes SET op_status = 0 \
+            WHERE node_id <> $2 \
+              AND op_status <> 0 \
+              AND last_heartbeat + make_interval(secs := $1) < now()",
+            &[&stale_after, &self.cluster.node_id],
         )
         .await
         .context("failed updating inactive cluster nodes")?;
@@ -189,12 +192,12 @@ impl NodeLock {
         let rows = tx
             .query(
                 "SELECT cn.node_id, \
-                    cn.last_heartbeat + make_interval(secs := $1) >= now(), \
+                    cn.node_id = $2 OR cn.last_heartbeat + make_interval(secs := $1) >= now(), \
                     COUNT(h.host_id) FILTER (WHERE NOT h.sticky_monitored_by) \
                 FROM cluster_nodes cn \
                 LEFT JOIN hosts h ON h.monitored_by = cn.node_id \
                 GROUP BY cn.node_id, cn.last_heartbeat",
-                &[&stale_after],
+                &[&stale_after, &self.cluster.node_id],
             )
             .await
             .context("failed to get host distribution")?;
@@ -270,17 +273,19 @@ impl NodeLock {
             "DELETE FROM cluster_logs \
             WHERE node_id IN (\
             SELECT node_id FROM cluster_nodes \
-            WHERE last_heartbeat + make_interval(secs := $1) < now())",
-            &[&expire_after],
+            WHERE node_id <> $2 \
+              AND last_heartbeat + make_interval(secs := $1) < now())",
+            &[&expire_after, &self.cluster.node_id],
         )
         .await
         .context("failed to delete cluster logs")?;
         let removed = tx
             .execute(
                 "DELETE FROM cluster_nodes \
-                WHERE last_heartbeat + make_interval(secs := $1) < now() \
+                WHERE node_id <> $2 \
+                  AND last_heartbeat + make_interval(secs := $1) < now() \
                   AND NOT EXISTS (SELECT 1 FROM hosts h WHERE h.monitored_by = cluster_nodes.node_id)",
-                &[&expire_after],
+                &[&expire_after, &self.cluster.node_id],
             )
             .await
             .context("failed to delete inactive cluster nodes")?;
@@ -423,6 +428,7 @@ impl NodeLock {
                 VALUES ($1, $2, 1, now(), $3) \
                 ON CONFLICT (node_id) DO UPDATE SET \
                 name = EXCLUDED.name, \
+                op_status = CASE WHEN cluster_nodes.op_status = 0 THEN 1 ELSE cluster_nodes.op_status END, \
                 last_heartbeat = EXCLUDED.last_heartbeat, \
                 metadata = EXCLUDED.metadata",
                 &[
@@ -517,5 +523,43 @@ mod tests {
             advisory_key(AdvisoryLock::StandbyLock, "node/name"),
             "the same identity must yield a different key per lock kind"
         );
+    }
+
+    #[test]
+    fn is_connection_error_classifies_transient_io_and_pool_errors() {
+        for kind in [
+            io::ErrorKind::ConnectionRefused,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::TimedOut,
+            io::ErrorKind::BrokenPipe,
+            io::ErrorKind::NotConnected,
+        ] {
+            let err =
+                anyhow::Error::new(io::Error::new(kind, "transient")).context("outer wrapper");
+            assert!(
+                is_connection_error(&err),
+                "expected {kind:?} to be treated as a connection error"
+            );
+        }
+
+        let pool_err = anyhow::Error::new(deadpool_postgres::PoolError::Timeout(
+            deadpool_postgres::TimeoutType::Wait,
+        ))
+        .context("failed to get db connection");
+        assert!(
+            is_connection_error(&pool_err),
+            "pool wait timeout must be treated as a connection error"
+        );
+
+        let non_conn_io =
+            anyhow::Error::new(io::Error::new(io::ErrorKind::InvalidInput, "bad input"));
+        assert!(
+            !is_connection_error(&non_conn_io),
+            "non-connection io error must not trigger LostConnection"
+        );
+
+        let plain = anyhow::anyhow!("serialization or query bug");
+        assert!(!is_connection_error(&plain));
     }
 }

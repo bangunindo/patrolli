@@ -1264,3 +1264,344 @@ async fn a_standby_node_clears_its_lookup_tables() -> Result<()> {
 
     node.stop().await
 }
+
+/// A lock/connection flap that starts and finishes while `ConfigWatcher` is
+/// sleeping between polls must still trigger a full re-initialization: during
+/// the outage another leader may have purged this node's `cluster_logs` and
+/// marked it inactive.
+#[tokio::test]
+async fn fast_lock_flap_triggers_reinitialization() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+
+    let node_id = Uuid::now_v7();
+    let node = start_node(&db_pool, node_id, "node_1").await?;
+    node.initialized().await;
+    assert!(node.tables().is_empty());
+
+    // Create a lookup table and purge this node's cluster_logs so delta_read
+    // cannot observe it; also mark the node inactive as a peer leader would.
+    let mut conn = db_pool.get().await?;
+    let tx = conn.transaction().await?;
+    setup::create_lookup_table(
+        &tx,
+        "after-flap",
+        &processor_source(&["host"], 100),
+        &hash_key(&["host"]),
+        1,
+    )
+    .await?;
+    tx.execute("DELETE FROM cluster_logs WHERE node_id = $1", &[&node_id])
+        .await?;
+    tx.execute(
+        "UPDATE cluster_nodes SET op_status = 0 WHERE node_id = $1",
+        &[&node_id],
+    )
+    .await?;
+    tx.commit().await?;
+
+    // Flap LostConnection -> Leader synchronously between polls.
+    node.state.set_state(cluster::NodeStateType::LostConnection);
+    node.state.set_state(cluster::NodeStateType::Leader);
+
+    node.wait_for(
+        "re-initialization after fast lock flap loads missed table",
+        |n| n.tables().len() == 1,
+    )
+    .await;
+
+    // `initialize_lookup_tables` runs before the final `op_status = 1` update at the
+    // end of `initialize()`, so wait for the initialization transaction to finish.
+    eventually(async || {
+        let op_status: i16 = conn
+            .query_one(
+                "SELECT op_status FROM cluster_nodes WHERE node_id = $1",
+                &[&node_id],
+            )
+            .await?
+            .try_get(0)?;
+        ensure!(
+            op_status == 1,
+            "waiting for re-initialization to restore op_status = 1, got {op_status}"
+        );
+        Ok(())
+    })
+    .await;
+
+    node.stop().await
+}
+
+/// Promoting from `Main` to `Leader` keeps the same main-lock epoch, so
+/// `ConfigWatcher` must not trigger a spurious full re-initialization (which
+/// would flap listeners/sinks/inter-node connections).
+#[tokio::test]
+async fn leader_promotion_does_not_trigger_spurious_reinitialization() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+
+    let node_id = Uuid::now_v7();
+    let node = start_node(&db_pool, node_id, "node_1").await?;
+    // Start in Main (not Leader) so we can promote Main -> Leader after init.
+    node.state.set_state(cluster::NodeStateType::Main);
+    node.initialized().await;
+
+    let close_all_count = || {
+        node.workers
+            .forwarder_calls
+            .lock()
+            .iter()
+            .filter(|c| matches!(c, ForwarderCall::CloseAll))
+            .count()
+    };
+    let initial_closes = close_all_count();
+    assert_eq!(initial_closes, 1, "cold start runs initialize() once");
+
+    // Promote Main -> Leader (same epoch) and let several poll intervals pass.
+    node.state.set_state(cluster::NodeStateType::Leader);
+    sleep(Duration::from_millis(700)).await;
+    assert_eq!(
+        close_all_count(),
+        initial_closes,
+        "Main -> Leader promotion must not trigger re-initialization"
+    );
+
+    // Incremental delta updates must still work normally after promotion.
+    let mut conn = db_pool.get().await?;
+    let tx = conn.transaction().await?;
+    setup::create_lookup_table(
+        &tx,
+        "post-promotion",
+        &processor_source(&["host"], 100),
+        &hash_key(&["host"]),
+        1,
+    )
+    .await?;
+    tx.commit().await?;
+
+    node.wait_for("delta_read applies table after leader promotion", |n| {
+        n.tables().len() == 1
+    })
+    .await;
+    assert_eq!(close_all_count(), initial_closes);
+
+    node.stop().await
+}
+
+/// Transitioning `Leader -> Standby` must clear every config cache so a standby
+/// stops monitoring/serving stale config; returning `Standby -> Main` must
+/// reload the full snapshot (including changes whose logs were purged while in
+/// standby) and restore `op_status = 1`.
+#[tokio::test]
+async fn standby_clears_caches_and_repromotion_reloads_all_resources() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+
+    let node_id = Uuid::now_v7();
+    let mut conn = db_pool.get().await?;
+    let tx = conn.transaction().await?;
+    tx.execute(
+        "INSERT INTO cluster_nodes(node_id, name, op_status, last_heartbeat, metadata) \
+         VALUES ($1, 'node_1', 1, now(), '{\"advertise_address\": \"127.0.0.1:0\"}')",
+        &[&node_id],
+    )
+    .await?;
+    let processor_id = setup::create_processor(&tx, "proc_1").await?;
+    setup::create_data(
+        &tx,
+        "host_1",
+        "endpoint_1",
+        "item_1",
+        Some(processor_id),
+        Some(node_id),
+    )
+    .await?;
+    setup::create_lookup_table(
+        &tx,
+        "tbl_1",
+        &processor_source(&["host"], 100),
+        &hash_key(&["host"]),
+        1,
+    )
+    .await?;
+    tx.commit().await?;
+
+    let node = start_node(&db_pool, node_id, "node_1").await?;
+    node.initialized().await;
+    assert_eq!(cache_sizes(&node.cache), [1, 1, 1, 1]);
+    assert_eq!(node.tables().len(), 1);
+
+    // Drop to Standby: all caches must be cleared.
+    node.state.set_state(cluster::NodeStateType::Standby);
+    node.wait_for("standby clears all caches", |n| {
+        cache_sizes(&n.cache) == [0, 0, 0, 0] && n.tables().is_empty()
+    })
+    .await;
+
+    // Mutate DB while in Standby and purge cluster_logs + mark inactive.
+    let tx = conn.transaction().await?;
+    setup::create_data(
+        &tx,
+        "host_2",
+        "endpoint_2",
+        "item_2",
+        Some(processor_id),
+        Some(node_id),
+    )
+    .await?;
+    tx.execute("DELETE FROM cluster_logs WHERE node_id = $1", &[&node_id])
+        .await?;
+    tx.execute(
+        "UPDATE cluster_nodes SET op_status = 0 WHERE node_id = $1",
+        &[&node_id],
+    )
+    .await?;
+    tx.commit().await?;
+
+    // Promote back to Main: full reload picks up both hosts and restores op_status = 1.
+    node.state.set_state(cluster::NodeStateType::Main);
+    node.wait_for("repromoted node reloads all resources", |n| {
+        cache_sizes(&n.cache) == [2, 2, 2, 1] && n.tables().len() == 1
+    })
+    .await;
+
+    eventually(async || {
+        let op_status: i16 = conn
+            .query_one(
+                "SELECT op_status FROM cluster_nodes WHERE node_id = $1",
+                &[&node_id],
+            )
+            .await?
+            .try_get(0)?;
+        ensure!(
+            op_status == 1,
+            "waiting for repromoted node to restore op_status = 1, got {op_status}"
+        );
+        Ok(())
+    })
+    .await;
+
+    node.stop().await
+}
+
+/// Re-initializing after a lock flap uses mark-and-sweep on `cache.item` so
+/// unchanged items keep their accumulated [`cache::item::Stats`], deleted items
+/// are swept, and newly added items are loaded even if `cluster_logs` were lost.
+#[tokio::test]
+async fn lock_flap_preserves_existing_item_stats_and_sweeps_deleted_items() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+
+    let node_id = Uuid::now_v7();
+    let mut conn = db_pool.get().await?;
+    let tx = conn.transaction().await?;
+    tx.execute(
+        "INSERT INTO cluster_nodes(node_id, name, op_status, last_heartbeat, metadata) \
+         VALUES ($1, 'node_1', 1, now(), '{\"advertise_address\": \"127.0.0.1:0\"}')",
+        &[&node_id],
+    )
+    .await?;
+    let processor_id = setup::create_processor(&tx, "proc_1").await?;
+    setup::create_data(
+        &tx,
+        "host_keep",
+        "ep_keep",
+        "item_keep",
+        Some(processor_id),
+        Some(node_id),
+    )
+    .await?;
+    setup::create_data(
+        &tx,
+        "host_drop",
+        "ep_drop",
+        "item_drop",
+        Some(processor_id),
+        Some(node_id),
+    )
+    .await?;
+    tx.commit().await?;
+
+    let keep_id: Uuid = conn
+        .query_one("SELECT item_id FROM items WHERE name = 'item_keep'", &[])
+        .await?
+        .try_get(0)?;
+    let drop_id: Uuid = conn
+        .query_one("SELECT item_id FROM items WHERE name = 'item_drop'", &[])
+        .await?
+        .try_get(0)?;
+
+    let node = start_node(&db_pool, node_id, "node_1").await?;
+    node.initialized().await;
+    assert_eq!(node.cache.item.read().len(), 2);
+
+    // Record check history on `item_keep` before the flap.
+    let stats_before = node
+        .cache
+        .item
+        .read()
+        .stats(&keep_id)
+        .expect("item_keep must be in cache");
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    stats_before.record_attempt(now_ms, Duration::from_millis(5));
+    stats_before.record_success(now_ms, Duration::from_millis(10), 42);
+    assert_eq!(stats_before.snapshot().total_checks, 1);
+    assert_eq!(stats_before.snapshot().total_records, 42);
+
+    // Delete `item_drop`, add `item_new`, and wipe cluster_logs so only a full
+    // reload after the lock flap can bring the cache in sync.
+    let tx = conn.transaction().await?;
+    tx.execute(
+        "DELETE FROM item_processors WHERE item_id = $1",
+        &[&drop_id],
+    )
+    .await?;
+    tx.execute("DELETE FROM items WHERE item_id = $1", &[&drop_id])
+        .await?;
+    setup::create_data(
+        &tx,
+        "host_new",
+        "ep_new",
+        "item_new",
+        Some(processor_id),
+        Some(node_id),
+    )
+    .await?;
+    tx.execute("DELETE FROM cluster_logs WHERE node_id = $1", &[&node_id])
+        .await?;
+    tx.commit().await?;
+
+    let new_id: Uuid = conn
+        .query_one("SELECT item_id FROM items WHERE name = 'item_new'", &[])
+        .await?
+        .try_get(0)?;
+
+    // Flap LostConnection -> Leader between polls.
+    node.state.set_state(cluster::NodeStateType::LostConnection);
+    node.state.set_state(cluster::NodeStateType::Leader);
+
+    node.wait_for("flap reloads item_new and sweeps item_drop", |n| {
+        let guard = n.cache.item.read();
+        guard.get(&new_id).is_some()
+            && guard.get(&drop_id).is_none()
+            && guard.get(&keep_id).is_some()
+    })
+    .await;
+
+    let stats_after = node
+        .cache
+        .item
+        .read()
+        .stats(&keep_id)
+        .expect("item_keep must still exist after reload");
+    let snap = stats_after.snapshot();
+    assert_eq!(
+        snap.total_checks, 1,
+        "mark-and-sweep reload must preserve total_checks across a lock flap"
+    );
+    assert_eq!(
+        snap.total_records, 42,
+        "mark-and-sweep reload must preserve total_records across a lock flap"
+    );
+
+    node.stop().await
+}
