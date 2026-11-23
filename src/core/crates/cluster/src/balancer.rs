@@ -393,4 +393,177 @@ mod tests {
         let id = ids(1);
         assert!(plan(&[load(id[0], false, 3)], 2, 0).is_empty());
     }
+
+    #[test]
+    fn multiple_failures_use_spares_then_spread_the_rest() {
+        let id = ids(4);
+        let nodes = [
+            load(id[0], false, 4),
+            load(id[1], false, 4),
+            load(id[2], true, 4),
+            load(id[3], true, 0),
+        ];
+        let moves = plan(&nodes, 0, 2);
+        // First dead node (by node_id) takes the single spare as a block;
+        // second dead node has no spare left, so it releases and spreads.
+        assert_eq!(
+            moves[0],
+            Move::Block {
+                from: id[0],
+                to: id[3],
+            }
+        );
+        assert_eq!(
+            moves[1],
+            Move::Release {
+                from: id[1],
+                hosts: 4,
+            }
+        );
+        let counts = apply(&nodes, 0, &moves);
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts[&id[2]], 6);
+        assert_eq!(counts[&id[3]], 6);
+        assert!(!counts.contains_key(&id[0]));
+        assert!(!counts.contains_key(&id[1]));
+    }
+
+    #[test]
+    fn empty_dead_node_does_not_consume_a_spare() {
+        let id = ids(4);
+        let nodes = [
+            load(id[0], false, 0),
+            load(id[1], false, 5),
+            load(id[2], true, 5),
+            load(id[3], true, 0),
+        ];
+        let moves = plan(&nodes, 0, 2);
+        assert_eq!(
+            moves,
+            vec![Move::Block {
+                from: id[1],
+                to: id[3],
+            }]
+        );
+        let counts = apply(&nodes, 0, &moves);
+        assert_eq!(counts[&id[2]], 5);
+        assert_eq!(counts[&id[3]], 5);
+    }
+
+    #[test]
+    fn failure_and_unassigned_hosts_are_placed_together() {
+        let id = ids(4);
+        let nodes = [
+            load(id[0], false, 3),
+            load(id[1], true, 2),
+            load(id[2], true, 0),
+            load(id[3], true, 0),
+        ];
+        let moves = plan(&nodes, 5, 2);
+        let counts = apply(&nodes, 5, &moves);
+        // Dead node's 3 hosts go to id[2], plus 5 unassigned spread over active [id[1], id[2]].
+        // id[3] remains an untouched spare under max_active = 2.
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts[&id[1]], 5);
+        assert_eq!(counts[&id[2]], 5);
+        assert!(!counts.contains_key(&id[3]));
+    }
+
+    #[test]
+    fn plan_is_input_order_independent_and_idempotent() {
+        let id = ids(5);
+        let scenarios: Vec<(Vec<NodeLoad>, i64, usize)> = vec![
+            // Odd host count across active nodes
+            (
+                vec![
+                    load(id[0], true, 0),
+                    load(id[1], true, 0),
+                    load(id[2], true, 0),
+                ],
+                7,
+                0,
+            ),
+            // Skewed loads with spare cap
+            (
+                vec![
+                    load(id[0], true, 9),
+                    load(id[1], true, 1),
+                    load(id[2], true, 0),
+                    load(id[3], true, 0),
+                ],
+                3,
+                2,
+            ),
+            // Simultaneous failures + unassigned + active cap
+            (
+                vec![
+                    load(id[0], false, 4),
+                    load(id[1], false, 2),
+                    load(id[2], true, 3),
+                    load(id[3], true, 0),
+                    load(id[4], true, 0),
+                ],
+                4,
+                3,
+            ),
+            // Lowered cap requiring multi-tick evacuation
+            (
+                vec![
+                    load(id[0], true, 3),
+                    load(id[1], true, 3),
+                    load(id[2], true, 3),
+                    load(id[3], true, 3),
+                ],
+                0,
+                2,
+            ),
+        ];
+
+        for (nodes, unassigned, max_active) in scenarios {
+            let mut reversed = nodes.clone();
+            reversed.reverse();
+            let moves = plan(&nodes, unassigned, max_active);
+            assert_eq!(
+                moves,
+                plan(&reversed, unassigned, max_active),
+                "plan must not depend on input order"
+            );
+
+            // Step ticks until evacuations settle (at most nodes.len() ticks).
+            let expected_total: i64 = nodes.iter().map(|n| n.hosts).sum::<i64>() + unassigned;
+            let live_ids: Vec<Uuid> = nodes.iter().filter(|n| n.live).map(|n| n.node_id).collect();
+            let mut current = nodes;
+            let mut pending = unassigned;
+            let mut settled = false;
+            for _ in 0..=current.len() {
+                let tick_moves = plan(&current, pending, max_active);
+                if tick_moves.is_empty() {
+                    settled = true;
+                    break;
+                }
+                let counts = apply(&current, pending, &tick_moves);
+                pending = 0;
+                current = live_ids
+                    .iter()
+                    .map(|&nid| load(nid, true, counts.get(&nid).copied().unwrap_or(0)))
+                    .collect();
+            }
+            assert!(settled, "plan must reach a fixed point without thrashing");
+
+            let active_nodes: Vec<_> = current.iter().filter(|n| n.hosts > 0).collect();
+            let total: i64 = active_nodes.iter().map(|n| n.hosts).sum();
+            assert_eq!(total, expected_total, "host conservation must hold");
+            if max_active > 0 {
+                assert!(
+                    active_nodes.len() <= max_active,
+                    "active node count must respect max_active"
+                );
+            }
+            // No dead node keeps any host, and repeated planning on settled state is empty.
+            assert!(
+                plan(&current, 0, max_active).is_empty(),
+                "settled cluster must produce zero moves"
+            );
+        }
+    }
 }
