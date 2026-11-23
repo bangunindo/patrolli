@@ -112,111 +112,83 @@ pub async fn apply_template(
         }
     }
 
-    // Check for template inheritance conflicts among the specified templates
-    let template_conflict_statement = r#"
-        WITH RECURSIVE t_edges AS (
-            SELECT TRUE AS src_is_template, template_id AS src_uuid,
-                TRUE AS dst_is_template, link_to_template_id AS dst_uuid
-            FROM template_links
-            UNION ALL
-            SELECT TRUE AS src_is_template, link_to_template_id AS src_uuid,
-                TRUE AS dst_is_template, template_id AS dst_uuid
-            FROM template_links
-        ),
-        t_reach AS (
-            SELECT ROW(TRUE, t.template_id) AS node,
-                t.template_id AS root_template_id,
-                TRUE AS node_is_template, t.template_id AS node_uuid, 0 AS depth
-            FROM unnest($1::uuid[]) AS t(template_id)
-            UNION ALL
-            SELECT ROW(e.dst_is_template, e.dst_uuid) AS node,
-                tr.root_template_id,
-                e.dst_is_template, e.dst_uuid, tr.depth + 1
-            FROM t_edges e
-            JOIN t_reach tr ON tr.node_is_template = e.src_is_template AND tr.node_uuid = e.src_uuid
-            WHERE NOT tr.is_cycle
-        ) CYCLE node SET is_cycle USING path
-        SELECT DISTINCT tr.root_template_id, tr.node_uuid AS connected_template_id
-        FROM t_reach tr
-        WHERE tr.node_is_template = TRUE
-        AND tr.node_uuid != tr.root_template_id
-        AND tr.node_uuid = ANY($1::uuid[])
-    "#;
+    // Recursive UNION visits each node once per root instead of tracking individual paths.
+    if template_name_map.len() > 1 {
+        let template_conflict_statement = r#"
+            WITH RECURSIVE template_reach(root_template_id, template_id) AS (
+                SELECT t.template_id, t.template_id
+                FROM unnest($1::uuid[]) AS t(template_id)
+                UNION
+                SELECT r.root_template_id, neighbors.template_id
+                FROM template_reach r
+                CROSS JOIN LATERAL (
+                    SELECT t.link_to_template_id FROM template_links t
+                    WHERE t.template_id = r.template_id
+                    UNION ALL
+                    SELECT t.template_id FROM template_links t
+                    WHERE t.link_to_template_id = r.template_id
+                ) AS neighbors(template_id)
+            )
+            SELECT root_template_id, template_id AS connected_template_id
+            FROM template_reach
+            WHERE template_id != root_template_id
+            AND template_id = ANY($1::uuid[])
+        "#;
 
-    let template_conflict_rows = tx
-        .query(template_conflict_statement, &[&payload.template_ids])
-        .await
-        .ctx("execute template conflict check query")?;
+        let template_conflict_rows = tx
+            .query(template_conflict_statement, &[&payload.template_ids])
+            .await
+            .ctx("execute template conflict check query")?;
 
-    if !template_conflict_rows.is_empty() {
-        // Collect unique conflicting template names
-        let mut conflicting_template_ids: BTreeSet<Uuid> = BTreeSet::new();
-        for row in &template_conflict_rows {
-            if let Ok(id) = row.try_get::<_, Uuid>(0) {
-                conflicting_template_ids.insert(id);
+        if !template_conflict_rows.is_empty() {
+            let mut conflicting_template_ids: BTreeSet<Uuid> = BTreeSet::new();
+            for row in &template_conflict_rows {
+                if let Ok(id) = row.try_get::<_, Uuid>(0) {
+                    conflicting_template_ids.insert(id);
+                }
+                if let Ok(id) = row.try_get::<_, Uuid>(1) {
+                    conflicting_template_ids.insert(id);
+                }
             }
-            if let Ok(id) = row.try_get::<_, Uuid>(1) {
-                conflicting_template_ids.insert(id);
-            }
+
+            let conflicting_template_ids: Vec<Uuid> =
+                conflicting_template_ids.into_iter().collect();
+
+            return Err(ResponseError::from_status(StatusCode::CONFLICT)
+                .with_title("Conflicting template inheritance")
+                .with_detail("The following templates are connected via inheritance and cannot be applied together: {}. \
+                     Apply only one template from each connected group.")
+                .with_data(serde_json::json!({
+                    "conflicting_templates": conflicting_template_ids
+                })));
         }
-
-        let conflicting_template_ids: Vec<Uuid> = conflicting_template_ids.into_iter().collect();
-
-        return Err(ResponseError::from_status(StatusCode::CONFLICT)
-            .with_title("Conflicting template inheritance")
-            .with_detail("The following templates are connected via inheritance and cannot be applied together: {}. \
-                 Apply only one template from each connected group.")
-            .with_data(serde_json::json!({
-                "conflicting_templates": conflicting_template_ids
-            })));
     }
 
-    // Check that no host has a connection to any template
-    //
-    // Run a single recursive CTE starting from all hosts simultaneously,
-    // traversing the undirected template-link / host-template graph, and
-    // collecting which hosts can reach any of the specified templates.
-    //
-    // If any host can reach any template, return a conflict error with the list of
-    // conflicting hosts.
+    // Host and template UUIDs can overlap, so node identity includes the kind.
     let check_statement = r#"
-        WITH RECURSIVE edges AS (
-            SELECT TRUE AS src_is_template, template_id AS src_uuid,
-                TRUE AS dst_is_template, link_to_template_id AS dst_uuid
-            FROM template_links
-            UNION ALL
-            SELECT TRUE AS src_is_template, link_to_template_id AS src_uuid,
-                TRUE AS dst_is_template, template_id AS dst_uuid
-            FROM template_links
-            UNION ALL
-            SELECT TRUE AS src_is_template, template_id AS src_uuid,
-                FALSE AS dst_is_template, host_id AS dst_uuid
-            FROM host_templates
-            WHERE host_id IS NOT NULL
-            UNION ALL
-            SELECT FALSE AS src_is_template, host_id AS src_uuid,
-                TRUE AS dst_is_template, template_id AS dst_uuid
-            FROM host_templates
-            WHERE host_id IS NOT NULL
-        ),
-        all_host_reach AS (
-            SELECT ROW(FALSE, h.host_id) AS node,
-                h.host_id AS root_host_id,
-                FALSE AS node_is_template, h.host_id AS node_uuid, 0 AS depth
+        WITH RECURSIVE host_reach(root_host_id, is_template, node_id) AS (
+            SELECT h.host_id, FALSE, h.host_id
             FROM unnest($1::uuid[]) AS h(host_id)
-            UNION ALL
-            SELECT ROW(e.dst_is_template, e.dst_uuid) AS node,
-                hr.root_host_id,
-                e.dst_is_template, e.dst_uuid, hr.depth + 1
-            FROM edges e
-            JOIN all_host_reach hr ON hr.node_is_template = e.src_is_template AND hr.node_uuid = e.src_uuid
-            WHERE NOT hr.is_cycle
-        ) CYCLE node SET is_cycle USING path
-        SELECT DISTINCT hr.root_host_id
-        FROM all_host_reach hr
-        WHERE hr.node_is_template = TRUE
-        AND hr.node_uuid = ANY($2::uuid[])
-        AND NOT hr.is_cycle
+            UNION
+            SELECT r.root_host_id, neighbors.is_template, neighbors.node_id
+            FROM host_reach r
+            CROSS JOIN LATERAL (
+                SELECT TRUE, t.link_to_template_id FROM template_links t
+                WHERE r.is_template AND t.template_id = r.node_id
+                UNION ALL
+                SELECT TRUE, t.template_id FROM template_links t
+                WHERE r.is_template AND t.link_to_template_id = r.node_id
+                UNION ALL
+                SELECT FALSE, ht.host_id FROM host_templates ht
+                WHERE r.is_template AND ht.template_id = r.node_id AND ht.host_id IS NOT NULL
+                UNION ALL
+                SELECT TRUE, ht.template_id FROM host_templates ht
+                WHERE NOT r.is_template AND ht.host_id = r.node_id AND ht.template_id IS NOT NULL
+            ) AS neighbors(is_template, node_id)
+        )
+        SELECT DISTINCT root_host_id
+        FROM host_reach
+        WHERE is_template AND node_id = ANY($2::uuid[])
     "#;
 
     let conflicting_rows = tx
