@@ -2,8 +2,8 @@
 -- uuidv7() only from 18 on; this one needs nothing newer than gen_random_uuid()
 -- (core since 13). It takes a random v4, writes the 48-bit unix millisecond
 -- timestamp over its first six bytes and turns the version nibble from 4 into 7.
--- Unlike the builtin it is not monotonic within one millisecond, like the
--- ids the application generates itself.
+-- Unlike the builtin (and Uuid::now_v7) it is not monotonic within one
+-- millisecond: ids minted in the same millisecond sort in random order.
 CREATE FUNCTION patrolli_uuidv7() RETURNS uuid
     LANGUAGE sql
     VOLATILE
