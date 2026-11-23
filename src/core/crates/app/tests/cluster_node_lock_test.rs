@@ -895,3 +895,587 @@ async fn test_stale_standby_reaped() -> Result<()> {
     leader_task.await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn test_heartbeat_restores_inactive_status_without_clobbering_initializing() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+    let node_id = Uuid::now_v7();
+    let token = CancellationToken::new();
+    let shutdown = CancellationToken::new();
+    let state = Arc::new(cluster::NodeState::default());
+    let lock = node_lock(&db_pool, &token, &shutdown, node_id, "leader-node", &state);
+    let task = tokio::spawn(async move { lock.run().await });
+
+    eventually(async || {
+        ensure!(
+            state.is(cluster::NodeStateType::Leader),
+            "expected node to become leader, got {:?}",
+            state.get_state()
+        );
+        Ok(())
+    })
+    .await;
+
+    let conn = db_pool.get().await.context("failed to get connection")?;
+
+    // Simulate the row having been marked Inactive (0) during a transient stall or
+    // before this node took leadership. The next heartbeat must restore it to Active (1).
+    conn.execute(
+        "UPDATE cluster_nodes SET op_status = 0 WHERE node_id = $1",
+        &[&node_id],
+    )
+    .await?;
+    eventually(async || {
+        let row = conn
+            .query_one(
+                "SELECT op_status, is_leader FROM cluster_nodes WHERE node_id = $1",
+                &[&node_id],
+            )
+            .await?;
+        let op_status: i16 = row.try_get(0)?;
+        let is_leader: bool = row.try_get(1)?;
+        ensure!(
+            op_status == 1 && is_leader,
+            "expected heartbeat to restore active leader, got op_status={op_status}, is_leader={is_leader}"
+        );
+        Ok(())
+    })
+    .await;
+
+    // Heartbeats must NOT overwrite Initializing (2) while ConfigWatcher::initialize is running.
+    let before: chrono::DateTime<chrono::Utc> = conn
+        .query_one(
+            "UPDATE cluster_nodes SET op_status = 2 WHERE node_id = $1 RETURNING last_heartbeat",
+            &[&node_id],
+        )
+        .await?
+        .try_get(0)?;
+    eventually(async || {
+        let row = conn
+            .query_one(
+                "SELECT op_status, last_heartbeat FROM cluster_nodes WHERE node_id = $1",
+                &[&node_id],
+            )
+            .await?;
+        let op_status: i16 = row.try_get(0)?;
+        let after: chrono::DateTime<chrono::Utc> = row.try_get(1)?;
+        ensure!(after > before, "waiting for another heartbeat tick");
+        ensure!(
+            op_status == 2,
+            "heartbeat must preserve Initializing (2), got {op_status}"
+        );
+        Ok(())
+    })
+    .await;
+
+    token.cancel();
+    task.await?;
+    Ok(())
+}
+
+/// When the leader dies while owning a sticky host, its row stays behind in
+/// `cluster_nodes` (because of the FK). The surviving node must take over
+/// leadership, clear `is_leader` on the dead row, mark it `op_status = 0`, and
+/// fail over its non-sticky hosts. When the old leader comes back, its
+/// `op_status` must return to `1` while staying a non-leader `Main`.
+#[tokio::test]
+async fn test_leader_failover_updates_db_flags_with_sticky_host() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+    let timeout = setup::CLUSTER_HEARTBEAT_TIMEOUT;
+    let node_a = RunningNode::start(&db_pool, Uuid::now_v7(), "node-a", timeout);
+    let node_b = RunningNode::start(&db_pool, Uuid::now_v7(), "node-b", timeout);
+    wait_until_main(&node_a.state).await;
+    wait_until_main(&node_b.state).await;
+
+    // Wait until one node is elected leader in both memory and DB.
+    let mut nodes = vec![node_a, node_b];
+    let leader_idx = eventually(async || {
+        let pos = nodes
+            .iter()
+            .position(|n| n.state.is(cluster::NodeStateType::Leader))
+            .context("waiting for a leader to be elected")?;
+        Ok(pos)
+    })
+    .await;
+    let old_leader = nodes.remove(leader_idx);
+    let survivor = nodes.remove(0);
+    let (old_id, old_name) = (old_leader.node_id, old_leader.name.clone());
+    let survivor_id = survivor.node_id;
+
+    let hosts = create_hosts(&db_pool, 3).await?;
+    let conn = db_pool.get().await.context("failed to get connection")?;
+    conn.execute(
+        "UPDATE hosts SET monitored_by = $1, sticky_monitored_by = true WHERE host_id = $2",
+        &[&old_id, &hosts[0]],
+    )
+    .await?;
+    eventually(async || {
+        let counts = host_counts(&db_pool).await?;
+        ensure!(
+            !counts.contains_key(&None),
+            "waiting for all hosts to be assigned: {counts:?}"
+        );
+        Ok(())
+    })
+    .await;
+
+    // Kill the leader; the survivor must take leadership and mark the old leader inactive.
+    old_leader.stop().await?;
+    eventually(async || {
+        ensure!(
+            survivor.state.is(cluster::NodeStateType::Leader),
+            "waiting for survivor to become leader, got {:?}",
+            survivor.state.get_state()
+        );
+        let rows = conn
+            .query(
+                "SELECT node_id, op_status, is_leader FROM cluster_nodes ORDER BY node_id",
+                &[],
+            )
+            .await?;
+        let mut by_id = HashMap::new();
+        for row in rows {
+            by_id.insert(
+                row.try_get::<_, Uuid>(0)?,
+                (row.try_get::<_, i16>(1)?, row.try_get::<_, bool>(2)?),
+            );
+        }
+        ensure!(
+            by_id.get(&survivor_id) == Some(&(1, true)),
+            "expected survivor active leader, got {by_id:?}"
+        );
+        ensure!(
+            by_id.get(&old_id) == Some(&(0, false)),
+            "expected dead leader row retained as inactive non-leader, got {by_id:?}"
+        );
+        Ok(())
+    })
+    .await;
+
+    // Non-sticky hosts moved to survivor; sticky host stayed with old_id.
+    wait_for_host_counts(
+        &db_pool,
+        HashMap::from([(Some(old_id), 1), (Some(survivor_id), 2)]),
+    )
+    .await;
+
+    // Old leader comes back: must restore op_status = 1 while staying non-leader.
+    let returned = RunningNode::start(&db_pool, old_id, &old_name, timeout);
+    wait_until_main(&returned.state).await;
+    eventually(async || {
+        let row = conn
+            .query_one(
+                "SELECT op_status, is_leader FROM cluster_nodes WHERE node_id = $1",
+                &[&old_id],
+            )
+            .await?;
+        let op_status: i16 = row.try_get(0)?;
+        let is_leader: bool = row.try_get(1)?;
+        ensure!(
+            op_status == 1 && !is_leader,
+            "expected returning node active non-leader, got op_status={op_status}, is_leader={is_leader}"
+        );
+        Ok(())
+    })
+    .await;
+    let leader_count: i64 = conn
+        .query_one(
+            "SELECT count(*) FROM cluster_nodes WHERE is_leader = true",
+            &[],
+        )
+        .await?
+        .try_get(0)?;
+    assert_eq!(leader_count, 1, "cluster must have exactly one leader");
+
+    returned.stop().await?;
+    survivor.stop().await?;
+    Ok(())
+}
+
+/// An invalid edit to `configs.cluster` must keep the last good policy rather
+/// than falling back to the default (`max_active_nodes = 0`, which would put
+/// every spare to work).
+#[tokio::test]
+async fn test_invalid_cluster_policy_keeps_last_good_policy() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+    let timeout = setup::CLUSTER_HEARTBEAT_TIMEOUT;
+    set_cluster_policy(&db_pool, serde_json::json!({"max_active_nodes": 1})).await?;
+    let node_1 = RunningNode::start(&db_pool, Uuid::now_v7(), "node-1", timeout);
+    let node_2 = RunningNode::start(&db_pool, Uuid::now_v7(), "node-2", timeout);
+    wait_until_main(&node_1.state).await;
+    wait_until_main(&node_2.state).await;
+    create_hosts(&db_pool, 4).await?;
+
+    let active_owner = eventually(async || {
+        let counts = host_counts(&db_pool).await?;
+        match counts.iter().collect::<Vec<_>>()[..] {
+            [(&Some(owner), &4)] => Ok(owner),
+            _ => anyhow::bail!("waiting for 1 active node with 4 hosts: {counts:?}"),
+        }
+    })
+    .await;
+
+    // Write an unparseable policy; leader must keep `max_active_nodes = 1` and
+    // continue assigning new hosts to the single active node.
+    set_cluster_policy(&db_pool, serde_json::json!({"max_active_nodes": "bad"})).await?;
+    create_hosts(&db_pool, 2).await?;
+    wait_for_host_counts(&db_pool, HashMap::from([(Some(active_owner), 6)])).await;
+    sleep(QUIET).await;
+    assert_eq!(
+        host_counts(&db_pool).await?,
+        HashMap::from([(Some(active_owner), 6)]),
+        "invalid policy must not reset max_active_nodes to 0 and activate the spare"
+    );
+
+    // Once repaired, the new policy takes effect.
+    set_cluster_policy(&db_pool, serde_json::json!({"max_active_nodes": 2})).await?;
+    wait_for_even_spread(&db_pool, 2, 3).await;
+
+    node_1.stop().await?;
+    node_2.stop().await?;
+    Ok(())
+}
+
+/// Terminate the Postgres backend holding `AdvisoryLock::Leader` in this test
+/// database: the leader's node-lock session, and only that.
+async fn terminate_leader_backend(conn: &deadpool_postgres::Object) -> Result<()> {
+    let terminated: i64 = conn
+        .query_one(
+            "SELECT count(*) FROM ( \
+                SELECT pg_terminate_backend(pid) \
+                FROM pg_locks \
+                WHERE locktype = 'advisory' \
+                  AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+                  AND objsubid = 1 \
+                  AND classid = 0 \
+                  AND objid = $1 \
+            ) t",
+            &[&(patrolli::db::AdvisoryLock::Leader as u32)],
+        )
+        .await?
+        .try_get(0)?;
+    ensure!(terminated == 1, "expected to terminate one leader backend");
+    Ok(())
+}
+
+/// Wait for `state` to lose the node lock and then hold it again.
+async fn wait_for_lock_flap(state: &cluster::NodeState) {
+    // the retry sleeps a second before it reconnects, so this is not missed
+    eventually(async || {
+        ensure!(!state.is_main(), "waiting for the node to lose its lock");
+        Ok(())
+    })
+    .await;
+    wait_until_main(state).await;
+}
+
+/// Killing the leader's Postgres backend connection mid-run drops its lock.
+/// It reconnects well within `heartbeat_timeout` and nobody held its lock in
+/// between, so it missed nothing: the tenure continues under the same
+/// `main_epoch` (the watcher keeps what it loaded), without split-brain, with
+/// both nodes active (`op_status = 1`) and all hosts balanced.
+#[tokio::test]
+async fn test_leader_recovers_after_postgres_backend_termination() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+    // far beyond the second or two the reconnect takes
+    let timeout = Duration::from_secs(30);
+    let node_1 = RunningNode::start(&db_pool, Uuid::now_v7(), "node-1", timeout);
+    let node_2 = RunningNode::start(&db_pool, Uuid::now_v7(), "node-2", timeout);
+    wait_until_main(&node_1.state).await;
+    wait_until_main(&node_2.state).await;
+    create_hosts(&db_pool, 4).await?;
+    wait_for_even_spread(&db_pool, 2, 2).await;
+
+    let nodes = [&node_1, &node_2];
+    let (killed_idx, old_epoch) = eventually(async || {
+        let pos = nodes
+            .iter()
+            .position(|n| n.state.is(cluster::NodeStateType::Leader))
+            .context("waiting for a leader")?;
+        let epoch = nodes[pos]
+            .state
+            .main_epoch()
+            .context("leader must have an active main epoch")?;
+        Ok((pos, epoch))
+    })
+    .await;
+
+    let conn = db_pool.get().await.context("failed to get connection")?;
+    terminate_leader_backend(&conn).await?;
+    wait_for_lock_flap(&nodes[killed_idx].state).await;
+    assert_eq!(
+        nodes[killed_idx].state.main_epoch(),
+        Some(old_epoch),
+        "a reconnect that missed nothing must continue its main epoch"
+    );
+
+    eventually(async || {
+        let leader_count = nodes
+            .iter()
+            .filter(|n| n.state.is(cluster::NodeStateType::Leader))
+            .count();
+        ensure!(
+            leader_count == 1,
+            "expected exactly one in-memory leader after recovery, got {leader_count}"
+        );
+        let rows = conn
+            .query(
+                "SELECT node_id, op_status, is_leader FROM cluster_nodes",
+                &[],
+            )
+            .await?;
+        ensure!(rows.len() == 2, "expected 2 cluster_nodes rows");
+        let mut db_leaders = 0;
+        for row in rows {
+            let op_status: i16 = row.try_get(1)?;
+            let is_leader: bool = row.try_get(2)?;
+            ensure!(op_status == 1, "both recovered nodes must be active (1)");
+            if is_leader {
+                db_leaders += 1;
+            }
+        }
+        ensure!(
+            db_leaders == 1,
+            "expected exactly one DB leader, got {db_leaders}"
+        );
+        Ok(())
+    })
+    .await;
+
+    // All 4 hosts remain evenly balanced across the two live nodes.
+    wait_for_even_spread(&db_pool, 2, 2).await;
+
+    node_1.stop().await?;
+    node_2.stop().await?;
+    Ok(())
+}
+
+/// A reconnect continues its main epoch only when nothing can have been
+/// missed. A heartbeat on the row that this process did not write means another
+/// process was main on the id in between, and read its cluster logs away.
+#[tokio::test]
+async fn test_reconnect_after_another_holder_starts_a_new_epoch() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+    let node = RunningNode::start(&db_pool, Uuid::now_v7(), "node-1", Duration::from_secs(30));
+    eventually(async || {
+        ensure!(
+            node.state.is(cluster::NodeStateType::Leader),
+            "waiting for the node to lead"
+        );
+        Ok(())
+    })
+    .await;
+    let old_epoch = node.state.main_epoch().context("leader has an epoch")?;
+
+    let conn = db_pool.get().await.context("failed to get connection")?;
+    terminate_leader_backend(&conn).await?;
+    // The dead session writes no more heartbeats, and the retry is a second
+    // away: this is what a standby's first heartbeat would have left.
+    conn.execute(
+        "UPDATE cluster_nodes SET last_heartbeat = last_heartbeat + interval '1 millisecond' \
+         WHERE node_id = $1",
+        &[&node.node_id],
+    )
+    .await?;
+    wait_for_lock_flap(&node.state).await;
+    assert_ne!(
+        node.state.main_epoch(),
+        Some(old_epoch),
+        "a heartbeat from another holder must start a new main epoch"
+    );
+
+    node.stop().await?;
+    Ok(())
+}
+
+/// The other half: a reconnect that comes after the node's heartbeat expired
+/// starts a new epoch, since the leader may have purged its cluster logs. A
+/// `heartbeat_timeout` of zero makes every reconnect that late.
+#[tokio::test]
+async fn test_reconnect_after_expiry_starts_a_new_epoch() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+    let node = RunningNode::start(&db_pool, Uuid::now_v7(), "node-1", Duration::ZERO);
+    eventually(async || {
+        ensure!(
+            node.state.is(cluster::NodeStateType::Leader),
+            "waiting for the node to lead"
+        );
+        Ok(())
+    })
+    .await;
+    let old_epoch = node.state.main_epoch().context("leader has an epoch")?;
+
+    let conn = db_pool.get().await.context("failed to get connection")?;
+    terminate_leader_backend(&conn).await?;
+    wait_for_lock_flap(&node.state).await;
+    assert_ne!(
+        node.state.main_epoch(),
+        Some(old_epoch),
+        "a reconnect past the heartbeat timeout must start a new main epoch"
+    );
+
+    node.stop().await?;
+    Ok(())
+}
+
+/// When a standby takes over a `node_id` whose previous main died and was
+/// marked `op_status = 0` (retained because of a sticky host), the standby must
+/// update `cluster_nodes.name` to its own name, restore `op_status = 1`, keep
+/// the sticky host, and leave `cluster_standby_nodes` clean.
+#[tokio::test]
+async fn test_standby_takeover_updates_node_name_and_restores_active_status() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+    let timeout = setup::CLUSTER_HEARTBEAT_TIMEOUT;
+    let shared_id = Uuid::now_v7();
+    let node_a = RunningNode::start(&db_pool, shared_id, "node-a-primary", timeout);
+    let node_b = RunningNode::start(&db_pool, Uuid::now_v7(), "node-b", timeout);
+    wait_until_main(&node_a.state).await;
+    wait_until_main(&node_b.state).await;
+
+    let hosts = create_hosts(&db_pool, 1).await?;
+    let conn = db_pool.get().await.context("failed to get connection")?;
+    conn.execute(
+        "UPDATE hosts SET monitored_by = $1, sticky_monitored_by = true WHERE host_id = $2",
+        &[&shared_id, &hosts[0]],
+    )
+    .await?;
+
+    // Primary stops; peer leader marks its retained row Inactive (0).
+    node_a.stop().await?;
+    eventually(async || {
+        let op_status: i16 = conn
+            .query_one(
+                "SELECT op_status FROM cluster_nodes WHERE node_id = $1",
+                &[&shared_id],
+            )
+            .await?
+            .try_get(0)?;
+        ensure!(op_status == 0, "waiting for primary row to become inactive");
+        Ok(())
+    })
+    .await;
+
+    // Standby with the same node_id takes over.
+    let standby = RunningNode::start(&db_pool, shared_id, "node-a-standby", timeout);
+    wait_until_main(&standby.state).await;
+    eventually(async || {
+        let row = conn
+            .query_one(
+                "SELECT name, op_status FROM cluster_nodes WHERE node_id = $1",
+                &[&shared_id],
+            )
+            .await?;
+        let name: String = row.try_get(0)?;
+        let op_status: i16 = row.try_get(1)?;
+        ensure!(
+            name == "node-a-standby" && op_status == 1,
+            "expected takeover to update name and restore op_status=1, got name={name:?}, op_status={op_status}"
+        );
+        Ok(())
+    })
+    .await;
+    assert!(
+        standby_entries(&db_pool).await?.is_empty(),
+        "promoted standby must not leave an entry in cluster_standby_nodes"
+    );
+    let owner: Option<Uuid> = conn
+        .query_one(
+            "SELECT monitored_by FROM hosts WHERE host_id = $1",
+            &[&hosts[0]],
+        )
+        .await?
+        .try_get(0)?;
+    assert_eq!(owner, Some(shared_id));
+
+    standby.stop().await?;
+    node_b.stop().await?;
+    Ok(())
+}
+
+/// The leader's stale check must never apply to the leader itself. Its own
+/// heartbeat is written just before its leader tasks, in another transaction:
+/// held up between the two, it would otherwise find its own row stale, take
+/// itself for dead (no live node, so no host is placed), mark itself inactive,
+/// purge its own cluster logs and delete its own row. A `heartbeat_timeout` of
+/// zero stands in for that delay: every heartbeat is stale by the time anyone
+/// looks at it.
+#[tokio::test]
+async fn test_leader_never_expires_itself() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+    let node_id = Uuid::now_v7();
+    let token = CancellationToken::new();
+    let shutdown = CancellationToken::new();
+    let state = Arc::new(cluster::NodeState::default());
+    let lock = node_lock_with_timeout(
+        &db_pool,
+        &token,
+        &shutdown,
+        node_id,
+        "leader-node",
+        &state,
+        Duration::ZERO,
+    );
+    let task = tokio::spawn(async move { lock.run().await });
+    eventually(async || {
+        ensure!(
+            state.is(cluster::NodeStateType::Leader),
+            "expected node to become leader, got {:?}",
+            state.get_state()
+        );
+        Ok(())
+    })
+    .await;
+    let epoch = state.main_epoch();
+
+    // With no host to keep the row, an expired node is deleted, and a stale one
+    // is inactive from the leader tasks until its next heartbeat: either would
+    // show within a tick.
+    let conn = db_pool.get().await.context("failed to get connection")?;
+    let quiet_until = tokio::time::Instant::now() + QUIET;
+    while tokio::time::Instant::now() < quiet_until {
+        let op_status: Option<i16> = conn
+            .query_opt(
+                "SELECT op_status FROM cluster_nodes WHERE node_id = $1",
+                &[&node_id],
+            )
+            .await?
+            .map(|row| row.try_get(0))
+            .transpose()?;
+        assert_eq!(
+            op_status,
+            Some(1),
+            "the leader must keep its row, and keep it active"
+        );
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    // It counts itself live, so it places hosts on itself...
+    create_hosts(&db_pool, 3).await?;
+    wait_for_host_counts(&db_pool, HashMap::from([(Some(node_id), 3)])).await;
+    // ...and the logs of that placement outlive the tick that wrote them.
+    let logs: i64 = conn
+        .query_one(
+            "SELECT count(*) FROM cluster_logs WHERE node_id = $1",
+            &[&node_id],
+        )
+        .await?
+        .try_get(0)?;
+    assert!(logs > 0, "the leader must not purge its own cluster logs");
+    assert_eq!(
+        state.main_epoch(),
+        epoch,
+        "a leader is expired by nobody, so it has nothing to reload"
+    );
+
+    token.cancel();
+    task.await?;
+    Ok(())
+}
