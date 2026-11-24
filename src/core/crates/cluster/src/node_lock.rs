@@ -342,15 +342,25 @@ impl NodeLock {
         Ok(updated)
     }
 
-    async fn leader_tasks(&mut self, tx: &Transaction<'_>) -> Result<()> {
+    /// `judged_from` is the heartbeat this leader committed on its previous tick
+    /// (this tick's, when it has none). Every peer is judged against it instead
+    /// of the clock: a database stall holds every node's heartbeat up alike, and
+    /// the heartbeats it releases still carry the time they were started at.
+    /// Against the clock they would all look stale at once. Against a stamp as
+    /// old as theirs, only a node that fell behind the leader does. A node that
+    /// died is found one tick later for it.
+    async fn leader_tasks(
+        &mut self,
+        tx: &Transaction<'_>,
+        judged_from: DateTime<Utc>,
+    ) -> Result<()> {
         let expire_after = self.cluster.heartbeat_timeout.as_secs_f64();
         // a node is live while its heartbeat is this fresh; past it, its hosts fail
         // over. An expired node is never live, so its hosts are moved off before
         // the expiry below deletes it.
         let stale_after = self
             .cluster
-            .heartbeat_interval
-            .saturating_add(Duration::from_secs(2))
+            .heartbeat_stale_after
             .as_secs_f64()
             .min(expire_after);
         let stale = tx
@@ -358,10 +368,10 @@ impl NodeLock {
                 "UPDATE cluster_nodes SET op_status = 0 \
                 WHERE node_id <> $2 \
                   AND op_status <> 0 \
-                  AND last_heartbeat + make_interval(secs := $1) < now() \
+                  AND last_heartbeat + make_interval(secs := $1) < $3::timestamptz \
                 RETURNING node_id, name, \
                     EXTRACT(EPOCH FROM clock_timestamp() - last_heartbeat)::float8",
-                &[&stale_after, &self.cluster.node_id],
+                &[&stale_after, &self.cluster.node_id, &judged_from],
             )
             .await
             .context("failed updating inactive cluster nodes")?;
@@ -381,12 +391,12 @@ impl NodeLock {
         let rows = tx
             .query(
                 "SELECT cn.node_id, \
-                    cn.node_id = $2 OR cn.last_heartbeat + make_interval(secs := $1) >= now(), \
+                    cn.node_id = $2 OR cn.last_heartbeat + make_interval(secs := $1) >= $3::timestamptz, \
                     COUNT(h.host_id) FILTER (WHERE NOT h.sticky_monitored_by) \
                 FROM cluster_nodes cn \
                 LEFT JOIN hosts h ON h.monitored_by = cn.node_id \
                 GROUP BY cn.node_id, cn.last_heartbeat",
-                &[&stale_after, &self.cluster.node_id],
+                &[&stale_after, &self.cluster.node_id, &judged_from],
             )
             .await
             .context("failed to get host distribution")?;
@@ -470,8 +480,8 @@ impl NodeLock {
             WHERE node_id IN (\
             SELECT node_id FROM cluster_nodes \
             WHERE node_id <> $2 \
-              AND last_heartbeat + make_interval(secs := $1) < now())",
-            &[&expire_after, &self.cluster.node_id],
+              AND last_heartbeat + make_interval(secs := $1) < $3::timestamptz)",
+            &[&expire_after, &self.cluster.node_id, &judged_from],
         )
         .await
         .context("failed to delete cluster logs")?;
@@ -479,10 +489,10 @@ impl NodeLock {
             .query(
                 "DELETE FROM cluster_nodes \
                 WHERE node_id <> $2 \
-                  AND last_heartbeat + make_interval(secs := $1) < now() \
+                  AND last_heartbeat + make_interval(secs := $1) < $3::timestamptz \
                   AND NOT EXISTS (SELECT 1 FROM hosts h WHERE h.monitored_by = cluster_nodes.node_id) \
                 RETURNING node_id, name",
-                &[&expire_after, &self.cluster.node_id],
+                &[&expire_after, &self.cluster.node_id, &judged_from],
             )
             .await
             .context("failed to delete inactive cluster nodes")?;
@@ -492,8 +502,9 @@ impl NodeLock {
             info!(%peer_node_id, %peer_node, "expired cluster node removed");
         }
         tx.execute(
-            "DELETE FROM cluster_standby_nodes WHERE last_heartbeat + make_interval(secs := $1) < now()",
-            &[&expire_after],
+            "DELETE FROM cluster_standby_nodes \
+            WHERE last_heartbeat + make_interval(secs := $1) < $2::timestamptz",
+            &[&expire_after, &judged_from],
         )
         .await
         .context("failed to delete inactive standby nodes")?;
@@ -692,6 +703,8 @@ impl NodeLock {
                 .context("failed to update leader status")?;
             }
             tx.commit().await.context("failed to commit transaction")?;
+            // what the leader tasks below judge the other nodes against
+            let judged_from = self.last_heartbeat.unwrap_or(heartbeat);
             // only once committed: after a commit that failed, the row may or may
             // not carry it, and not matching is the answer that reloads
             self.last_heartbeat = Some(heartbeat);
@@ -740,7 +753,7 @@ impl NodeLock {
                     .transaction()
                     .await
                     .context("failed to start transaction")?;
-                self.leader_tasks(&tx).await?;
+                self.leader_tasks(&tx, judged_from).await?;
                 tx.commit().await.context("failed to commit transaction")?;
                 leader_watch = HolderWatch::default();
             } else {

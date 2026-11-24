@@ -147,6 +147,13 @@ pub struct Cluster {
         default = "default_heartbeat_interval"
     )]
     pub heartbeat_interval: Duration,
+    /// How old a node's heartbeat may get before the leader takes the node for
+    /// failed and moves its hosts away. Capped at `heartbeat_timeout`.
+    #[serde(
+        with = "crate::common::serde::duration_seconds",
+        default = "default_heartbeat_stale_after"
+    )]
+    pub heartbeat_stale_after: Duration,
     pub metadata: NodeMetadata,
     #[serde(default = "default_internode")]
     pub inter_node: InterNode,
@@ -168,6 +175,16 @@ impl Cluster {
             self.heartbeat_timeout.as_secs(),
             self.heartbeat_interval.as_secs()
         );
+        // Same reason, one step earlier: its hosts are failed over between two
+        // of its own heartbeats.
+        anyhow::ensure!(
+            self.heartbeat_stale_after > self.heartbeat_interval,
+            "cluster.heartbeat_stale_after ({}s) must be greater than cluster.heartbeat_interval ({}s)",
+            self.heartbeat_stale_after.as_secs(),
+            self.heartbeat_interval.as_secs()
+        );
+        // an expired node is never live: its hosts leave before it is deleted
+        self.heartbeat_stale_after = self.heartbeat_stale_after.min(self.heartbeat_timeout);
         self.metadata.validate()?;
         self.inter_node.validate()?;
         Ok(())
@@ -192,7 +209,11 @@ impl ClusterPolicy {
 }
 
 fn default_heartbeat_timeout() -> Duration {
-    Duration::from_secs(15)
+    Duration::from_secs(60)
+}
+
+fn default_heartbeat_stale_after() -> Duration {
+    Duration::from_secs(20)
 }
 
 fn default_heartbeat_interval() -> Duration {
@@ -421,11 +442,20 @@ mod tests {
     use super::*;
 
     fn cluster(heartbeat_interval: u64, heartbeat_timeout: u64) -> Cluster {
+        cluster_with_stale_after(heartbeat_interval, heartbeat_timeout, heartbeat_timeout)
+    }
+
+    fn cluster_with_stale_after(
+        heartbeat_interval: u64,
+        heartbeat_timeout: u64,
+        heartbeat_stale_after: u64,
+    ) -> Cluster {
         Cluster {
             node_id: Uuid::nil(),
             node_name: "node".to_string(),
             heartbeat_timeout: Duration::from_secs(heartbeat_timeout),
             heartbeat_interval: Duration::from_secs(heartbeat_interval),
+            heartbeat_stale_after: Duration::from_secs(heartbeat_stale_after),
             metadata: NodeMetadata {
                 advertise_address: "127.0.0.1:4636".to_string(),
             },
@@ -441,8 +471,41 @@ mod tests {
              metadata:\n  advertise_address: 127.0.0.1:4636\n",
         )
         .unwrap();
-        assert!(config.heartbeat_timeout > config.heartbeat_interval);
         config.validate().unwrap();
+        assert_eq!(config.heartbeat_interval, Duration::from_secs(5));
+        assert_eq!(config.heartbeat_stale_after, Duration::from_secs(20));
+        assert_eq!(config.heartbeat_timeout, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a_stale_threshold_has_to_outlast_the_interval() {
+        cluster_with_stale_after(5, 60, 6).validate().unwrap();
+
+        for stale_after in [5, 3, 0] {
+            let err = cluster_with_stale_after(5, 60, stale_after)
+                .validate()
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                err,
+                format!(
+                    "cluster.heartbeat_stale_after ({stale_after}s) must be greater than \
+                     cluster.heartbeat_interval (5s)"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn a_stale_threshold_past_the_timeout_is_capped_to_it() {
+        // the default threshold next to a short explicit timeout
+        let mut config = cluster_with_stale_after(1, 3, 20);
+        config.validate().unwrap();
+        assert_eq!(config.heartbeat_stale_after, Duration::from_secs(3));
+
+        let mut config = cluster_with_stale_after(5, 60, 20);
+        config.validate().unwrap();
+        assert_eq!(config.heartbeat_stale_after, Duration::from_secs(20));
     }
 
     #[test]
