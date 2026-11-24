@@ -5,8 +5,8 @@
 mod setup;
 
 use anyhow::{Context, Result, ensure};
-use deadpool_postgres::Pool;
 use patrolli::config;
+use patrolli::db::Pool;
 use patrolli_cluster as cluster;
 use setup::eventually;
 use std::collections::HashMap;

@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use deadpool_postgres::Pool;
+use patrolli::db::Pool;
 use patrolli::{cache, config};
 use patrolli_api as api;
 use patrolli_api::jwt::Jwt;

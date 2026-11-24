@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::jwt::Jwt;
-use deadpool_postgres::Pool;
 use patrolli::cache::Cache;
 use patrolli::config::sensitive::SecretKeys;
+use patrolli::db::Pool;
 use patrolli_cluster::inter::InterComm;
 use std::sync::Arc;
 

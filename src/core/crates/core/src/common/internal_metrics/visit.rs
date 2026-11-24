@@ -19,9 +19,9 @@
 //! name, which is why the catalogue stores only that.
 
 use super::{
-    BgpListener, Channel, ChannelKind, Dns, DnsForwarder, DnsRecord, Forwarder, ForwarderNode,
-    ForwarderServer, InternalMetrics, Listener, LookupTable, LookupTableProcessor, Monitor,
-    Processor, ProcessorEdge, ProcessorNode, Sink, SkipCounts,
+    BgpListener, Channel, ChannelKind, DbPool, Dns, DnsForwarder, DnsRecord, Forwarder,
+    ForwarderNode, ForwarderServer, InternalMetrics, Listener, LookupTable, LookupTableProcessor,
+    Monitor, Processor, ProcessorEdge, ProcessorNode, Sink, SkipCounts,
 };
 use smallvec::SmallVec;
 use std::borrow::Cow;
@@ -323,8 +323,8 @@ macro_rules! counter_metrics {
 /// Walk every internal-metrics family, handing each to `v`.
 ///
 /// `include_forwarder` gates the cluster-only families (the inter-node
-/// forwarder, its peers, and the forwarder server), which are all zero in local
-/// mode and would only be noise there.
+/// forwarder, its peers, the forwarder server, and the database pool), which
+/// are all zero in local mode and would only be noise there.
 pub fn walk<V: Visitor>(
     metrics: &InternalMetrics,
     include_forwarder: bool,
@@ -341,6 +341,7 @@ pub fn walk<V: Visitor>(
     let forwarder_channel = include_forwarder.then(|| metrics.forwarder_channel.load_full());
     let forwarder = include_forwarder.then(|| metrics.forwarder.load_full());
     let forwarder_server = include_forwarder.then(|| metrics.forwarder_server.load_full());
+    let db_pool = include_forwarder.then(|| metrics.db_pool.load_full());
 
     let mut channel_groups = vec![
         ("sink", &sink_channel.1),
@@ -378,6 +379,10 @@ pub fn walk<V: Visitor>(
     if let Some(forwarder_server) = &forwarder_server {
         walk_forwarder_server(v, &forwarder_server.1)?;
     }
+    if let Some(db_pool) = &db_pool {
+        walk_db_pool(v, &db_pool.1)?;
+        ages.push(("db_pool", db_pool.0.elapsed().as_secs_f64()));
+    }
     if let Some(forwarder_channel) = &forwarder_channel {
         ages.push((
             "forwarder_channel",
@@ -404,6 +409,72 @@ pub fn walk<V: Visitor>(
             .map(|(snapshot, age)| (labels([("snapshot", Cow::Borrowed(snapshot))]), age))
             .collect(),
     )
+}
+
+/// The Postgres connection pool. Cluster mode only.
+fn walk_db_pool<V: Visitor>(v: &mut V, pool: &DbPool) -> Result<(), V::Error> {
+    for (name, help, value) in [
+        (
+            "db_pool.max_size",
+            "Configured limit of database pool connections.",
+            pool.max_size,
+        ),
+        (
+            "db_pool.size",
+            "Database pool connections open, idle or checked out.",
+            pool.size,
+        ),
+        (
+            "db_pool.available",
+            "Idle database pool connections.",
+            pool.available,
+        ),
+        (
+            "db_pool.waiting",
+            "Checkouts waiting for a database pool connection.",
+            pool.waiting,
+        ),
+    ] {
+        scalar_u64(v, name, help, Unit::None, Kind::Gauge, value)?;
+    }
+    counter_metrics!(
+        v,
+        pool,
+        [
+            (
+                "db_pool.checkouts",
+                "Connections checked out of the database pool.",
+                checkouts
+            ),
+            (
+                "db_pool.checkout_errors",
+                "Database pool checkouts that failed.",
+                checkout_errors
+            ),
+            (
+                "db_pool.connections_created",
+                "Connections the database pool opened.",
+                connections_created
+            ),
+        ]
+    );
+    duration_metrics!(
+        v,
+        pool,
+        [
+            (
+                "db_pool.checkout_wait",
+                "Time successful checkouts waited for a database pool connection.",
+                checkout_wait_time
+            ),
+            (
+                "db_pool.hold",
+                "Time database pool connections were checked out, counted on return.",
+                hold_time
+            ),
+        ]
+    );
+    Ok(())
 }
 
 fn walk_channels<V: Visitor>(

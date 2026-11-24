@@ -6,7 +6,6 @@ use anyhow::{Context, Result};
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use common::mib;
-use deadpool_postgres::Runtime;
 use patrolli::chan::new as new_channel;
 use patrolli::common::internal_metrics::INTERNAL_METRICS;
 use patrolli::common::log_export::{self, LOG_EXPORT};
@@ -787,26 +786,38 @@ async fn backend_run(global_conf: config::global::Global) -> Result<()> {
         .transpose()?;
     let secret_keys = Arc::new(config::sensitive::SecretKeys::from_env()?);
     let db_pool = match &backend_conf.db_tls {
-        None => backend_conf
-            .get_db_config()?
-            .create_pool(Some(Runtime::Tokio1), tokio_postgres::NoTls)
-            .context("failed to create database pool")?,
+        None => db::Pool::build(
+            backend_conf
+                .get_db_config()?
+                .builder(tokio_postgres::NoTls)
+                .context("failed to configure database pool")?,
+        )
+        .context("failed to create database pool")?,
         Some(tls) => {
             let tls_config = common::tls::build_rustls_client_config(tls)
                 .context("failed to build TLS config")?;
             let tls = MakeRustlsConnect::new(tls_config);
-            backend_conf
-                .get_db_config()?
-                .create_pool(Some(Runtime::Tokio1), tls)
-                .context("failed to create database pool with TLS")?
+            db::Pool::build(
+                backend_conf
+                    .get_db_config()?
+                    .builder(tls)
+                    .context("failed to configure database pool with TLS")?,
+            )
+            .context("failed to create database pool with TLS")?
         }
     };
-    // TODO: db_pool.status() -> incorporate to internal_metrics
     db::check_server_version(&db_pool, backend_conf.db_skip_version_check).await?;
     db::run_migrations(&db_pool).await?;
     db::reencrypt_secrets(&db_pool, &secret_keys).await?;
     let shutdown = setup_shutdown(global_conf.shutdown_timeout);
     let token = shutdown.token();
+    // its own token: it reports until the pool closes, past the teardown that uses it
+    let db_pool_reporter_token = CancellationToken::new();
+    let db_pool_reporter = db::pool::spawn_metrics_reporter(
+        db_pool.clone(),
+        global_conf.internal_metrics_interval,
+        db_pool_reporter_token.clone(),
+    );
     let prometheus_server = global_conf
         .prometheus
         .as_ref()
@@ -912,6 +923,8 @@ async fn backend_run(global_conf: config::global::Global) -> Result<()> {
     info!("shutting down cluster");
     cluster_token.cancel();
     join_step("cluster", cluster_handle).await;
+    db_pool_reporter_token.cancel();
+    join_step("db_pool_reporter", db_pool_reporter).await;
     db_pool.close();
     if let Some(prometheus_server) = prometheus_server {
         prometheus_server.wait().await?;

@@ -16,8 +16,9 @@ use patrolli::config::sink::{Config as SinkConfig, Sink};
 use patrolli::db::{query, schema};
 
 use anyhow::{Context, Result};
-use deadpool_postgres::{GenericClient, Pool, Transaction};
+use deadpool_postgres::{GenericClient, Transaction};
 use patrolli::config::{Batch, Channel, MonitorConfig, Retry};
+use patrolli::db::Pool;
 use sea_query::{
     BinOper, Expr, ExprTrait, IntoColumnRef, Order, PostgresQueryBuilder, Query as DbQuery,
     QueryStatementBuilder,

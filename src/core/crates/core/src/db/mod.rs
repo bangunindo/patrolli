@@ -3,13 +3,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 pub mod models;
+pub mod pool;
 pub mod query;
 pub mod schema;
 
 use crate::config::sensitive::{SecretKeys, SensitiveFields, header};
 use crate::config::{endpoint, listener, sink};
 use anyhow::{Context, Result, bail};
-use deadpool_postgres::{ClientWrapper, Object, Pool};
+use deadpool_postgres::ClientWrapper;
+pub use pool::Pool;
 use refinery::embed_migrations;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -67,7 +69,11 @@ pub async fn check_server_version(pool: &Pool, skip: bool) -> Result<()> {
 
 pub async fn run_migrations(pool: &Pool) -> Result<()> {
     info!("connecting to database");
-    let mut client = Object::take(pool.get().await.context("failed to get db connection")?);
+    let mut client = pool
+        .get()
+        .await
+        .context("failed to get db connection")?
+        .detach();
     client
         .execute("SELECT 1", &[])
         .await
@@ -143,7 +149,11 @@ pub async fn run_migrations(pool: &Pool) -> Result<()> {
 /// from starting.
 pub async fn reencrypt_secrets(pool: &Pool, keys: &SecretKeys) -> Result<()> {
     // out of the pool, so an early return closes the session and frees the lock
-    let mut client = Object::take(pool.get().await.context("failed to get db connection")?);
+    let mut client = pool
+        .get()
+        .await
+        .context("failed to get db connection")?
+        .detach();
     client
         .execute(
             "SELECT pg_advisory_lock($1)",
