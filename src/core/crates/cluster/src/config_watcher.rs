@@ -25,10 +25,12 @@ use sea_query::{
 };
 use sea_query_postgres::PostgresBinder;
 use smol_str::ToSmolStr;
+use std::future::Future;
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Instant;
 use thiserror::Error;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, MissedTickBehavior, interval_at, sleep};
 use tokio_postgres::{IsolationLevel, Row};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
@@ -45,6 +47,30 @@ enum ConfigWatcherError {
 impl From<anyhow::Error> for ConfigWatcherError {
     fn from(e: anyhow::Error) -> Self {
         ConfigWatcherError::Other(e)
+    }
+}
+
+/// How long a step of the watcher may run before it is reported, and how often
+/// it is reported again while it still runs.
+const SLOW_STEP: Duration = Duration::from_secs(30);
+
+/// Runs one step of the watcher, naming it for as long as it overruns. A step
+/// that never returns (a sink that will not drain, a query that hangs) would
+/// otherwise leave the node `initializing` with nothing in the log to say where.
+async fn watched<T>(step: &'static str, fut: impl Future<Output = T>) -> T {
+    let started = Instant::now();
+    let mut reminder = interval_at(tokio::time::Instant::now() + SLOW_STEP, SLOW_STEP);
+    reminder.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    tokio::pin!(fut);
+    loop {
+        tokio::select! {
+            out = &mut fut => return out,
+            _ = reminder.tick() => warn!(
+                step,
+                elapsed_s = started.elapsed().as_secs(),
+                "config watcher step is slow"
+            ),
+        }
     }
 }
 
@@ -740,10 +766,9 @@ impl ConfigWatcher {
     }
 
     async fn initialize(&mut self, epoch: u64) -> Result<(), ConfigWatcherError> {
-        debug!("initializing configuration cache");
-        let mut client = self
-            .db_pool
-            .get()
+        let started = Instant::now();
+        info!(epoch, "loading configuration");
+        let mut client = watched("get_connection", self.db_pool.get())
             .await
             .context("failed to get db connection")?;
         let tx = client
@@ -768,60 +793,63 @@ impl ConfigWatcher {
             .start()
             .await
             .context("failed to start db transaction")?;
-        self.clean_all_logs(&tx)
+        watched("clean_logs", self.clean_all_logs(&tx))
             .await
             .context("failed to clean all logs")?;
         // Before the processors: a lookup processor resolves against the registry,
         // so the tables have to be there by the time a processor compiles.
-        self.initialize_lookup_tables(&tx)
+        watched("lookup_tables", self.initialize_lookup_tables(&tx))
             .await
             .context("failed to load lookup tables")?;
         if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.initialize_processors(&tx)
+        watched("processors_and_sinks", self.initialize_processors(&tx))
             .await
             .context("failed to load processors and sinks")?;
         if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.initialize_listeners(&tx)
+        watched("listeners", self.initialize_listeners(&tx))
             .await
             .context("failed to load listeners")?;
         if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.initialize_hosts(&tx)
+        watched("hosts", self.initialize_hosts(&tx))
             .await
             .context("failed to load hosts")?;
         if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.initialize_endpoints(&tx)
+        watched("endpoints", self.initialize_endpoints(&tx))
             .await
             .context("failed to load endpoints")?;
         if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.initialize_items(&tx)
+        watched("items", self.initialize_items(&tx))
             .await
             .context("failed to load items")?;
         if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.initialize_listener_items_and_endpoints(&tx)
-            .await
-            .context("failed to load listener items and endpoints")?;
+        watched(
+            "listener_items",
+            self.initialize_listener_items_and_endpoints(&tx),
+        )
+        .await
+        .context("failed to load listener items and endpoints")?;
         if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.initialize_cluster_nodes(&tx)
+        watched("cluster_nodes", self.initialize_cluster_nodes(&tx))
             .await
             .context("failed to load cluster nodes")?;
         if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.read_monitor_config(&tx)
+        watched("monitor_config", self.read_monitor_config(&tx))
             .await
             .context("failed to load the monitor config")?;
         if self.node_lock.main_epoch() != Some(epoch) {
@@ -850,6 +878,8 @@ impl ConfigWatcher {
             endpoints = self.cache.endpoint.read().len(),
             items = self.cache.item.read().len(),
             listeners = self.cache.listener.read().len(),
+            epoch,
+            elapsed_ms = started.elapsed().as_millis() as u64,
             "configuration cache loaded"
         );
         Ok(())
@@ -1246,7 +1276,7 @@ impl ConfigWatcher {
 
     async fn poll(&mut self, epoch: u64) -> Result<(), ConfigWatcherError> {
         if self.initialized {
-            self.delta_read().await?;
+            watched("apply_changes", self.delta_read()).await?;
         } else {
             self.initialize(epoch).await?;
             self.initialized = true;
@@ -1283,7 +1313,7 @@ impl ConfigWatcher {
                         let mut guard = self.cache.listener.write();
                         guard.clear();
                     }
-                    self.listeners.close_all_listener().await;
+                    watched("close_listeners", self.listeners.close_all_listener()).await;
                     {
                         let mut guard = self.cache.item.write();
                         guard.clear();
@@ -1307,8 +1337,9 @@ impl ConfigWatcher {
                     // it is no longer responsible for, and its reloader
                     // keeps re-reading the source files to maintain it.
                     self.cache.lookup_table.clear();
-                    self.sinks.close_all_sink().await;
-                    self.inter_comm.close_all().await;
+                    watched("close_sinks", self.sinks.close_all_sink()).await;
+                    watched("close_peers", self.inter_comm.close_all()).await;
+                    info!("configuration cleared, standing by");
                     cache_cleared = true;
                 }
                 tokio::select! {
@@ -1316,7 +1347,7 @@ impl ConfigWatcher {
                     _ = sleep(Duration::from_secs(1)) => {},
                 }
             };
-            info!("starting config watcher");
+            info!(epoch, "starting config watcher");
             let mut paused = false;
             loop {
                 match self.node_lock.snapshot() {
