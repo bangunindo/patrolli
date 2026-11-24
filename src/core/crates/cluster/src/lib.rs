@@ -159,7 +159,9 @@ impl NodeState {
             .unwrap();
         let (prev_state, _) = unpack_node_state(prev_raw);
         if prev_state != state {
-            info!(from = ?prev_state, to = ?state, "node state changed");
+            // read back, not derived: only the node lock task writes it
+            let (_, epoch) = self.snapshot();
+            info!(from = ?prev_state, to = ?state, epoch, "node state changed");
         }
     }
 
@@ -185,7 +187,9 @@ impl NodeState {
             .unwrap();
         let (prev_state, _) = unpack_node_state(prev_raw);
         if prev_state != state {
-            info!(from = ?prev_state, to = ?state, "node state changed");
+            // read back, not derived: only the node lock task writes it
+            let (_, epoch) = self.snapshot();
+            info!(from = ?prev_state, to = ?state, epoch, "node state changed");
         }
     }
 
