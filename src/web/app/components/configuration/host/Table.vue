@@ -13,6 +13,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
 import AppTable from '@/components/app/AppTable.vue'
+import AppTableLabels from '@/components/app/AppTableLabels.vue'
 import AppInputSelect from '@/components/app/input/AppInputSelect.vue'
 import ModalDetail from '@/components/configuration/host/ModalDetail.vue'
 import ModalHostForm from '@/components/configuration/host/ModalForm.vue'
@@ -58,15 +59,6 @@ const headerTable = [
 		title: 'Cluster Node'
 	}
 ]
-
-function parsedLabelsData(labels: string) {
-	if (!labels) return {}
-	try {
-		return JSON.parse(labels) || {}
-	} catch (e) {
-		return {}
-	}
-}
 
 function onChangePage(payload: { limit: number; offset: number; page: number }) {
 	hostsStore.pagination.currentPage = payload.page
@@ -209,19 +201,7 @@ hostsStore.$onAction((context) => {
 				</template>
 
 				<template #col.labels="prop">
-					<div
-						class="flex flex-row flex-wrap gap-1.5"
-						v-if="Object.keys(parsedLabelsData(prop.data.labels)).length > 0"
-					>
-						<span
-							v-for="(value, key) in parsedLabelsData(prop.data.labels)"
-							:key="`labels-${key}-${value}`"
-							class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-[#E0F2FE] dark:bg-sky-950/60 text-[#0284C7] dark:text-sky-400 border border-[#BAE6FD]/60 dark:border-sky-800/60"
-						>
-							{{ key }} : {{ value }}
-						</span>
-					</div>
-					<span v-else class="text-muted-foreground">-</span>
+					<AppTableLabels :labels="prop.data.labels" />
 				</template>
 
 				<template #col.templates="prop">

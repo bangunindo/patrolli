@@ -13,6 +13,7 @@ import { useRouter } from 'vue-router'
 import { useTemplatesStore } from '@/stores/templates.store'
 
 import AppTable from '@/components/app/AppTable.vue'
+import AppTableLabels from '@/components/app/AppTableLabels.vue'
 import ModalDetail from '@/components/configuration/templates/ModalDetail.vue'
 import ModalTemplateForm from '@/components/configuration/templates/ModalForm.vue'
 import ModalConfirmationDelete from '@/components/modal/ModalConfirmationDelete.vue'
@@ -55,15 +56,6 @@ function navigateToItems(template: ITemplate) {
 }
 
 const showModalDetail = ref<boolean>(false)
-
-function parsedLabelsData(labels: any) {
-	if (!labels) return {}
-	try {
-		return typeof labels === 'string' ? JSON.parse(labels) : labels || {}
-	} catch (e) {
-		return {}
-	}
-}
 
 function onChangePage(payload: { offset: number; limit: number; page: number }) {
 	templatesStore.pagination.currentPage = payload.page
@@ -159,20 +151,7 @@ watchDebounced(
 			</template>
 
 			<template #col.labels="prop">
-				<div
-					v-if="Object.keys(parsedLabelsData(prop.data.labels)).length > 0"
-					class="flex gap-1.5 flex-wrap max-w-sm"
-				>
-					<UiBadge
-						v-for="(value, key) in parsedLabelsData(prop.data.labels)"
-						:key="`labels-${key}-${value}`"
-						variant="outline"
-						class="text-xs font-normal"
-					>
-						{{ key }}: {{ value }}
-					</UiBadge>
-				</div>
-				<span v-else class="text-muted-foreground">-</span>
+				<AppTableLabels :labels="prop.data.labels" />
 			</template>
 
 			<template #col.links_to_templates="prop">
