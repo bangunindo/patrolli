@@ -11,9 +11,6 @@ export interface ClusterResponseItem {
 	status: number
 }
 
-/**
- * Merges responses from single or multiple cluster nodes into a unified response
- */
 export function mergeDynamicResponses(responses: ClusterResponseItem[]): any {
 	if (responses.length === 0) {
 		return {
@@ -23,7 +20,6 @@ export function mergeDynamicResponses(responses: ClusterResponseItem[]): any {
 		}
 	}
 
-	// 1. Single cluster response
 	if (responses.length === 1) {
 		const single = responses[0]
 		if (single.status >= 400 || single.data?.success === false) {
@@ -74,12 +70,10 @@ export function mergeDynamicResponses(responses: ClusterResponseItem[]): any {
 		}
 	}
 
-	// 2. Multi-cluster response: filter for successful responses
 	const successfulResponses = responses.filter(
 		(r) => r.status >= 200 && r.status < 300 && r.data?.success !== false
 	)
 
-	// If all clusters failed, return the first failure
 	if (successfulResponses.length === 0) {
 		const firstFail = responses[0]
 		return {
@@ -140,7 +134,7 @@ export function mergeDynamicResponses(responses: ClusterResponseItem[]): any {
 				}
 			})
 
-			if (!hasTotalOrCountOrArray) {
+			if (!hasTotalOrCountOrArray || successfulResponses.length === 1) {
 				mergedData.cluster_url = clusterClientPath
 				mergedData.cluster_name = clusterName
 			}
@@ -158,9 +152,6 @@ export function mergeDynamicResponses(responses: ClusterResponseItem[]): any {
 	}
 }
 
-/**
- * Handles single cluster response forwarding headers and status
- */
 export function handleSingleClusterResponse(
 	event: H3Event,
 	target: ICluster,

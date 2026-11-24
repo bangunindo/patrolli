@@ -9,6 +9,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import {
 	getProcessorModuleBadgeClass,
+	mapProcessorsForPreviewDraft,
 	usePipelineBuildStore
 } from '@/stores/pipeline.builder.store'
 import type { IGroupProcessorItem } from '@/stores/pipeline.builder.store'
@@ -18,11 +19,13 @@ import appHelper from '@/app/helpers/app.helper'
 
 interface ICapturedRecord {
 	id: number
+	sample?: number
 	time: string
 	status: string
 	statusType: 'success' | 'danger' | 'warning'
-	message_in: any
-	message_out: any
+	before: any
+	after: any[]
+	error?: string | null
 }
 
 const store = usePipelineBuildStore()
@@ -32,15 +35,26 @@ const { activeClusterURL } = storeToRefs(appStore)
 const modalState = computed(() => store.previewDataModal)
 const isOpen = computed(() => modalState.value.isOpen)
 
-const currentNode = computed(() => store.selectedNode as any)
-const nodeId = computed(() => currentNode.value?.id)
+const currentNode = computed(() => {
+	const targetId = modalState.value.nodeId
+	if (targetId) {
+		const found = store.nodes.find((n: any) => n.id === targetId || n.node_id === targetId)
+		if (found) return found
+	}
+	return store.selectedNode as any
+})
+const nodeId = computed(
+	() => modalState.value.nodeId || currentNode.value?.node_id || currentNode.value?.id
+)
+const groupName = computed(
+	() => currentNode.value?.data?.name || currentNode.value?.label || 'Processor Group'
+)
 const processorsList = computed<IGroupProcessorItem[]>(() => {
 	const list = currentNode.value?.data?.processors
 	if (list && list.length > 0) return list
 	return []
 })
 
-const selectedProcessorId = ref<string>('')
 const stopAfterSeconds = ref(10)
 const remainingSeconds = ref(10)
 const isPooling = ref(false)
@@ -51,19 +65,23 @@ const viewMode = ref<'list' | 'detail'>('list')
 
 const selectedProcessorIds = ref<string[]>([])
 const activeMenuProcessorId = ref<string | null>(null)
+const draggedIndex = ref<number | null>(null)
+const dragOverIndex = ref<number | null>(null)
 
 let timer: ReturnType<typeof setInterval> | null = null
 let noDataTimer: ReturnType<typeof setTimeout> | undefined
-let switchTimeout: ReturnType<typeof setTimeout> | undefined
 let activeConnectionToken = 0
+let draftCounter = 0
+let recordSeq = 0
+let lastSentProcessorsSignature = ''
 let ws: AppWebSocket | undefined
 
 const activeRecord = computed<ICapturedRecord | undefined>(() => {
 	return capturedRecords.value[selectedRecordIndex.value] || capturedRecords.value[0]
 })
 
-const selectedProcessor = computed(() => {
-	return processorsList.value.find((p) => p.processor_id === selectedProcessorId.value)
+const activeRecordOutputs = computed<any[]>(() => {
+	return activeRecord.value?.after ?? []
 })
 
 const allProcessorsSelected = computed(() => {
@@ -97,7 +115,7 @@ function startNoDataTimer() {
 	clearNoDataTimer()
 	noDataTimer = setTimeout(() => {
 		if (capturedRecords.value.length === 0) {
-			stopCapture()
+			pauseCapture()
 		}
 	}, 60000)
 }
@@ -110,34 +128,168 @@ function clearNoDataTimer() {
 }
 
 function handleWebSocketError(data: any) {
-	const title = data?.error?.title ?? 'Failed to capture data'
-	const detail =
-		data?.error?.detail ??
-		(typeof data?.error === 'string' ? data?.error : 'Error starting capture')
-	appStore.showError(title, detail)
+	appStore.showError('Failed to preview data', data?.detail || 'Error starting preview')
 	stopCapture()
+}
+
+function resolveClusterBffPrefix(): string {
+	const detailData = store.pipelineDetail as any
+	const graphData = store.canvasGraph as any
+	const baseClusters = appHelper.getBaseURLs()
+	const firstCluster = baseClusters[0]?.value || baseClusters[0]?.name || ''
+
+	const rawCluster = String(
+		store.clusterUrl ||
+			detailData?.cluster_url ||
+			detailData?.cluster_name ||
+			detailData?.canvases?.[0]?.cluster_url ||
+			detailData?.canvases?.[0]?.cluster_name ||
+			graphData?.cluster_url ||
+			graphData?.cluster_name ||
+			activeClusterURL.value ||
+			appHelper.getDefaultClusterValue() ||
+			firstCluster ||
+			''
+	).trim()
+
+	const resolvedCluster =
+		appHelper.getClusterValue(rawCluster) || appHelper.getClusterName(rawCluster) || rawCluster
+
+	let clusterSegment = resolvedCluster.replace(/\/+$/, '')
+	if (
+		clusterSegment.startsWith('http://') ||
+		clusterSegment.startsWith('https://') ||
+		clusterSegment.startsWith('ws://') ||
+		clusterSegment.startsWith('wss://')
+	) {
+		try {
+			const parsed = new URL(clusterSegment)
+			const pathPart = parsed.pathname.replace(/^\/+|\/+$/g, '')
+			clusterSegment = pathPart || appHelper.getClusterName(rawCluster) || ''
+		} catch {
+			clusterSegment = appHelper.getClusterName(rawCluster) || ''
+		}
+	}
+
+	clusterSegment = clusterSegment.replace(/^\/+|\/+$/g, '')
+	return clusterSegment ? `/${clusterSegment}` : ''
+}
+
+function resolvePreviewWebSocketPath(): string | null {
+	const pId = store.pipelineId
+	const cId = store.canvasId
+	const targetNodeId = nodeId.value
+	if (!pId || !cId || cId === 'default' || !targetNodeId) return null
+
+	const clusterPrefix = resolveClusterBffPrefix()
+	if (!clusterPrefix) return null
+
+	return `${clusterPrefix}/ws/v1/pipelines/${pId}/canvases/${cId}/nodes/${targetNodeId}/preview`.replace(
+		/^\/\//,
+		'/'
+	)
+}
+
+function sendDraft() {
+	if (!ws || ws.readyState !== WebSocket.OPEN) return
+	const processors = mapProcessorsForPreviewDraft(processorsList.value)
+	lastSentProcessorsSignature = JSON.stringify(processors)
+	const draftId = ++draftCounter
+	ws.send(
+		JSON.stringify({
+			type: 'draft',
+			id: draftId,
+			processors
+		})
+	)
+}
+
+function appendCapturedRecord(data: any) {
+	const afterList = Array.isArray(data.after) ? data.after : []
+	const recordError = typeof data.error === 'string' && data.error.length > 0 ? data.error : null
+	let status = '200 OK'
+	let statusType: 'success' | 'danger' | 'warning' = 'success'
+
+	if (recordError && afterList.length === 0) {
+		status = 'ERROR'
+		statusType = 'danger'
+	} else if (recordError) {
+		status = 'WARNING'
+		statusType = 'warning'
+	} else if (afterList.length === 0) {
+		status = 'FILTERED'
+		statusType = 'warning'
+	}
+
+	const now = new Date()
+	const timeStr = now.toTimeString().split(' ')[0] || '00:00:00'
+
+	capturedRecords.value.push({
+		id: ++recordSeq,
+		sample: typeof data.sample === 'number' ? data.sample : undefined,
+		time: timeStr,
+		status,
+		statusType,
+		before: data.before,
+		after: afterList,
+		error: recordError
+	})
+}
+
+function handleServerMessage(data: any) {
+	if (data?.type === 'reset') {
+		recordSeq = 0
+		capturedRecords.value = []
+		selectedRecordIndex.value = 0
+		viewMode.value = 'list'
+		return
+	}
+
+	if (data?.type === 'evict') {
+		if (typeof data.sample === 'number') {
+			const currentActiveId = activeRecord.value?.id
+			capturedRecords.value = capturedRecords.value.filter((r) => r.sample !== data.sample)
+			if (capturedRecords.value.length === 0) {
+				selectedRecordIndex.value = 0
+				viewMode.value = 'list'
+			} else if (currentActiveId !== undefined) {
+				const nextIdx = capturedRecords.value.findIndex((r) => r.id === currentActiveId)
+				selectedRecordIndex.value = nextIdx !== -1 ? nextIdx : 0
+			}
+		}
+		return
+	}
+
+	if (data?.type === 'draft_rejected') {
+		appStore.showError(
+			'Draft processor rejected',
+			data.detail || 'Failed to validate processor configuration'
+		)
+		return
+	}
+
+	if (data?.type === 'error') {
+		handleWebSocketError(data)
+		return
+	}
+
+	if (data?.type === 'record') {
+		appendCapturedRecord(data)
+		if (capturedRecords.value.length > 0) {
+			clearNoDataTimer()
+		}
+	}
 }
 
 function initWebSocket() {
 	stopCapture()
 
-	if (!selectedProcessorId.value) return
+	const path = resolvePreviewWebSocketPath()
+	if (!path) return
 
-	const rawBaseUrl = (
-		store.clusterUrl ||
-		activeClusterURL.value ||
-		appHelper.getDefaultClusterValue() ||
-		''
-	).replace(/\/+$/, '')
-	const cleanBase =
-		rawBaseUrl.startsWith('/') || rawBaseUrl.startsWith('http') || rawBaseUrl.startsWith('ws')
-			? rawBaseUrl
-			: `/${rawBaseUrl}`
-	const path =
-		`${cleanBase}/ws/v1/processors/subscribe_capture/${selectedProcessorId.value}`.replace(
-			/^\/\//,
-			'/'
-		)
+	draftCounter = 0
+	recordSeq = 0
+	lastSentProcessorsSignature = JSON.stringify(mapProcessorsForPreviewDraft(processorsList.value))
 
 	activeConnectionToken++
 	const currentToken = activeConnectionToken
@@ -147,11 +299,14 @@ function initWebSocket() {
 	startTimer()
 
 	try {
-		ws = new AppWebSocket(path)
+		ws = new AppWebSocket(path, { maxRetries: 0 })
 
 		ws.addEventListener('open', () => {
 			if (currentToken !== activeConnectionToken) return
 			loading.value = true
+			if (store.isDirty) {
+				sendDraft()
+			}
 			if (capturedRecords.value.length === 0) {
 				startNoDataTimer()
 			}
@@ -161,29 +316,7 @@ function initWebSocket() {
 			if (currentToken !== activeConnectionToken) return
 			try {
 				const data: any = JSON.parse(e.data)
-
-				if (data?.error || data?.success === false) {
-					handleWebSocketError(data)
-					return
-				}
-
-				const existingIndex = capturedRecords.value.findIndex((v) => v.id === data.index)
-				if (existingIndex === -1) {
-					const now = new Date()
-					const timeStr = now.toTimeString().split(' ')[0]
-					capturedRecords.value.push({
-						id: data.index ?? capturedRecords.value.length + 1,
-						time: timeStr,
-						status: '200 OK',
-						statusType: 'success',
-						message_in: data.message_in,
-						message_out: data.message_out
-					})
-				}
-
-				if (capturedRecords.value.length > 0) {
-					clearNoDataTimer()
-				}
+				handleServerMessage(data)
 			} catch (err) {
 				console.error('Failed to parse websocket message:', err)
 			}
@@ -191,10 +324,7 @@ function initWebSocket() {
 
 		ws.addEventListener('close', () => {
 			if (currentToken !== activeConnectionToken) return
-			loading.value = false
-			isPooling.value = false
-			clearNoDataTimer()
-			stopTimer()
+			stopCapture()
 		})
 
 		ws.addEventListener('error', () => {
@@ -216,7 +346,7 @@ function startTimer() {
 		if (remainingSeconds.value > 0) {
 			remainingSeconds.value--
 		} else {
-			stopCapture()
+			pauseCapture()
 		}
 	}, 1000)
 }
@@ -228,11 +358,31 @@ function stopTimer() {
 	}
 }
 
-function stopCapture() {
-	if (switchTimeout) {
-		clearTimeout(switchTimeout)
-		switchTimeout = undefined
+function pauseCapture() {
+	stopTimer()
+	clearNoDataTimer()
+	if (ws && ws.readyState === WebSocket.OPEN) {
+		ws.send(JSON.stringify({ type: 'pause' }))
 	}
+	isPooling.value = false
+	loading.value = false
+}
+
+function resumeCapture() {
+	if (ws && ws.readyState === WebSocket.OPEN) {
+		ws.send(JSON.stringify({ type: 'resume' }))
+		isPooling.value = true
+		loading.value = true
+		startTimer()
+		if (capturedRecords.value.length === 0) {
+			startNoDataTimer()
+		}
+		return
+	}
+	restartCapture()
+}
+
+function stopCapture() {
 	activeConnectionToken++
 	stopTimer()
 	clearNoDataTimer()
@@ -251,22 +401,6 @@ function restartCapture() {
 	initWebSocket()
 }
 
-function selectProcessor(procId: string) {
-	if (selectedProcessorId.value === procId) return
-	stopCapture()
-	selectedProcessorId.value = procId
-	capturedRecords.value = []
-	selectedRecordIndex.value = 0
-	viewMode.value = 'list'
-
-	if (switchTimeout) clearTimeout(switchTimeout)
-	switchTimeout = setTimeout(() => {
-		if (isOpen.value && selectedProcessorId.value === procId) {
-			initWebSocket()
-		}
-	}, 150)
-}
-
 function selectRecord(idx: number) {
 	selectedRecordIndex.value = idx
 	viewMode.value = 'detail'
@@ -280,16 +414,6 @@ function handleClose() {
 	stopCapture()
 	activeMenuProcessorId.value = null
 	store.closePreviewDataModal()
-}
-
-function initializeTargetProcessor() {
-	if (modalState.value.processorId) {
-		selectedProcessorId.value = modalState.value.processorId
-		return
-	}
-	const firstActive =
-		processorsList.value.find((p) => p.status !== false) || processorsList.value[0]
-	selectedProcessorId.value = firstActive?.processor_id || ''
 }
 
 function handleAddProcessor() {
@@ -334,12 +458,51 @@ function handleBulkDelete() {
 	}
 }
 
+function onDragStart(index: number, event: DragEvent) {
+	draggedIndex.value = index
+	if (event.dataTransfer) {
+		event.dataTransfer.effectAllowed = 'move'
+		event.dataTransfer.setData('text/plain', String(index))
+	}
+}
+
+function onDragOver(index: number, event: DragEvent) {
+	event.preventDefault()
+	if (event.dataTransfer) {
+		event.dataTransfer.dropEffect = 'move'
+	}
+	dragOverIndex.value = index
+}
+
+function onDrop(index: number, event: DragEvent) {
+	event.preventDefault()
+	if (draggedIndex.value !== null && draggedIndex.value !== index && nodeId.value) {
+		store.reorderProcessorGroup(nodeId.value, draggedIndex.value, index)
+	}
+	draggedIndex.value = null
+	dragOverIndex.value = null
+}
+
+function onDragEnd() {
+	draggedIndex.value = null
+	dragOverIndex.value = null
+}
+
+watch(
+	() => JSON.stringify(mapProcessorsForPreviewDraft(processorsList.value)),
+	(nextSignature) => {
+		if (!isOpen.value) return
+		if (nextSignature !== lastSentProcessorsSignature) {
+			sendDraft()
+		}
+	}
+)
+
 watch(
 	() => isOpen.value,
 	(open) => {
 		if (open) {
 			viewMode.value = 'list'
-			initializeTargetProcessor()
 			restartCapture()
 		} else {
 			stopCapture()
@@ -348,9 +511,9 @@ watch(
 )
 
 watch(
-	() => activeClusterURL.value,
-	() => {
-		if (isOpen.value) {
+	() => resolvePreviewWebSocketPath(),
+	(newPath, oldPath) => {
+		if (isOpen.value && newPath && newPath !== oldPath) {
 			restartCapture()
 		}
 	}
@@ -359,7 +522,6 @@ watch(
 onMounted(() => {
 	if (isOpen.value) {
 		viewMode.value = 'list'
-		initializeTargetProcessor()
 		restartCapture()
 	}
 })
@@ -414,11 +576,11 @@ function getStatusBadgeClass(statusType: string) {
 							Preview Data Mode
 						</h3>
 						<span
-							v-if="selectedProcessor"
-							:title="selectedProcessor.name"
+							v-if="groupName"
+							:title="groupName"
 							class="text-xs px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-medium whitespace-nowrap truncate max-w-[260px] shrink-0"
 						>
-							{{ selectedProcessor.name }}
+							{{ groupName }}
 						</span>
 						<span
 							class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-help"
@@ -484,7 +646,7 @@ function getStatusBadgeClass(statusType: string) {
 						type="button"
 						class="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
 						:title="isPooling ? 'Stop pooling' : 'Start pooling'"
-						@click="isPooling ? stopCapture() : restartCapture()"
+						@click="isPooling ? pauseCapture() : resumeCapture()"
 					>
 						<svg
 							v-if="isPooling"
@@ -658,7 +820,7 @@ function getStatusBadgeClass(statusType: string) {
 								<div
 									class="text-[10px] font-mono text-slate-500 dark:text-slate-400 truncate"
 								>
-									{{ JSON.stringify(rec.message_in) }}
+									{{ JSON.stringify(rec.before) }}
 								</div>
 							</div>
 						</template>
@@ -669,7 +831,7 @@ function getStatusBadgeClass(statusType: string) {
 							class="h-full bg-slate-50 dark:bg-slate-950 rounded-lg p-3 text-xs font-mono text-[#0284C7] dark:text-sky-300 overflow-auto border border-slate-200 dark:border-slate-800"
 						>
 							<pre v-if="activeRecord">{{
-								JSON.stringify(activeRecord.message_in, null, 2)
+								JSON.stringify(activeRecord.before, null, 2)
 							}}</pre>
 						</div>
 					</div>
@@ -789,21 +951,22 @@ function getStatusBadgeClass(statusType: string) {
 								v-for="(proc, pIdx) in processorsList"
 								:key="proc.processor_id"
 							>
-								<!-- Processor Row Card matching Figma #2778:123249 -->
 								<div
+									draggable="true"
 									:class="[
-										'relative w-full p-2.5 rounded-lg border bg-white dark:bg-slate-900 shadow-xs flex items-center justify-between gap-2 transition-all cursor-pointer',
-										proc.status === false
-											? 'opacity-60 border-slate-200 dark:border-slate-800'
-											: 'border-slate-200 dark:border-slate-700 hover:border-sky-300 dark:hover:border-sky-700',
-										selectedProcessorId === proc.processor_id
-											? 'ring-2 ring-sky-500 border-sky-500 bg-sky-50/40 dark:bg-sky-950/40'
-											: ''
+										'relative w-full p-2.5 rounded-lg border bg-white dark:bg-slate-900 shadow-xs flex items-center justify-between gap-2 transition-all',
+										dragOverIndex === pIdx
+											? 'border-sky-500 bg-sky-50/50 dark:bg-sky-950/30'
+											: proc.status === false
+												? 'opacity-60 border-slate-200 dark:border-slate-800'
+												: 'border-slate-200 dark:border-slate-700 hover:border-sky-300 dark:hover:border-sky-700'
 									]"
-									@click="selectProcessor(proc.processor_id)"
+									@dragstart="onDragStart(pIdx, $event)"
+									@dragover="onDragOver(pIdx, $event)"
+									@drop="onDrop(pIdx, $event)"
+									@dragend="onDragEnd"
 								>
 									<div class="flex items-center gap-2 min-w-0">
-										<!-- Drag handle icon -->
 										<div class="text-slate-400 cursor-grab">
 											<svg
 												width="12"
@@ -818,7 +981,6 @@ function getStatusBadgeClass(statusType: string) {
 											</svg>
 										</div>
 
-										<!-- Selection Checkbox -->
 										<input
 											type="checkbox"
 											:checked="
@@ -830,19 +992,22 @@ function getStatusBadgeClass(statusType: string) {
 											"
 										/>
 
-										<!-- Processor Name -->
 										<span
-											class="text-xs font-semibold text-slate-800 dark:text-slate-100 truncate"
+											:class="[
+												'text-xs font-semibold truncate',
+												proc.status === false
+													? 'text-slate-400 dark:text-slate-500 line-through'
+													: 'text-slate-800 dark:text-slate-100'
+											]"
 										>
 											{{ proc.name }}
 										</span>
 
-										<!-- Target Capture Badge -->
 										<span
-											v-if="selectedProcessorId === proc.processor_id"
-											class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-[#0284C7] text-white shrink-0"
+											v-if="proc.status === false"
+											class="text-[9px] font-bold px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 uppercase tracking-wider shrink-0"
 										>
-											Target
+											Disabled
 										</span>
 									</div>
 
@@ -1035,10 +1200,29 @@ function getStatusBadgeClass(statusType: string) {
 								class="text-[11px] text-slate-400 pb-2 border-b border-slate-200 dark:border-slate-800 mb-2 flex items-center justify-between"
 							>
 								<span>Result for Record #{{ activeRecord?.id }}</span>
-								<span class="text-[10px] text-slate-500">Transformed Output</span>
+								<div class="flex items-center gap-2">
+									<span
+										v-if="activeRecordOutputs.length > 1"
+										class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300"
+									>
+										{{ activeRecordOutputs.length }} Records
+									</span>
+									<span class="text-[10px] text-slate-500">
+										Transformed Output
+									</span>
+								</div>
 							</div>
-							<pre v-if="activeRecord && activeRecord.message_out !== undefined">{{
-								JSON.stringify(activeRecord.message_out, null, 2)
+							<div
+								v-if="activeRecord?.error"
+								class="mb-2.5 p-2 rounded border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 text-[11px] font-sans"
+							>
+								{{ activeRecord.error }}
+							</div>
+							<pre v-if="activeRecordOutputs.length === 1">{{
+								JSON.stringify(activeRecordOutputs[0], null, 2)
+							}}</pre>
+							<pre v-else-if="activeRecordOutputs.length > 1">{{
+								JSON.stringify(activeRecordOutputs, null, 2)
 							}}</pre>
 							<div v-else class="text-slate-400 italic text-center py-6">
 								No transformation output produced

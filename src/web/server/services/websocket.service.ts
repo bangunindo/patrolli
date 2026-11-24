@@ -58,14 +58,19 @@ export function resolveWebSocketAuthHeader(options: {
 		return existing.startsWith('Bearer ') ? existing : `Bearer ${existing}`
 	}
 
+	const headerCookie =
+		typeof options.headers?.cookie === 'string'
+			? options.headers.cookie
+			: typeof options.headers?.get === 'function'
+				? options.headers.get('cookie') || ''
+				: ''
+
 	const rawCookie =
 		typeof options.cookie === 'string'
 			? options.cookie
 			: Array.isArray(options.cookie)
 				? options.cookie.join('; ')
-				: typeof options.headers?.cookie === 'string'
-					? options.headers.cookie
-					: ''
+				: headerCookie
 
 	if (rawCookie) {
 		const match = rawCookie.match(/(?:^|;\s*)access_token=([^;]+)/)
@@ -145,6 +150,42 @@ export function resolveWebSocketUpstreamUrl(
 		fullUpstreamPath,
 		agent
 	}
+}
+
+export const MAX_WS_CLOSE_REASON_BYTES = 123
+
+export function normalizeWebSocketCloseCode(code?: number): number {
+	if (
+		typeof code !== 'number' ||
+		!Number.isInteger(code) ||
+		code < 1000 ||
+		code > 4999 ||
+		code === 1004 ||
+		code === 1005 ||
+		code === 1006 ||
+		code === 1015
+	) {
+		return 1000
+	}
+	return code
+}
+
+export function normalizeWebSocketCloseReason(reason?: string | Buffer): string | undefined {
+	if (!reason) return undefined
+	const text = Buffer.isBuffer(reason) ? reason.toString('utf-8') : String(reason)
+	if (!text) return undefined
+
+	const buf = Buffer.from(text, 'utf-8')
+	if (buf.byteLength <= MAX_WS_CLOSE_REASON_BYTES) {
+		return text
+	}
+
+	let end = MAX_WS_CLOSE_REASON_BYTES
+	// Backtrack if cut in the middle of a multi-byte UTF-8 sequence (continuation bytes: 10xxxxxx)
+	while (end > 0 && (buf[end]! & 0xc0) === 0x80) {
+		end--
+	}
+	return buf.subarray(0, end).toString('utf-8')
 }
 
 export function createUpstreamWebSocket(
