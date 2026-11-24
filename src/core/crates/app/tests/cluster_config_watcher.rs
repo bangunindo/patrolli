@@ -888,7 +888,7 @@ impl WatchedNode {
 }
 
 async fn start_node(
-    db_pool: &deadpool_postgres::Pool,
+    db_pool: &patrolli::db::Pool,
     node_id: Uuid,
     name: &str,
 ) -> Result<WatchedNode> {
@@ -898,7 +898,7 @@ async fn start_node(
 /// [`start_node`], with `prepare` run on the node's workers and state before
 /// its watcher starts, for what has to be in place by its first step.
 async fn start_node_with(
-    db_pool: &deadpool_postgres::Pool,
+    db_pool: &patrolli::db::Pool,
     node_id: Uuid,
     name: &str,
     prepare: impl FnOnce(&DummyWorkerManager, &Arc<cluster::NodeState>),
@@ -1693,7 +1693,7 @@ async fn a_resumed_lock_keeps_the_loaded_configuration() -> Result<()> {
 
 /// One host, endpoint and item owned by `node_id`, and a processor, for a load
 /// that has something in each cache to show how far it got.
-async fn register_node_with_data(db_pool: &deadpool_postgres::Pool, node_id: Uuid) -> Result<()> {
+async fn register_node_with_data(db_pool: &patrolli::db::Pool, node_id: Uuid) -> Result<()> {
     let mut conn = db_pool.get().await?;
     let tx = conn.transaction().await?;
     tx.execute(
@@ -1716,7 +1716,7 @@ async fn register_node_with_data(db_pool: &deadpool_postgres::Pool, node_id: Uui
     Ok(())
 }
 
-async fn op_status(db_pool: &deadpool_postgres::Pool, node_id: Uuid) -> Result<i16> {
+async fn op_status(db_pool: &patrolli::db::Pool, node_id: Uuid) -> Result<i16> {
     let conn = db_pool.get().await?;
     Ok(conn
         .query_one(
@@ -1848,7 +1848,7 @@ struct LockTask {
 
 impl LockTask {
     fn start(
-        db_pool: &deadpool_postgres::Pool,
+        db_pool: &patrolli::db::Pool,
         node_id: Uuid,
         name: &str,
         state: &Arc<cluster::NodeState>,

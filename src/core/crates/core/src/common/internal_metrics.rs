@@ -32,6 +32,7 @@ pub struct InternalMetrics {
     pub forwarder_server: Arc<ArcSwap<(Instant, ForwarderServer)>>,
     pub lookup_table: Arc<ArcSwap<(Instant, Vec<LookupTable>)>>,
     pub dns: Arc<ArcSwap<(Instant, Dns)>>,
+    pub db_pool: Arc<ArcSwap<(Instant, DbPool)>>,
 }
 
 impl Default for InternalMetrics {
@@ -63,6 +64,7 @@ impl Default for InternalMetrics {
             ))),
             lookup_table: Arc::new(ArcSwap::from_pointee((Instant::now(), Vec::new()))),
             dns: Arc::new(ArcSwap::from_pointee((Instant::now(), Dns::default()))),
+            db_pool: Arc::new(ArcSwap::from_pointee((Instant::now(), DbPool::default()))),
         }
     }
 }
@@ -417,6 +419,28 @@ pub struct Dns {
     /// questions the recursor failed on and a forwarder was asked
     pub forwarder_fallbacks: u64,
     pub forwarders: Vec<DnsForwarder>,
+}
+
+/// The Postgres connection pool, backend mode only. One per node.
+///
+/// `size - available` connections are checked out. Connections taken out of
+/// the pool for good (the node lock's session, the migration's) are in none
+/// of the gauges.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct DbPool {
+    pub max_size: u64,
+    /// connections open, idle or checked out
+    pub size: u64,
+    pub available: u64,
+    /// checkouts queued for a connection
+    pub waiting: u64,
+    pub checkouts: u64,
+    pub checkout_errors: u64,
+    pub connections_created: u64,
+    /// time successful checkouts spent waiting for their connection
+    pub checkout_wait_time: Duration,
+    /// time connections spent checked out, counted when they come back
+    pub hold_time: Duration,
 }
 
 /// One record type's cache lookups and resolutions.

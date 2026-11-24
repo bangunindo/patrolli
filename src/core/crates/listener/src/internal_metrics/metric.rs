@@ -438,11 +438,20 @@ mod tests {
                 .iter()
                 .any(|r| r.name.as_ref().starts_with("patrolli.forwarder"))
         );
+        assert!(
+            !local
+                .iter()
+                .any(|r| r.name.as_ref().starts_with("patrolli.db_pool"))
+        );
 
         let cluster = collect_rows(&metrics, true, now, now);
         let peers = row(&cluster, "patrolli.forwarder.peer.connections");
         assert_eq!(peers.r#type, MetricType::Gauge);
         assert!(matches!(number_dps(peers)[0].value, NumberValue::Int(4)));
+        assert_eq!(
+            row(&cluster, "patrolli.db_pool.waiting").r#type,
+            MetricType::Gauge
+        );
         // Every local family is still present in cluster mode.
         assert!(cluster.len() > local.len());
     }

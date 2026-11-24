@@ -257,6 +257,11 @@ handlers.
   and the driver owns batching, the sink's `retry:` backoff, metrics and ack/nack. A worker never
   returns because its destination failed; it retries the batch it holds, and nacks it only when
   cancelled. Classify an error as `Retry` only when sure it is transient.
+- **Database pool**: the pool is `db::Pool` (`crates/core/src/db/pool.rs`), never
+  `deadpool_postgres::Pool`: it times every checkout's wait and hold for the `db_pool` internal
+  metrics (cluster mode only, like the forwarder's). `get()` hands out a guard that derefs to
+  deadpool's `Object`; pass `&*client` where `&impl GenericClient` is wanted (the trait is
+  sealed), and take a connection out of the pool with `Client::detach`, not `Object::take`.
 - **Types**: `SmolStr` for short strings, `FxHashMap`/`ahash` over std hashing, `parking_lot` locks
   in sync code, `papaya`/`ArcSwap` where readers must not block. IDs are UUIDv7 (`Uuid::now_v7`).
 - **Migrations**: refinery, embedded from `crates/core/migrations/` as `V<n>__<name>.sql`; they run

@@ -421,8 +421,8 @@ impl visit::Visitor for PromVisitor<'_, '_> {
 mod tests {
     use super::*;
     use crate::common::internal_metrics::{
-        Channel, ChannelKind, ChannelState, Dns, DnsForwarder, DnsRecord, Forwarder, ForwarderNode,
-        LookupTable, LookupTableProcessor, Sink, SkipCounts,
+        Channel, ChannelKind, ChannelState, DbPool, Dns, DnsForwarder, DnsRecord, Forwarder,
+        ForwarderNode, LookupTable, LookupTableProcessor, Sink, SkipCounts,
     };
     use axum::body::to_bytes;
     use std::time::Instant;
@@ -525,6 +525,7 @@ mod tests {
                 .contains("patrolli_channel_queue_length{channel_group=\"sink\",channel=\"disk\"}")
         );
         assert!(!output.contains("patrolli_forwarder_"));
+        assert!(!output.contains("patrolli_db_pool_"));
         assert!(output.ends_with("# EOF\n"));
     }
 
@@ -1076,5 +1077,45 @@ mod tests {
         let empty = encode_test_metrics(Arc::new(InternalMetrics::default()), false);
         assert!(!empty.contains("patrolli_dns_forwarder_requests"));
         assert!(empty.contains("patrolli_dns_queue_capacity 0\n"));
+    }
+
+    /// The names the database pool panels of the Grafana dashboard query.
+    #[test]
+    fn db_pool_families_carry_the_names_the_dashboard_uses() {
+        let metrics = Arc::new(InternalMetrics::default());
+        metrics.db_pool.store(Arc::new((
+            Instant::now(),
+            DbPool {
+                max_size: 16,
+                size: 5,
+                available: 3,
+                waiting: 2,
+                checkouts: 40,
+                checkout_errors: 1,
+                connections_created: 6,
+                checkout_wait_time: Duration::from_millis(1500),
+                hold_time: Duration::from_millis(2500),
+            },
+        )));
+        let output = encode_test_metrics(Arc::clone(&metrics), true);
+        for line in [
+            "patrolli_db_pool_max_size 16\n",
+            "patrolli_db_pool_size 5\n",
+            "patrolli_db_pool_available 3\n",
+            "patrolli_db_pool_waiting 2\n",
+            "patrolli_db_pool_checkouts_total 40\n",
+            "patrolli_db_pool_checkout_errors_total 1\n",
+            "patrolli_db_pool_connections_created_total 6\n",
+            "patrolli_db_pool_checkout_wait_seconds_total 1.5\n",
+            "patrolli_db_pool_hold_seconds_total 2.5\n",
+            "patrolli_internal_metrics_snapshot_age_seconds{snapshot=\"db_pool\"}",
+        ] {
+            assert!(output.contains(line), "missing {line:?} in\n{output}");
+        }
+
+        // local mode has no database
+        let local = encode_test_metrics(metrics, false);
+        assert!(!local.contains("patrolli_db_pool_"));
+        assert!(!local.contains("snapshot=\"db_pool\""));
     }
 }

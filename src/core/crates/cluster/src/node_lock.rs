@@ -6,9 +6,10 @@ use super::balancer::{self, Move, NodeLoad};
 use super::{NodeState, NodeStateType};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use deadpool_postgres::{ClientWrapper, GenericClient, Object, Pool, Transaction};
+use deadpool_postgres::{ClientWrapper, GenericClient, Transaction};
 use patrolli::config::cluster::{Cluster as ClusterConfig, ClusterPolicy};
 use patrolli::db::AdvisoryLock;
+use patrolli::db::Pool;
 use patrolli::db::schema::ConfigKeys;
 use std::io;
 use std::sync::Arc;
@@ -376,12 +377,11 @@ impl NodeLock {
         let (mut client, fresh) = match self.standby_client.take() {
             Some(client) => (client, false),
             None => (
-                Object::take(
-                    self.db_pool
-                        .get()
-                        .await
-                        .context("failed to get db connection")?,
-                ),
+                self.db_pool
+                    .get()
+                    .await
+                    .context("failed to get db connection")?
+                    .detach(),
                 true,
             ),
         };
