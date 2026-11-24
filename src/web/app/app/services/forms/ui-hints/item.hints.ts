@@ -103,16 +103,19 @@ export const itemHints: Record<string, UiHint> = {
 		label: 'OIDs'
 	},
 	'config.snmp_walk.config.oids.oid': {
+		order: 1,
 		label: 'OID',
 		placeholder: '1.3.6.1.2.1.1.1.0'
 	},
 	'config.snmp_walk.config.oids.chain_strategy': {
+		order: 2,
 		label: 'Chain Strategy',
 		discriminatorLabel: 'Strategy',
 		discriminatorField: 'strategy',
 		discriminatorDefault: 'value'
 	},
 	'config.snmp_walk.config.oids.chain': {
+		order: 3,
 		label: 'Chain Items'
 	},
 

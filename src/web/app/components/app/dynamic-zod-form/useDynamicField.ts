@@ -5,7 +5,11 @@
 import { computed, inject, type ComputedRef, type Ref } from 'vue'
 import { useField } from '@tanstack/vue-form'
 import type { FieldDescriptor, UiHint } from '@@/shared/types/dynamic-form.type'
-import { getActiveDiscriminatorType, resolveHintForPath } from '@/app/services/forms/path-helper'
+import {
+	getActiveDiscriminatorType,
+	getValueByPath,
+	resolveHintForPath
+} from '@/app/services/forms/path-helper'
 
 export interface DynamicFormContext {
 	form: any
@@ -73,7 +77,22 @@ export function useDynamicField(
 		return metaErr ? String(metaErr) : ''
 	})
 
-	const value = computed(() => field.state.value)
+	// TanStack Vue Form's mode:'array' only tracks _arrayVersion, which does not change on form.reset()
+	const arrayValue =
+		options?.mode === 'array'
+			? ctx.form.useSelector((state: any) =>
+					getValueByPath(state.values, props.path.split('.'))
+				)
+			: null
+
+	const value = computed(() => {
+		if (arrayValue) {
+			// Retain reactive dependency on field.state.value so _arrayVersion mutations trigger updates
+			void field.state.value
+			return arrayValue.value
+		}
+		return field.state.value
+	})
 
 	const setValue = (val: any) => {
 		field.api.handleChange(val)

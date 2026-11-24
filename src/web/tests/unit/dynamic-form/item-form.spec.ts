@@ -785,4 +785,216 @@ describe('Item DynamicZodForm Integration', () => {
 		expect(timeoutComp?.exists()).toBe(true)
 		expect(timeoutComp?.props('error')).toBeFalsy()
 	})
+
+	it('should render SNMP Walk OIDs and recursive nested chains after async fetchItemById in UPDATE mode', async () => {
+		const pinia = createPinia()
+		setActivePinia(pinia)
+		const store = useItemsStore()
+		store.itemsFormMode = FormMode.UPDATE
+
+		// Initial row from list API does not include config
+		store.currentItem = {
+			item_id: '01a20fa4-14a0-718f-a79b-b808e2b34b6e',
+			host_id: '01a20fa4-149a-7767-af26-db6c062110b6',
+			endpoint_id: '01a20fa4-149d-7089-add7-1aba6547b8d3',
+			type: 'snmp_walk',
+			flags: 0,
+			adm_status: 1,
+			name: 'ospfIfTable',
+			schedule: 'never',
+			timeout_ms: 1200000,
+			labels: { prod_schedule: 'never' }
+		} as any
+
+		const detailItem = {
+			...store.currentItem,
+			config: {
+				chunk_size: 100,
+				disable_bulk: null,
+				max_results: 100000,
+				max_unknown_oids_per_row: null,
+				oids: [
+					{
+						oid: 'OSPF-MIB::ospfIfIpAddress',
+						chain_strategy: { strategy: 'value' },
+						chain: [
+							{
+								oid: 'IP-MIB::ipAdEntIfIndex',
+								chain_strategy: {
+									strategy: 'oid_position',
+									config: { start: '1', end: '4' }
+								},
+								chain: [
+									{
+										oid: 'IF-MIB::ifDescr',
+										chain_strategy: { strategy: 'value' },
+										chain: []
+									}
+								]
+							}
+						]
+					},
+					{
+						oid: 'OSPF-MIB::ospfIfAreaId',
+						chain_strategy: { strategy: 'value' },
+						chain: []
+					}
+				],
+				poll_worker_count: 2,
+				request_retries: 2,
+				request_timeout: 5000,
+				table_format: true,
+				use_mib: true
+			}
+		}
+
+		store.fetchItemById = vi.fn().mockImplementation(async () => {
+			store.currentItem = detailItem as any
+			return detailItem
+		})
+		store.fetchHosts = vi.fn().mockResolvedValue(undefined)
+		store.fetchTemplates = vi.fn().mockResolvedValue(undefined)
+
+		let submittedPayload: any = null
+		store.updateItemHost = vi.fn().mockImplementation((id, payload, clusters) => {
+			submittedPayload = { id, payload, clusters }
+			return Promise.resolve({ success: true })
+		})
+
+		const AppInputTextMock = {
+			name: 'AppInputText',
+			props: ['modelValue', 'label', 'type'],
+			template:
+				'<div class="app-input-text-mock" :data-label="label" :data-value="modelValue">{{ label }}: {{ modelValue }}</div>'
+		}
+
+		const wrapper = mount(ItemForm, {
+			props: { isTemplateContext: false },
+			global: {
+				plugins: [pinia],
+				stubs: {
+					...commonStubs,
+					UiIcon: true,
+					UiButton: { template: '<button type="button"><slot/></button>' },
+					AppInputText: AppInputTextMock
+				}
+			}
+		})
+
+		await flushPromises()
+
+		const oidInputs = wrapper
+			.findAllComponents(AppInputTextMock)
+			.filter((c) => c.props('label') === 'OID')
+			.map((c) => c.props('modelValue'))
+
+		expect(oidInputs).toEqual([
+			'OSPF-MIB::ospfIfIpAddress',
+			'IP-MIB::ipAdEntIfIndex',
+			'IF-MIB::ifDescr',
+			'OSPF-MIB::ospfIfAreaId'
+		])
+
+		// Verify OID -> Chain Strategy -> Chain Items field order inside OID cards
+		const html = wrapper.html()
+		const firstOidIdx = html.indexOf('OSPF-MIB::ospfIfIpAddress')
+		const firstChainItemsIdx = html.indexOf('Chain Items')
+		expect(firstOidIdx).toBeGreaterThan(-1)
+		expect(firstChainItemsIdx).toBeGreaterThan(firstOidIdx)
+
+		// Verify submit sanitizes nested lazy chain numeric fields and passes Zod validation
+		const dynamicForm = wrapper.findComponent(DynamicZodForm)
+		;(dynamicForm.vm as any).validateAndSubmit()
+		await flushPromises()
+
+		expect(store.updateItemHost).toHaveBeenCalledTimes(1)
+		expect(submittedPayload.payload.config.type).toBe('snmp_walk')
+		expect(submittedPayload.payload.config.config.oids).toHaveLength(2)
+		expect(submittedPayload.payload.config.config.oids[0].chain[0].oid).toBe(
+			'IP-MIB::ipAdEntIfIndex'
+		)
+		expect(submittedPayload.payload.config.config.oids[0].chain[0].chain_strategy).toEqual({
+			strategy: 'oid_position',
+			config: { start: 1, end: 4 }
+		})
+		expect(submittedPayload.payload.config.config.oids[0].chain[0].chain[0].oid).toBe(
+			'IF-MIB::ifDescr'
+		)
+	})
+
+	it('should resolve lazy child fields when adding a chain item to an initially empty chain array', async () => {
+		const pinia = createPinia()
+		setActivePinia(pinia)
+		const store = useItemsStore()
+		store.itemsFormMode = FormMode.UPDATE
+
+		const detailItem = {
+			item_id: '01a20fa4-14a0-718f-a79b-b808e2b34b6e',
+			host_id: '01a20fa4-149a-7767-af26-db6c062110b6',
+			endpoint_id: '01a20fa4-149d-7089-add7-1aba6547b8d3',
+			type: 'snmp_walk',
+			flags: 0,
+			adm_status: 1,
+			name: 'ifTable',
+			schedule: 'never',
+			timeout_ms: 1200000,
+			labels: {},
+			config: {
+				oids: [
+					{
+						oid: 'IF-MIB::ifIndex',
+						chain_strategy: { strategy: 'value' },
+						chain: []
+					}
+				],
+				table_format: true,
+				use_mib: true
+			}
+		}
+
+		store.currentItem = detailItem as any
+		store.fetchItemById = vi.fn().mockResolvedValue(detailItem)
+		store.fetchHosts = vi.fn().mockResolvedValue(undefined)
+		store.fetchTemplates = vi.fn().mockResolvedValue(undefined)
+
+		const AppInputTextMock = {
+			name: 'AppInputText',
+			props: ['modelValue', 'label', 'type'],
+			template:
+				'<div class="app-input-text-mock" :data-label="label" :data-value="modelValue">{{ label }}: {{ modelValue }}</div>'
+		}
+
+		const wrapper = mount(ItemForm, {
+			props: { isTemplateContext: false },
+			global: {
+				plugins: [pinia],
+				stubs: {
+					...commonStubs,
+					UiIcon: true,
+					UiButton: { template: '<button type="button"><slot/></button>' },
+					AppInputText: AppInputTextMock
+				}
+			}
+		})
+
+		await flushPromises()
+
+		const initialOids = wrapper
+			.findAllComponents(AppInputTextMock)
+			.filter((c) => c.props('label') === 'OID')
+		expect(initialOids).toHaveLength(1)
+
+		const addChainBtn = wrapper
+			.findAll('button')
+			.find((btn) => btn.text().includes('Add Chain Items'))
+		expect(addChainBtn).toBeDefined()
+
+		await addChainBtn!.trigger('click')
+		await flushPromises()
+
+		const updatedOids = wrapper
+			.findAllComponents(AppInputTextMock)
+			.filter((c) => c.props('label') === 'OID')
+		expect(updatedOids).toHaveLength(2)
+	})
 })

@@ -50,10 +50,24 @@ const items = computed<any[]>(() => {
 	return Array.isArray(value.value) ? value.value : []
 })
 
-const childDescriptors = computed<FieldDescriptor[]>(() => props.descriptor.children || [])
+const hasItems = computed(() => items.value.length > 0)
+
+const childDescriptors = computed<FieldDescriptor[]>(() => {
+	if (props.descriptor.children && props.descriptor.children.length > 0) {
+		return props.descriptor.children
+	}
+	if (typeof props.descriptor.resolveChildren === 'function' && hasItems.value) {
+		return props.descriptor.resolveChildren()
+	}
+	return []
+})
 
 const isPrimitive = computed(() => {
-	return props.descriptor.widget === 'array-string' || childDescriptors.value.length === 0
+	return (
+		props.descriptor.widget === 'array-string' ||
+		(childDescriptors.value.length === 0 &&
+			typeof props.descriptor.resolveChildren !== 'function')
+	)
 })
 
 let keyCounter = 0
@@ -125,7 +139,11 @@ const createDefaultObject = (children: FieldDescriptor[]): Record<string, any> =
 
 const addObjectItem = () => {
 	if (disabled.value) return
-	const newObj = createDefaultObject(childDescriptors.value)
+	const targetChildren =
+		childDescriptors.value.length > 0
+			? childDescriptors.value
+			: (props.descriptor.resolveChildren?.() ?? [])
+	const newObj = createDefaultObject(targetChildren)
 	if (!Array.isArray(value.value)) {
 		objectKeys = [nextKey()]
 		setValue([newObj])
