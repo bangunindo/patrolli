@@ -944,6 +944,11 @@ impl ConfigWatcher {
             .await?;
         let (n_processors, n_sinks) = (processors.len(), sinks.len());
         let (n_del_processors, n_del_sinks) = (delete_processors.len(), delete_sinks.len());
+        if n_processors + n_sinks + n_del_processors + n_del_sinks == 0 {
+            // `write` clones the whole graph into a draft and `compile`
+            // republishes it: not something to do on every idle poll.
+            return Ok(());
+        }
         {
             let mut guard = self.cache.processor.write();
             let cache = guard.as_mut().unwrap();
