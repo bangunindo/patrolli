@@ -11,8 +11,8 @@ export const useAppStore = defineStore(
 	'app',
 	() => {
 		const isDarkMode = ref(false)
-		const setDarkModeStatus = (state: boolean) => {
-			isDarkMode.value = state
+		const setDarkModeStatus = (_state: boolean) => {
+			isDarkMode.value = false
 		}
 
 		const notificationItems = ref<any>([])
@@ -90,5 +90,12 @@ export const useAppStore = defineStore(
 			setAvailableClusters
 		}
 	},
-	{ persist: true }
+	{
+		persist: {
+			omit: ['isDarkMode'],
+			afterHydrate: ({ store }) => {
+				store.isDarkMode = false
+			}
+		}
+	}
 )

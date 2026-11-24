@@ -5,7 +5,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { watchDebounced } from '@vueuse/core'
 import AppInputCluster from '@/components/app/input/AppInputCluster.vue'
 import AppInputText from '@/components/app/input/AppInputText.vue'
 import HostSelectorPopover from '@/components/pipeline/HostSelectorPopover.vue'
@@ -13,19 +14,57 @@ import SinkSelectorPopover from '@/components/pipeline/SinkSelectorPopover.vue'
 import { usePipelineStore } from '@/stores/pipelines.store'
 import { FormMode } from '@@/shared/types/app.type'
 
+const MAX_VISIBLE_TAGS = 50
+
 const pipelineStore = usePipelineStore()
 const validationError = ref('')
 const showHostPopover = ref(false)
 const showSinkPopover = ref(false)
 
+const visibleAssignedHosts = computed(() =>
+	pipelineStore.form.assignedHosts.slice(0, MAX_VISIBLE_TAGS)
+)
+const hiddenAssignedHostsCount = computed(() =>
+	Math.max(0, pipelineStore.form.assignedHosts.length - MAX_VISIBLE_TAGS)
+)
+
+const visibleAssignedSinks = computed(() =>
+	pipelineStore.form.assignedSinks.slice(0, MAX_VISIBLE_TAGS)
+)
+const hiddenAssignedSinksCount = computed(() =>
+	Math.max(0, pipelineStore.form.assignedSinks.length - MAX_VISIBLE_TAGS)
+)
+
+watchDebounced(
+	visibleAssignedHosts,
+	(ids) => {
+		if (pipelineStore.loading.hosts || ids.length === 0) return
+		const missing = ids.filter((id) => !pipelineStore.hostNameCache[id])
+		if (missing.length > 0) {
+			void pipelineStore.hydrateHostsByIds(missing, pipelineStore.form.cluster_url)
+		}
+	},
+	{ debounce: 150 }
+)
+
+watchDebounced(
+	visibleAssignedSinks,
+	(ids) => {
+		if (pipelineStore.loading.sinks || ids.length === 0) return
+		const missing = ids.filter((id) => !pipelineStore.sinkNameCache[id])
+		if (missing.length > 0) {
+			void pipelineStore.hydrateSinksByIds(missing, pipelineStore.form.cluster_url)
+		}
+	},
+	{ debounce: 150 }
+)
+
 function getHostName(hostId: string) {
-	const found = pipelineStore.availableHosts.find((h) => h.id === hostId)
-	return found?.name || hostId
+	return pipelineStore.hostNameCache[hostId] || hostId
 }
 
 function getSinkName(sinkId: string) {
-	const found = pipelineStore.availableSinks.find((s) => s.id === sinkId)
-	return found?.name || sinkId
+	return pipelineStore.sinkNameCache[sinkId] || sinkId
 }
 
 function selectAccess(access: 'public' | 'private') {
@@ -43,13 +82,64 @@ function removeSink(sinkId: string) {
 	if (idx > -1) pipelineStore.form.assignedSinks.splice(idx, 1)
 }
 
+function setHostPopover(open: boolean) {
+	showHostPopover.value = open
+	if (!open && pipelineStore.hostsSearchQuery !== '') {
+		void pipelineStore.fetchHostsForCluster(pipelineStore.form.cluster_url, '')
+	}
+}
+
+function setSinkPopover(open: boolean) {
+	showSinkPopover.value = open
+	if (!open && pipelineStore.sinksSearchQuery !== '') {
+		void pipelineStore.fetchSinksForCluster(pipelineStore.form.cluster_url, '')
+	}
+}
+
+function applySelectedHosts(ids: string[]) {
+	pipelineStore.form.assignedHosts = ids
+	setHostPopover(false)
+}
+
+function applySelectedSinks(ids: string[]) {
+	pipelineStore.form.assignedSinks = ids
+	setSinkPopover(false)
+}
+
+function searchHosts(query: string) {
+	return pipelineStore.fetchHostsForCluster(pipelineStore.form.cluster_url, query)
+}
+
+function loadMoreHosts() {
+	return pipelineStore.loadMoreHosts(pipelineStore.form.cluster_url)
+}
+
+function resolveAllHostIds(query?: string) {
+	return pipelineStore.resolveAllHostIds(pipelineStore.form.cluster_url, query)
+}
+
+function searchSinks(query: string) {
+	return pipelineStore.fetchSinksForCluster(pipelineStore.form.cluster_url, query)
+}
+
+function loadMoreSinks() {
+	return pipelineStore.loadMoreSinks(pipelineStore.form.cluster_url)
+}
+
+function resolveAllSinkIds(query?: string) {
+	return pipelineStore.resolveAllSinkIds(pipelineStore.form.cluster_url, query)
+}
+
 // Watch cluster change to reset hosts/sinks and fetch new lists
 watch(
 	() => pipelineStore.form.cluster_url,
 	async (newCluster, oldCluster) => {
 		if (newCluster && oldCluster && newCluster !== oldCluster) {
+			showHostPopover.value = false
+			showSinkPopover.value = false
 			pipelineStore.form.assignedHosts = []
 			pipelineStore.form.assignedSinks = []
+			pipelineStore.resetSelectorCaches()
 			await Promise.all([
 				pipelineStore.fetchHostsForCluster(newCluster),
 				pipelineStore.fetchSinksForCluster(newCluster)
@@ -241,7 +331,7 @@ async function handleCreate() {
 					<button
 						type="button"
 						class="flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-300 transition-colors shadow-xs"
-						@click="showHostPopover = !showHostPopover"
+						@click="setHostPopover(!showHostPopover)"
 					>
 						<UiIcon name="plus" size="14px" />
 						<span>Select Hosts</span>
@@ -252,7 +342,16 @@ async function handleCreate() {
 				<HostSelectorPopover
 					v-if="showHostPopover"
 					:inline="true"
-					@close="showHostPopover = false"
+					:hosts="pipelineStore.availableHosts"
+					:total-count="pipelineStore.availableHostsTotal"
+					:selected-ids="pipelineStore.form.assignedHosts"
+					:loading="pipelineStore.loading.hosts"
+					:loading-more="pipelineStore.loading.hostsMore"
+					:on-search="searchHosts"
+					:on-load-more="loadMoreHosts"
+					:on-resolve-all-ids="resolveAllHostIds"
+					@apply="applySelectedHosts"
+					@close="setHostPopover(false)"
 				/>
 
 				<!-- Selected Hosts Control Box matching Figma #2067:131464 -->
@@ -268,9 +367,9 @@ async function handleCreate() {
 					<div class="h-px bg-slate-200 dark:bg-slate-800 w-full" />
 
 					<!-- Selected hosts tags matching Figma #2067:131471 -->
-					<div class="flex flex-wrap items-center gap-1.5">
+					<div class="flex flex-wrap items-center gap-1.5 max-h-32 overflow-y-auto">
 						<div
-							v-for="hostId in pipelineStore.form.assignedHosts"
+							v-for="hostId in visibleAssignedHosts"
 							:key="hostId"
 							class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#E0F2FE] dark:bg-sky-950/80 border border-sky-400 dark:border-sky-600 text-sky-700 dark:text-sky-300 text-xs font-normal"
 						>
@@ -283,6 +382,13 @@ async function handleCreate() {
 								✕
 							</button>
 						</div>
+
+						<span
+							v-if="hiddenAssignedHostsCount > 0"
+							class="inline-flex items-center px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 text-xs font-medium"
+						>
+							+{{ hiddenAssignedHostsCount }} more
+						</span>
 
 						<span
 							v-if="pipelineStore.form.assignedHosts.length === 0"
@@ -316,7 +422,7 @@ async function handleCreate() {
 					<button
 						type="button"
 						class="flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-300 transition-colors shadow-xs"
-						@click="showSinkPopover = !showSinkPopover"
+						@click="setSinkPopover(!showSinkPopover)"
 					>
 						<UiIcon name="plus" size="14px" />
 						<span>Select Sinks</span>
@@ -327,7 +433,16 @@ async function handleCreate() {
 				<SinkSelectorPopover
 					v-if="showSinkPopover"
 					:inline="true"
-					@close="showSinkPopover = false"
+					:sinks="pipelineStore.availableSinks"
+					:total-count="pipelineStore.availableSinksTotal"
+					:selected-ids="pipelineStore.form.assignedSinks"
+					:loading="pipelineStore.loading.sinks"
+					:loading-more="pipelineStore.loading.sinksMore"
+					:on-search="searchSinks"
+					:on-load-more="loadMoreSinks"
+					:on-resolve-all-ids="resolveAllSinkIds"
+					@apply="applySelectedSinks"
+					@close="setSinkPopover(false)"
 				/>
 
 				<!-- Selected Sinks Control Box matching Figma #2068:9241 -->
@@ -343,9 +458,9 @@ async function handleCreate() {
 					<div class="h-px bg-slate-200 dark:bg-slate-800 w-full" />
 
 					<!-- Selected sinks tags matching Figma #2068:9259 -->
-					<div class="flex flex-wrap items-center gap-1.5">
+					<div class="flex flex-wrap items-center gap-1.5 max-h-32 overflow-y-auto">
 						<div
-							v-for="sinkId in pipelineStore.form.assignedSinks"
+							v-for="sinkId in visibleAssignedSinks"
 							:key="sinkId"
 							class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#E0F2FE] dark:bg-sky-950/80 border border-sky-400 dark:border-sky-600 text-sky-700 dark:text-sky-300 text-xs font-normal"
 						>
@@ -358,6 +473,13 @@ async function handleCreate() {
 								✕
 							</button>
 						</div>
+
+						<span
+							v-if="hiddenAssignedSinksCount > 0"
+							class="inline-flex items-center px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 text-xs font-medium"
+						>
+							+{{ hiddenAssignedSinksCount }} more
+						</span>
 
 						<span
 							v-if="pipelineStore.form.assignedSinks.length === 0"

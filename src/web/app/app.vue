@@ -15,30 +15,15 @@ import { storeToRefs } from 'pinia'
 import { onMounted, watch } from 'vue'
 
 const appStore = useAppStore()
-const { notificationItems, isDarkMode } = storeToRefs(appStore)
-
-watch(
-	() => isDarkMode.value,
-	(newValue) => {
-		setThemeMode(newValue)
-	}
-)
+const { notificationItems } = storeToRefs(appStore)
 
 onMounted(() => {
-	setThemeMode(isDarkMode.value)
-})
-
-const setThemeMode = (useDarkMode: boolean) => {
+	appStore.setDarkModeStatus(false)
 	if (import.meta.client) {
-		if (useDarkMode) {
-			document.body.classList.add('dark')
-			document.body.classList.remove('light')
-		} else {
-			document.body.classList.add('light')
-			document.body.classList.remove('dark')
-		}
+		document.body.classList.add('light')
+		document.body.classList.remove('dark')
 	}
-}
+})
 
 watch(
 	() => notificationItems.value.length,
@@ -67,13 +52,7 @@ watch(
 
 <template>
 	<ClientOnly>
-		<div
-			id="app-main"
-			:class="[
-				'w-full min-h-screen bg-background text-foreground',
-				isDarkMode ? 'dark' : 'light'
-			]"
-		>
+		<div id="app-main" class="w-full min-h-screen bg-background text-foreground light">
 			<NuxtLoadingIndicator
 				color="hsl(var(--primary))"
 				:height="3"

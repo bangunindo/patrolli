@@ -8,10 +8,12 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import { usePipelineStore } from '@/stores/pipelines.store'
 import { useAppStore } from '@/stores/app.store'
+import FormContent from '@/components/pipeline/form/FormContent.vue'
 import pipelinesApi from '@/app/api/pipelines.api'
 import hostsApi from '@/app/api/hosts.api'
 import sinksApi from '@/app/api/sinks.api'
 import appHelper from '@/app/helpers/app.helper'
+import { FormMode } from '@@/shared/types/app.type'
 
 const mockRoute = reactive<{ path: string; query: Record<string, any> }>({
 	path: '/pipeline',
@@ -141,25 +143,6 @@ describe('Pipeline Store & Multicluster Integration', () => {
 		expect(store.pipelines[0].cluster_name).toBe('Cluster 2')
 	})
 
-	it('fetches hosts dynamically for a cluster using hostsApi', async () => {
-		vi.spyOn(hostsApi, 'getHosts').mockResolvedValue({
-			success: true,
-			data: {
-				hosts: [
-					{ host_id: 'host-1', name: 'Host Alpha', ip: '192.168.1.1' },
-					{ host_id: 'host-2', name: 'Host Beta', ip: '192.168.1.2' }
-				]
-			}
-		} as any)
-
-		const store = usePipelineStore()
-		await store.fetchHostsForCluster('http://c1.test:8080')
-
-		expect(store.availableHosts.length).toBe(2)
-		expect(store.availableHosts[0].id).toBe('host-1')
-		expect(store.availableHosts[0].name).toBe('Host Alpha')
-	})
-
 	it('fetches sinks dynamically for a cluster using sinksApi', async () => {
 		vi.spyOn(sinksApi, 'getSinks').mockResolvedValue({
 			success: true,
@@ -167,7 +150,8 @@ describe('Pipeline Store & Multicluster Integration', () => {
 				sinks: [
 					{ sink_id: 'sink-1', name: 'Kafka Sink', type: 'kafka' },
 					{ sink_id: 'sink-2', name: 'ClickHouse Sink', type: 'clickhouse' }
-				]
+				],
+				total: 2
 			}
 		} as any)
 
@@ -175,8 +159,331 @@ describe('Pipeline Store & Multicluster Integration', () => {
 		await store.fetchSinksForCluster('http://c1.test:8080')
 
 		expect(store.availableSinks.length).toBe(2)
+		expect(store.availableSinksTotal).toBe(2)
 		expect(store.availableSinks[0].id).toBe('sink-1')
 		expect(store.availableSinks[0].name).toBe('Kafka Sink')
+	})
+
+	it('loads 100 hosts initially with actual total, supports loadMore, search, and cluster-scoped resolveAllHostIds', async () => {
+		const makeHosts = (start: number, count: number) =>
+			Array.from({ length: count }, (_, idx) => ({
+				host_id: `host-${start + idx}`,
+				name: `Host ${start + idx}`,
+				ip: `10.0.0.${(start + idx) % 255}`
+			}))
+
+		const getHostsSpy = vi
+			.spyOn(hostsApi, 'getHosts')
+			.mockResolvedValueOnce({
+				success: true,
+				data: { hosts: makeHosts(0, 100), total: 1200 }
+			} as any)
+			.mockResolvedValueOnce({
+				success: true,
+				data: { hosts: makeHosts(100, 100), total: 1200 }
+			} as any)
+			.mockResolvedValueOnce({
+				success: true,
+				data: { hosts: makeHosts(0, 500), total: 1200 }
+			} as any)
+			.mockResolvedValueOnce({
+				success: true,
+				data: { hosts: makeHosts(500, 500), total: 1200 }
+			} as any)
+			.mockResolvedValueOnce({
+				success: true,
+				data: { hosts: makeHosts(1000, 200), total: 1200 }
+			} as any)
+			.mockResolvedValueOnce({
+				success: true,
+				data: { hosts: makeHosts(0, 1), total: 1 }
+			} as any)
+
+		const store = usePipelineStore()
+		store.form.cluster_url = 'http://c2.test:8080'
+
+		await store.fetchHostsForCluster()
+		expect(getHostsSpy).toHaveBeenNthCalledWith(1, { limit: 100 }, ['http://c2.test:8080'])
+		expect(store.availableHosts).toHaveLength(100)
+		expect(store.availableHostsTotal).toBe(1200)
+
+		await store.loadMoreHosts()
+		expect(getHostsSpy).toHaveBeenNthCalledWith(2, { limit: 100, offset: 100 }, [
+			'http://c2.test:8080'
+		])
+		expect(store.availableHosts).toHaveLength(200)
+
+		const allIds = await store.resolveAllHostIds()
+		expect(allIds).toHaveLength(1200)
+		expect(getHostsSpy).toHaveBeenNthCalledWith(3, { limit: 500 }, ['http://c2.test:8080'])
+		expect(getHostsSpy).toHaveBeenNthCalledWith(4, { limit: 500, offset: 500 }, [
+			'http://c2.test:8080'
+		])
+		expect(getHostsSpy).toHaveBeenNthCalledWith(5, { limit: 500, offset: 1000 }, [
+			'http://c2.test:8080'
+		])
+
+		await store.fetchHostsForCluster(undefined, 'Host 0')
+		expect(getHostsSpy).toHaveBeenNthCalledWith(6, { limit: 100, name: 'Host 0' }, [
+			'http://c2.test:8080'
+		])
+		expect(store.availableHosts).toHaveLength(1)
+		expect(store.availableHostsTotal).toBe(1)
+	})
+
+	it('ignores stale host responses when switching clusters', async () => {
+		let resolveFirst!: (val: any) => void
+		const firstPromise = new Promise((r) => {
+			resolveFirst = r
+		})
+
+		vi.spyOn(hostsApi, 'getHosts')
+			.mockReturnValueOnce(firstPromise as any)
+			.mockResolvedValueOnce({
+				success: true,
+				data: {
+					hosts: [{ host_id: 'c2-host', name: 'Cluster 2 Host', ip: '10.2.0.1' }],
+					total: 1
+				}
+			} as any)
+
+		const store = usePipelineStore()
+		const p1 = store.fetchHostsForCluster('http://c1.test:8080')
+		const p2 = store.fetchHostsForCluster('http://c2.test:8080')
+		await p2
+
+		resolveFirst({
+			success: true,
+			data: {
+				hosts: [{ host_id: 'c1-host', name: 'Cluster 1 Host', ip: '10.1.0.1' }],
+				total: 1
+			}
+		})
+		await p1
+
+		expect(store.availableHosts).toHaveLength(1)
+		expect(store.availableHosts[0].id).toBe('c2-host')
+	})
+
+	it('resets selector caches when toggling pipeline modal directly into UPDATE mode', async () => {
+		vi.spyOn(hostsApi, 'getHosts')
+			.mockResolvedValueOnce({
+				success: true,
+				data: {
+					hosts: [{ host_id: 'old-host', name: 'Old Cluster Host', ip: '10.1.0.1' }],
+					total: 1
+				}
+			} as any)
+			.mockResolvedValueOnce({
+				success: true,
+				data: {
+					hosts: [{ host_id: 'new-host', name: 'New Cluster Host', ip: '10.2.0.1' }],
+					total: 1
+				}
+			} as any)
+		vi.spyOn(sinksApi, 'getSinks').mockResolvedValue({
+			success: true,
+			data: { sinks: [], total: 0 }
+		} as any)
+		vi.spyOn(pipelinesApi, 'getPipelineById').mockResolvedValueOnce({
+			success: true,
+			data: {
+				pipeline_id: 'pipe-2',
+				name: 'Pipe 2',
+				visibility: 1,
+				adm_status: 1,
+				host_ids: ['new-host'],
+				sink_ids: [],
+				last_updated: '2026-11-01T00:00:00Z'
+			}
+		} as any)
+
+		const store = usePipelineStore()
+		await store.fetchHostsForCluster('http://c1.test:8080')
+		expect(store.hostNameCache['old-host']).toBe('Old Cluster Host')
+
+		await store.togglePipelineModalForm(true, FormMode.UPDATE, {
+			id: 'pipe-2',
+			name: 'Pipe 2',
+			cluster_url: 'http://c2.test:8080',
+			access: 'public',
+			assignedHosts: [],
+			assignedSinks: []
+		} as any)
+
+		expect(store.hostNameCache['old-host']).toBeUndefined()
+		expect(store.hostNameCache['new-host']).toBe('New Cluster Host')
+	})
+
+	it('hydrates missing visible assigned host and sink names (capped to 50) in UPDATE mode', async () => {
+		const assignedHostIds = Array.from({ length: 60 }, (_, idx) => `host-${idx}`)
+		const assignedSinkIds = ['sink-200']
+
+		const getHostsSpy = vi
+			.spyOn(hostsApi, 'getHosts')
+			.mockResolvedValueOnce({
+				success: true,
+				data: {
+					hosts: [{ host_id: 'host-0', name: 'Host 0', ip: '10.0.0.0' }],
+					total: 300
+				}
+			} as any)
+			.mockResolvedValueOnce({
+				success: true,
+				data: {
+					hosts: assignedHostIds.slice(1, 50).map((id) => ({
+						host_id: id,
+						name: `Resolved ${id}`,
+						ip: '10.0.1.1'
+					})),
+					total: 49
+				}
+			} as any)
+
+		const getSinksSpy = vi
+			.spyOn(sinksApi, 'getSinks')
+			.mockResolvedValueOnce({
+				success: true,
+				data: {
+					sinks: [{ sink_id: 'sink-0', name: 'Sink 0', type: 'kafka' }],
+					total: 250
+				}
+			} as any)
+			.mockResolvedValueOnce({
+				success: true,
+				data: {
+					sinks: [{ sink_id: 'sink-200', name: 'Sink 200', type: 'clickhouse' }],
+					total: 1
+				}
+			} as any)
+
+		vi.spyOn(pipelinesApi, 'getPipelineById').mockResolvedValueOnce({
+			success: true,
+			data: {
+				pipeline_id: 'pipe-edit-hydrate',
+				name: 'Pipe Edit Hydrate',
+				visibility: 1,
+				adm_status: 1,
+				host_ids: assignedHostIds,
+				sink_ids: assignedSinkIds,
+				last_updated: '2026-11-01T00:00:00Z'
+			}
+		} as any)
+
+		const store = usePipelineStore()
+		await store.togglePipelineModalForm(true, FormMode.UPDATE, {
+			id: 'pipe-edit-hydrate',
+			name: 'Pipe Edit Hydrate',
+			cluster_url: 'http://c2.test:8080',
+			access: 'public',
+			assignedHosts: [],
+			assignedSinks: []
+		} as any)
+
+		expect(getHostsSpy).toHaveBeenNthCalledWith(
+			2,
+			{ host_ids: assignedHostIds.slice(1, 50), limit: 49 },
+			['http://c2.test:8080']
+		)
+		expect(getSinksSpy).toHaveBeenNthCalledWith(2, { sink_ids: ['sink-200'], limit: 1 }, [
+			'http://c2.test:8080'
+		])
+		expect(store.hostNameCache['host-0']).toBe('Host 0')
+		expect(store.hostNameCache['host-49']).toBe('Resolved host-49')
+		expect(store.hostNameCache['host-50']).toBeUndefined()
+		expect(store.sinkNameCache['sink-200']).toBe('Sink 200')
+	})
+
+	it('hydrates newly exposed visible host tag when removing a tag from >50 assigned hosts in FormContent', async () => {
+		vi.useFakeTimers()
+		try {
+			const assignedHostIds = Array.from({ length: 52 }, (_, idx) => `host-${idx}`)
+			const getHostsSpy = vi
+				.spyOn(hostsApi, 'getHosts')
+				.mockResolvedValueOnce({
+					success: true,
+					data: {
+						hosts: assignedHostIds.slice(0, 50).map((id) => ({
+							host_id: id,
+							name: `Host ${id}`,
+							ip: '10.0.0.1'
+						})),
+						total: 100
+					}
+				} as any)
+				.mockResolvedValueOnce({
+					success: true,
+					data: {
+						hosts: [{ host_id: 'host-50', name: 'Resolved Host 50', ip: '10.0.0.50' }],
+						total: 1
+					}
+				} as any)
+
+			const store = usePipelineStore()
+			store.form.cluster_url = 'http://c2.test:8080'
+			store.form.assignedHosts = [...assignedHostIds]
+			await store.fetchHostsForCluster('http://c2.test:8080')
+
+			const wrapper = mount(FormContent, {
+				global: {
+					stubs: {
+						AppInputCluster: true,
+						AppInputText: true,
+						HostSelectorPopover: true,
+						SinkSelectorPopover: true,
+						UiIcon: true
+					}
+				}
+			})
+
+			// Remove the first visible host tag -> host-50 shifts into the visible 50-tag window
+			store.form.assignedHosts.splice(0, 1)
+			await vi.advanceTimersByTimeAsync(200)
+			await flushPromises()
+
+			expect(getHostsSpy).toHaveBeenNthCalledWith(2, { host_ids: ['host-50'], limit: 1 }, [
+				'http://c2.test:8080'
+			])
+			expect(store.hostNameCache['host-50']).toBe('Resolved Host 50')
+			expect(wrapper.text()).toContain('Resolved Host 50')
+			wrapper.unmount()
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it('throws on resolveAllHostIds/resolveAllSinkIds and clears lists when API returns undefined or success false', async () => {
+		vi.spyOn(hostsApi, 'getHosts')
+			.mockResolvedValueOnce({
+				success: true,
+				data: {
+					hosts: [{ host_id: 'host-1', name: 'Host 1', ip: '10.0.0.1' }],
+					total: 1
+				}
+			} as any)
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce({ success: false, message: 'Hosts unavailable' } as any)
+		vi.spyOn(sinksApi, 'getSinks')
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce({ success: false, message: 'Sinks unavailable' } as any)
+
+		const store = usePipelineStore()
+		await store.fetchHostsForCluster('http://c1.test:8080')
+		expect(store.availableHosts).toHaveLength(1)
+
+		await store.fetchHostsForCluster('http://c1.test:8080')
+		expect(store.availableHosts).toEqual([])
+		expect(store.availableHostsTotal).toBe(0)
+
+		await expect(store.resolveAllHostIds('http://c1.test:8080')).rejects.toThrow(
+			'Hosts unavailable'
+		)
+		await expect(store.resolveAllSinkIds('http://c1.test:8080')).rejects.toThrow(
+			'Failed to load sinks.'
+		)
+		await expect(store.resolveAllSinkIds('http://c1.test:8080')).rejects.toThrow(
+			'Sinks unavailable'
+		)
 	})
 
 	it('creates a pipeline with cluster header and payload', async () => {
