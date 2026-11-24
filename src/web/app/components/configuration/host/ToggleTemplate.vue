@@ -110,7 +110,7 @@ onMounted(() => {
 <template>
 	<div class="flex gap-4 items-center pb-3">
 		<div class="flex gap-2 items-center">
-			<label class="font-semibold">Select Templates</label>
+			<label class="font-semibold whitespace-nowrap shrink-0">Select Templates</label>
 			<AppInputSelect
 				v-model="form.template_id"
 				variant="outline"
