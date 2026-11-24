@@ -656,7 +656,7 @@ fn cases(w: &World) -> Vec<Case> {
         case(
             "cluster node: op_status",
             [set("cluster_nodes", n2, "op_status = 0")],
-            vec![on(n1, "cluster_node", n2, UPSERT)],
+            vec![],
         ),
         case(
             "cluster node: heartbeat",

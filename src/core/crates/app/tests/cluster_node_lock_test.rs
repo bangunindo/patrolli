@@ -95,6 +95,29 @@ fn node_lock_with_timeout(
     state: &Arc<cluster::NodeState>,
     heartbeat_timeout: Duration,
 ) -> cluster::node_lock::NodeLock {
+    node_lock_with(
+        db_pool,
+        token,
+        app_shutdown,
+        node_id,
+        node_name,
+        state,
+        heartbeat_timeout,
+        setup::CLUSTER_HEARTBEAT_STALE_AFTER,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn node_lock_with(
+    db_pool: &Pool,
+    token: &CancellationToken,
+    app_shutdown: &CancellationToken,
+    node_id: Uuid,
+    node_name: &str,
+    state: &Arc<cluster::NodeState>,
+    heartbeat_timeout: Duration,
+    heartbeat_stale_after: Duration,
+) -> cluster::node_lock::NodeLock {
     cluster::node_lock::NodeLock::new(
         db_pool.clone(),
         token.clone(),
@@ -104,6 +127,7 @@ fn node_lock_with_timeout(
             node_name: node_name.to_string(),
             heartbeat_timeout,
             heartbeat_interval: setup::CLUSTER_HEARTBEAT_INTERVAL,
+            heartbeat_stale_after,
             inter_node: config::cluster::InterNode::default(),
             metadata: config::cluster::NodeMetadata {
                 advertise_address: String::new(),
@@ -196,9 +220,25 @@ struct RunningNode {
 
 impl RunningNode {
     fn start(pool: &Pool, node_id: Uuid, name: &str, heartbeat_timeout: Duration) -> Self {
+        Self::start_with(
+            pool,
+            node_id,
+            name,
+            heartbeat_timeout,
+            setup::CLUSTER_HEARTBEAT_STALE_AFTER,
+        )
+    }
+
+    fn start_with(
+        pool: &Pool,
+        node_id: Uuid,
+        name: &str,
+        heartbeat_timeout: Duration,
+        heartbeat_stale_after: Duration,
+    ) -> Self {
         let token = CancellationToken::new();
         let state = Arc::new(cluster::NodeState::default());
-        let lock = node_lock_with_timeout(
+        let lock = node_lock_with(
             pool,
             &token,
             &CancellationToken::new(),
@@ -206,6 +246,7 @@ impl RunningNode {
             name,
             &state,
             heartbeat_timeout,
+            heartbeat_stale_after,
         );
         Self {
             node_id,
@@ -462,6 +503,7 @@ async fn test_main_standby_leader() {
             node_name: "node-1".to_string(),
             heartbeat_timeout: setup::CLUSTER_HEARTBEAT_TIMEOUT,
             heartbeat_interval: setup::CLUSTER_HEARTBEAT_INTERVAL,
+            heartbeat_stale_after: setup::CLUSTER_HEARTBEAT_STALE_AFTER,
             inter_node: config::cluster::InterNode::default(),
             metadata: config::cluster::NodeMetadata {
                 advertise_address: String::new(),
@@ -478,6 +520,7 @@ async fn test_main_standby_leader() {
             node_name: "node-2".to_string(),
             heartbeat_timeout: setup::CLUSTER_HEARTBEAT_TIMEOUT,
             heartbeat_interval: setup::CLUSTER_HEARTBEAT_INTERVAL,
+            heartbeat_stale_after: setup::CLUSTER_HEARTBEAT_STALE_AFTER,
             inter_node: config::cluster::InterNode::default(),
             metadata: config::cluster::NodeMetadata {
                 advertise_address: String::new(),
@@ -494,6 +537,7 @@ async fn test_main_standby_leader() {
             node_name: "node-3".to_string(),
             heartbeat_timeout: setup::CLUSTER_HEARTBEAT_TIMEOUT,
             heartbeat_interval: setup::CLUSTER_HEARTBEAT_INTERVAL,
+            heartbeat_stale_after: setup::CLUSTER_HEARTBEAT_STALE_AFTER,
             inter_node: config::cluster::InterNode::default(),
             metadata: config::cluster::NodeMetadata {
                 advertise_address: String::new(),
@@ -510,6 +554,7 @@ async fn test_main_standby_leader() {
             node_name: "node-4".to_string(),
             heartbeat_timeout: setup::CLUSTER_HEARTBEAT_TIMEOUT,
             heartbeat_interval: setup::CLUSTER_HEARTBEAT_INTERVAL,
+            heartbeat_stale_after: setup::CLUSTER_HEARTBEAT_STALE_AFTER,
             inter_node: config::cluster::InterNode::default(),
             metadata: config::cluster::NodeMetadata {
                 advertise_address: String::new(),
@@ -648,6 +693,7 @@ async fn test_host_distribution() -> Result<()> {
             node_name: "node-1".to_string(),
             heartbeat_timeout: setup::CLUSTER_HEARTBEAT_TIMEOUT,
             heartbeat_interval: setup::CLUSTER_HEARTBEAT_INTERVAL,
+            heartbeat_stale_after: setup::CLUSTER_HEARTBEAT_STALE_AFTER,
             inter_node: config::cluster::InterNode::default(),
             metadata: config::cluster::NodeMetadata {
                 advertise_address: String::new(),
@@ -664,6 +710,7 @@ async fn test_host_distribution() -> Result<()> {
             node_name: "node-2".to_string(),
             heartbeat_timeout: setup::CLUSTER_HEARTBEAT_TIMEOUT,
             heartbeat_interval: setup::CLUSTER_HEARTBEAT_INTERVAL,
+            heartbeat_stale_after: setup::CLUSTER_HEARTBEAT_STALE_AFTER,
             inter_node: config::cluster::InterNode::default(),
             metadata: config::cluster::NodeMetadata {
                 advertise_address: String::new(),
@@ -1477,5 +1524,179 @@ async fn test_leader_never_expires_itself() -> Result<()> {
 
     token.cancel();
     task.await?;
+    Ok(())
+}
+
+/// A leader with nothing on it and a second node owning two hosts, under
+/// `max_active_nodes: 1`: the leader is the spare a failover would move them to,
+/// and since nothing ever moves back, hosts still on the owner afterwards mean
+/// the leader never took it for failed.
+async fn start_spare_leader_and_owner(
+    pool: &Pool,
+    heartbeat_timeout: Duration,
+    heartbeat_stale_after: Duration,
+) -> Result<(RunningNode, RunningNode)> {
+    set_cluster_policy(pool, serde_json::json!({"max_active_nodes": 1})).await?;
+    let start = |name: &str| {
+        RunningNode::start_with(
+            pool,
+            Uuid::now_v7(),
+            name,
+            heartbeat_timeout,
+            heartbeat_stale_after,
+        )
+    };
+    let leader = start("leader");
+    eventually(async || {
+        ensure!(
+            leader.state.is(cluster::NodeStateType::Leader),
+            "waiting for the first node to lead, got {:?}",
+            leader.state.get_state()
+        );
+        Ok(())
+    })
+    .await;
+    let owner = start("owner");
+    wait_until_main(&owner.state).await;
+
+    // assigned as they are created, so the leader never sees them unassigned
+    let mut conn = pool.get().await.context("failed to get connection")?;
+    let tx = conn.transaction().await?;
+    for i in 0..2 {
+        let host_id = setup::create_host(&tx, &format!("host-{i}")).await?;
+        tx.execute(
+            "UPDATE hosts SET monitored_by = $1 WHERE host_id = $2",
+            &[&owner.node_id, &host_id],
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok((leader, owner))
+}
+
+/// A database stall holds every node's heartbeat up alike, the leader's too.
+/// The heartbeats it releases carry the time they were started at, so against
+/// the clock every peer looks stale the moment the leader gets to look, and its
+/// hosts would fail over although it never stopped. The leader judges them
+/// against its own previous heartbeat instead, which the stall aged as much.
+#[tokio::test]
+async fn a_stall_that_hits_every_node_marks_nobody_stale() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+    let stale_after = Duration::from_secs(3);
+    let (leader, owner) =
+        start_spare_leader_and_owner(&db_pool, Duration::from_secs(30), stale_after).await?;
+    let conn = db_pool.get().await.context("failed to get connection")?;
+
+    // The stall: every heartbeat waits for a lock this session holds, in a
+    // BEFORE INSERT trigger (it runs ahead of the ON CONFLICT check, before any
+    // row lock), and all of them are let go at the same instant.
+    let gate = db_pool.get().await.context("failed to get connection")?;
+    gate.execute("SELECT pg_advisory_lock(7001, 1)", &[])
+        .await?;
+    conn.batch_execute(
+        "CREATE FUNCTION stall_heartbeat() RETURNS trigger AS $$ \
+         BEGIN \
+           PERFORM pg_advisory_xact_lock_shared(7001, 1); \
+           RETURN NEW; \
+         END $$ LANGUAGE plpgsql; \
+         CREATE TRIGGER trg_stall_heartbeat BEFORE INSERT ON cluster_nodes \
+         FOR EACH ROW EXECUTE FUNCTION stall_heartbeat();",
+    )
+    .await?;
+    // held for twice the stale threshold
+    eventually(async || {
+        let stalled: i64 = conn
+            .query_one(
+                "SELECT count(*) FROM cluster_nodes \
+                 WHERE last_heartbeat + make_interval(secs := $1) < clock_timestamp()",
+                &[&(stale_after.as_secs_f64() * 2.0)],
+            )
+            .await?
+            .try_get(0)?;
+        ensure!(stalled == 2, "{stalled} of 2 heartbeats are stalled so far");
+        Ok(())
+    })
+    .await;
+    let released: chrono::DateTime<chrono::Utc> = gate
+        .query_one(
+            "SELECT clock_timestamp() FROM pg_advisory_unlock(7001, 1)",
+            &[],
+        )
+        .await?
+        .try_get(0)?;
+
+    // The leader gets to judge on the held-up tick, on the one that follows it
+    // at once, and on every tick after: wait until a few of those are behind it
+    // and the owner heartbeats again.
+    eventually(async || {
+        let row = conn
+            .query_one(
+                "SELECT \
+                    (SELECT last_heartbeat FROM cluster_nodes WHERE node_id = $1) \
+                        > $3::timestamptz + interval '2 seconds', \
+                    (SELECT last_heartbeat FROM cluster_nodes WHERE node_id = $2) \
+                        > $3::timestamptz",
+                &[&leader.node_id, &owner.node_id, &released],
+            )
+            .await?;
+        let leader_ticked: Option<bool> = row.try_get(0)?;
+        let owner_beat: Option<bool> = row.try_get(1)?;
+        ensure!(
+            leader_ticked == Some(true) && owner_beat == Some(true),
+            "waiting for heartbeats after the stall: leader {leader_ticked:?}, owner {owner_beat:?}"
+        );
+        Ok(())
+    })
+    .await;
+
+    assert_eq!(
+        host_counts(&db_pool).await?,
+        HashMap::from([(Some(owner.node_id), 2)]),
+        "a node held up no longer than the leader keeps its hosts"
+    );
+
+    leader.stop().await?;
+    owner.stop().await?;
+    Ok(())
+}
+
+/// `heartbeat_stale_after` is what decides a failover, not a fixed margin over
+/// the interval: a node silent for less keeps its hosts.
+#[tokio::test]
+async fn a_silent_node_keeps_its_hosts_until_stale_after() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+    let long = Duration::from_secs(30);
+    let (leader, owner) = start_spare_leader_and_owner(&db_pool, long, long).await?;
+    let owner_id = owner.node_id;
+    owner.stop().await?;
+
+    // silent for five intervals, with the leader ticking all along
+    let conn = db_pool.get().await.context("failed to get connection")?;
+    eventually(async || {
+        let silent: bool = conn
+            .query_one(
+                "SELECT last_heartbeat + make_interval(secs := $2) < clock_timestamp() \
+                 FROM cluster_nodes WHERE node_id = $1",
+                &[
+                    &owner_id,
+                    &(setup::CLUSTER_HEARTBEAT_INTERVAL.as_secs_f64() * 5.0),
+                ],
+            )
+            .await
+            .context("the silent node lost its row")?
+            .try_get(0)?;
+        ensure!(silent, "waiting for the stopped node to have been silent");
+        Ok(())
+    })
+    .await;
+    assert_eq!(
+        host_counts(&db_pool).await?,
+        HashMap::from([(Some(owner_id), 2)]),
+        "a node silent for less than heartbeat_stale_after keeps its hosts"
+    );
+
+    leader.stop().await?;
     Ok(())
 }

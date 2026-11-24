@@ -680,10 +680,9 @@ async fn test_cluster_node_forwarder() -> Result<()> {
     let node_1_task = tokio::spawn(async move { node_1_watcher.run().await });
     let node_2_task = tokio::spawn(async move { node_2_watcher.run().await });
 
-    // Each node also flips op_status 1->2->1 during initialize(), which fires
-    // the trigger and emits an upsert log to the other node. So node_1 may see
-    // duplicate adds for node_2 (one from initialize_cluster_nodes, one from
-    // the first delta_read). They're idempotent on the real Forwarder.
+    // A node registering after the other logs an upsert to it. So node_1 may
+    // see duplicate adds for node_2 (one from initialize_cluster_nodes, one
+    // from the first delta_read). They're idempotent on the real Forwarder.
     wait_initialized(&worker_manager_1).await;
     wait_initialized(&worker_manager_2).await;
     let adds_for_node_2 = forwarder_adds(&worker_manager_1, node_2_id);
@@ -1863,6 +1862,7 @@ impl LockTask {
                 node_name: name.to_string(),
                 heartbeat_timeout: setup::CLUSTER_HEARTBEAT_TIMEOUT,
                 heartbeat_interval: setup::CLUSTER_HEARTBEAT_INTERVAL,
+                heartbeat_stale_after: setup::CLUSTER_HEARTBEAT_STALE_AFTER,
                 inter_node: patrolli::config::cluster::InterNode::default(),
                 metadata: patrolli::config::cluster::NodeMetadata {
                     advertise_address: "127.0.0.1:0".to_string(),

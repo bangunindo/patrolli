@@ -82,6 +82,8 @@ pub fn secret_keys() -> Arc<config::sensitive::SecretKeys> {
 
 pub const CLUSTER_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(2);
 pub const CLUSTER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+/// Capped by the timeout wherever that one is shorter.
+pub const CLUSTER_HEARTBEAT_STALE_AFTER: Duration = Duration::from_secs(3);
 
 /// How long [`eventually`] keeps retrying. Generous on purpose: a check returns
 /// as soon as it holds, so only a failing test waits this long, and a loaded CI
