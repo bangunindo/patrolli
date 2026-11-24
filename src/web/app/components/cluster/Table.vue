@@ -5,6 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
+import { formatUtcDate } from '@/app/helpers/date.helper'
 import AppTable from '@/components/app/AppTable.vue'
 import { useClusterStore } from '@/stores/cluster.store'
 import { onMounted } from 'vue'
@@ -112,7 +113,7 @@ const getStatusColor = (status: string) => {
 			</template>
 
 			<template #col.last_heartbeat="prop">
-				{{ new Date(prop.data.last_heartbeat).toDateString() }}
+				{{ formatUtcDate(prop.data.last_heartbeat) }}
 			</template>
 		</AppTable>
 	</div>
