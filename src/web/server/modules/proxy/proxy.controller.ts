@@ -33,7 +33,7 @@ export async function handleProxyGet(event: H3Event) {
 			success: false,
 			error: {
 				title: 'Bad Gateway',
-				detail: 'No clusters configured. Please configure clusters in config-fe.yaml or environment variables.'
+				detail: 'No clusters configured. Please configure clusters in config-web.yaml or environment variables.'
 			}
 		}
 		setResponseStatus(event, 502)

@@ -85,7 +85,7 @@ jobs:
       - name: Run e2e
         timeout-minutes: 20
         env:
-          CONFIG_FILE: dev/.generated/config-fe.yaml
+          CONFIG_FILE: dev/.generated/config-web.yaml
         run: pnpm test:e2e
       - name: Backend logs
         if: failure()

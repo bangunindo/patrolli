@@ -38,7 +38,7 @@ setup('authenticate single-cluster user via local form', async ({ page }) => {
 	await page.context().storageState({ path: STORAGE_STATE.SINGLE_CLUSTER })
 })
 
-setup('authenticate multi-cluster user via Keycloak SSO', async ({ page }) => {
+setup('authenticate multi-cluster user via OIDC SSO', async ({ page }) => {
 	const authDir = path.dirname(STORAGE_STATE.MULTI_CLUSTER)
 	if (!fs.existsSync(authDir)) {
 		fs.mkdirSync(authDir, { recursive: true })
@@ -54,9 +54,9 @@ setup('authenticate multi-cluster user via Keycloak SSO', async ({ page }) => {
 		return
 	}
 
-	const keycloakBtn = page.locator('#kr-login-form__keycloak-btn')
-	await keycloakBtn.waitFor({ state: 'visible', timeout: 15_000 })
-	await keycloakBtn.click()
+	const oidcBtn = page.locator('#kr-login-form__oidc-btn')
+	await oidcBtn.waitFor({ state: 'visible', timeout: 15_000 })
+	await oidcBtn.click()
 
 	await page.waitForSelector('#username', { state: 'visible', timeout: 15_000 })
 	await page.locator('#username').fill(username)

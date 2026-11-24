@@ -8,9 +8,10 @@ import authApi from '@/app/api/auth.api'
 import clustersApi, { formatClusterOptions } from '@/app/api/clusters.api'
 import cookieHelper from '@/app/helpers/cookie.helper'
 import { useAppStore } from '@/stores/app.store'
-import type { IAuthUser, ILoginBody } from '@@/shared/types/auth.type'
+import type { AuthProvider, IAuthUser, ILoginBody } from '@@/shared/types/auth.type'
+import { normalizeAuthProvider } from '@@/shared/utils/auth'
 
-export const PREFLIGHT_REFRESH_LEEWAY_MS = 30 * 1000
+const PREFLIGHT_REFRESH_LEEWAY_MS = 30 * 1000
 export const AUTH_REFRESH_LOCK_NAME = 'patrolli-auth-refresh'
 
 export const useAuthStore = defineStore(
@@ -31,10 +32,8 @@ export const useAuthStore = defineStore(
 			return ref(val)
 		}
 
-		const getInitialAuthProvider = (): 'local' | 'keycloak' | null => {
-			const cookieVal = cookieHelper.get('auth_provider')
-			if (cookieVal === 'local' || cookieVal === 'keycloak') return cookieVal
-			return null
+		const getInitialAuthProvider = (): AuthProvider | null => {
+			return normalizeAuthProvider(cookieHelper.get('auth_provider'))
 		}
 
 		const getNumericCookie = (name: string): number | null => {
@@ -46,11 +45,9 @@ export const useAuthStore = defineStore(
 
 		const authCookie = getAuthCookie()
 		const authenticated = ref(Boolean(authCookie.value))
-		const authProvider = ref<'local' | 'keycloak' | null>(getInitialAuthProvider())
+		const authProvider = ref<AuthProvider | null>(getInitialAuthProvider())
 		const isClusterReadonly = computed(() => authProvider.value === 'local')
 		const user = ref<IAuthUser | null>(null)
-		const userRoles = ref()
-		const userPermissions = ref()
 		const userMenus = ref()
 		const error = ref<string | null>(null)
 		const lastRefreshedAt = ref<number>(getNumericCookie('auth_refreshed_at') ?? Date.now())
@@ -89,7 +86,7 @@ export const useAuthStore = defineStore(
 
 		function applyAuthenticatedSession(options: {
 			user?: IAuthUser | null
-			provider?: 'local' | 'keycloak' | null
+			provider?: AuthProvider | 'keycloak' | null
 			expiresIn?: number
 			updateRefreshedAt?: boolean
 		}) {
@@ -98,8 +95,9 @@ export const useAuthStore = defineStore(
 			if (options.user !== undefined) {
 				user.value = options.user
 			}
-			if (options.provider) {
-				authProvider.value = options.provider
+			const normalizedProvider = normalizeAuthProvider(options.provider)
+			if (normalizedProvider) {
+				authProvider.value = normalizedProvider
 			}
 			if (
 				typeof options.expiresIn === 'number' &&
@@ -228,10 +226,7 @@ export const useAuthStore = defineStore(
 					const response = await authApi.refreshToken()
 
 					if (response && response.success) {
-						const provider = cookieHelper.get('auth_provider') as
-							| 'local'
-							| 'keycloak'
-							| null
+						const provider = normalizeAuthProvider(cookieHelper.get('auth_provider'))
 						applyAuthenticatedSession({
 							user: response.data?.user,
 							provider,
@@ -344,8 +339,6 @@ export const useAuthStore = defineStore(
 			authProvider,
 			isClusterReadonly,
 			user,
-			userRoles,
-			userPermissions,
 			userMenus,
 			error,
 			lastRefreshedAt,
@@ -364,7 +357,10 @@ export const useAuthStore = defineStore(
 	},
 	{
 		persist: {
-			omit: ['user', 'tokenExpiresAt', 'lastRefreshedAt']
+			omit: ['user', 'tokenExpiresAt', 'lastRefreshedAt'],
+			afterHydrate: (ctx) => {
+				ctx.store.authProvider = normalizeAuthProvider(ctx.store.authProvider)
+			}
 		}
 	}
 )

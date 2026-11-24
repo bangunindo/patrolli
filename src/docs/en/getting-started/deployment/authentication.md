@@ -175,7 +175,7 @@ Open `https://192.168.1.10:8443/admin/` and sign in with `keycloak-admin` and `c
 
 ## 4. Connect the web interface
 
-Mount the CA in the `patrolli-web` container, and add the `auth` block to `config-fe.yaml`. The highlighted lines are new. Replace `REPLACE_WITH_CLIENT_SECRET` with the client secret that you copied.
+Mount the CA in the `patrolli-web` container, and add the `auth` block to `config-web.yaml`. The highlighted lines are new. Replace `REPLACE_WITH_CLIENT_SECRET` with the client secret that you copied.
 
 ::: code-group
 
@@ -190,7 +190,7 @@ services:
         ports:
             - "3000:3000"
         volumes:
-            - ./config-fe.yaml:/app/config-fe.yaml:ro
+            - ./config-web.yaml:/app/config-web.yaml:ro
             - ../certs/ca.crt:/certs/ca.crt:ro
         networks:
             - patrolli
@@ -200,7 +200,7 @@ networks:
         external: true
 ```
 
-```yaml{9-15} [web/config-fe.yaml]
+```yaml{9-19} [web/config-web.yaml]
 clusters:
     - name: Cluster A
       url: http://patrolli-a-1:8080
@@ -210,20 +210,27 @@ clusters:
       url: http://patrolli-c-1:8080
 
 auth:
-    keycloak:
-        host: https://192.168.1.10:8443/realms/patrolli
+    oidc:
+        issuer: https://192.168.1.10:8443/realms/patrolli
         client_id: patrolli-web
         client_secret: REPLACE_WITH_CLIENT_SECRET
         redirect_uri: http://192.168.1.10:3000/auth/oidc/callback
+        scopes: openid profile email
+        token_source: access_token
+        display_name: Keycloak
         ca_cert_path: /certs/ca.crt
 ```
 
 :::
 
-- **`host`:** the address of the realm. Both the browser and the `patrolli-web` container must reach it.
-- **`client_id` and `client_secret`:** the client from the previous section.
-- **`redirect_uri`:** the address that Keycloak sends the browser back to. The web interface builds this address from the address in the browser and uses `redirect_uri` only when it cannot. Open the web interface with the same address that you listed in **Valid redirect URIs**.
-- **`ca_cert_path`:** the CA that signed the Keycloak certificate.
+- **`issuer`:** the OIDC issuer URL (realm address in Keycloak). Both the browser and the `patrolli-web` container must reach it.
+- **`client_id` and `client_secret`:** the client from the previous section. For public PKCE clients without `client_secret`, set the `OIDC_COOKIE_SECRET` environment variable on `patrolli-web` in multi-replica deployments so signed OIDC transaction cookies remain valid across replicas.
+- **`redirect_uri` (optional):** the callback address that the identity provider sends the browser back to. When set to an absolute `http://` or `https://` URL, its path must be `/auth/oidc/callback` (with no query string, fragment, or embedded credentials) and that exact URL is used; when omitted (or set to `/auth/oidc/callback`), the web interface derives it from the incoming request host and protocol. Ensure the resolved address matches **Valid redirect URIs** in your provider.
+- **`scopes`:** OIDC scopes requested during sign-in (defaults to `openid profile email`). For non-Keycloak providers (such as Microsoft Entra ID, Auth0, Okta, or Dex), include `offline_access` if required to issue refresh tokens.
+- **`token_source`:** which token to forward to clusters (`id_token` by default, or `access_token` when using a Keycloak audience mapper). Note that when using `id_token`, if your provider omits `id_token` from refresh token responses and issues an opaque `access_token`, silent refresh cannot produce a cluster JWT and will require re-authentication; configure the provider to return `id_token` on refresh or use `token_source: access_token` with a JWT access token.
+- **`token_endpoint_auth_method` (optional):** client authentication method for the token endpoint (`client_secret_post` or `client_secret_basic`). Auto-detected from OIDC discovery metadata when omitted.
+- **`display_name`:** label shown on the sign-in button (`Sign in with <display_name>`).
+- **`ca_cert_path`:** the CA that signed the identity provider certificate.
 
 Recreate the container with the new settings:
 
@@ -399,7 +406,7 @@ global:
 
 :::
 
-- **`issuer`:** the realm address that Keycloak writes into every token, which is `KC_HOSTNAME` followed by `/realms/patrolli`. It is the same address as `host` in `config-fe.yaml`.
+- **`issuer`:** the realm address that Keycloak writes into every token, which is `KC_HOSTNAME` followed by `/realms/patrolli`. It is the same address as `host` in `config-web.yaml`.
 - **`jwks_url`:** where the node downloads the public keys of the realm. Keycloak lists both addresses, as `issuer` and `jwks_uri`, at `https://192.168.1.10:8443/realms/patrolli/.well-known/openid-configuration`.
 - **`audience`:** the client ID. The audience mapper from the previous section puts it into every access token.
 - **`username_claim_path`:** the token claim that the node compares with Patrolli usernames. `preferred_username` is the Keycloak username.

@@ -3,12 +3,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import type {
+	AuthProvider,
 	IAuthResponse,
 	IAuthUser,
 	ILoginBody,
 	ILoginResponse,
 	ILogoutResponse
 } from '@@/shared/types/auth.type'
+import type { IOidcLoginResponse } from '@@/shared/types/oidc.type'
 import cookieHelper from '@/app/helpers/cookie.helper'
 import { httpService } from '@/app/services/http.service'
 
@@ -27,11 +29,6 @@ const authApi = {
 		return response
 	},
 
-	async changePassword(payload?: ILoginBody): Promise<ILogoutResponse | undefined> {
-		const path = `${this.path}/change-password`
-		return httpService.post(path, payload)
-	},
-
 	async refreshToken(): Promise<IAuthResponse | undefined> {
 		return httpService.post<IAuthResponse>('/api/auth/refresh')
 	},
@@ -41,7 +38,7 @@ const authApi = {
 				success: boolean
 				data?: {
 					user: IAuthUser
-					auth_provider: 'local' | 'keycloak'
+					auth_provider: AuthProvider
 					expires_in?: number
 				}
 		  }
@@ -53,14 +50,10 @@ const authApi = {
 		})
 	},
 
-	async getKeycloakLoginUrl(): Promise<{ success: boolean; data?: { url: string } } | undefined> {
-		return httpService.get<{ success: boolean; data?: { url: string } }>(
-			'/api/auth/keycloak/login'
+	async getOidcLoginUrl(): Promise<{ success: boolean; data?: IOidcLoginResponse } | undefined> {
+		return httpService.get<{ success: boolean; data?: IOidcLoginResponse }>(
+			'/api/auth/oidc/login'
 		)
-	},
-
-	async exchangeKeycloakCode(code: string): Promise<IAuthResponse | undefined> {
-		return httpService.post<IAuthResponse>('/api/auth/keycloak/callback', { code })
 	}
 }
 

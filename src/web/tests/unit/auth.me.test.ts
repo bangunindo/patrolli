@@ -61,7 +61,7 @@ describe('GET /api/auth/me', () => {
 		const refreshSpy = vi.spyOn(authRefreshService, 'performTokenRefresh')
 
 		const { default: meHandler } = await import('@@/server/api/auth/me.get')
-		const event = createMockGetEvent(`access_token=${validToken}; auth_provider=keycloak`)
+		const event = createMockGetEvent(`access_token=${validToken}; auth_provider=oidc`)
 
 		const res = await meHandler(event as any)
 		expect(refreshSpy).not.toHaveBeenCalled()
@@ -75,7 +75,7 @@ describe('GET /api/auth/me', () => {
 					username: 'alice',
 					sub: 'user-1'
 				},
-				auth_provider: 'keycloak'
+				auth_provider: 'oidc'
 			}
 		})
 	})

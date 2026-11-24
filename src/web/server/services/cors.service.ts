@@ -8,7 +8,7 @@ import { getAppConfigFileContent } from './cluster.service'
 import type { ICorsConfig } from '@@/shared/types/cluster.type'
 
 /**
- * Loads CORS configuration from config-fe.yaml or environment variables.
+ * Loads CORS configuration from config-web.yaml or environment variables.
  */
 export function getCorsConfig(configPath?: string): ICorsConfig | null {
 	const fileConfig = getAppConfigFileContent(configPath)

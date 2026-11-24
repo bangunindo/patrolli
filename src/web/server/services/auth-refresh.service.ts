@@ -16,14 +16,15 @@ import {
 	getClustersConfig,
 	resolveClusterTargets
 } from '@@/server/services/cluster.service'
-import { refreshKeycloakToken } from '@@/server/modules/keycloak/keycloak.api'
+import { refreshOidcTokens } from '@@/server/modules/oidc/oidc.service'
 import {
-	formatKeycloakConnectionError,
-	getValidatedKeycloakConfig
-} from '@@/server/modules/keycloak/keycloak.utils'
+	formatOidcConnectionError,
+	getValidatedOidcConfig,
+	selectUpstreamAuthTokens
+} from '@@/server/modules/oidc/oidc.utils'
 import type { AuthProvider } from '@@/shared/types/auth.type'
 
-export interface IRefreshParams {
+interface IRefreshParams {
 	refreshToken: string
 	authProvider: AuthProvider
 	clusterHeader?: string | null
@@ -31,7 +32,7 @@ export interface IRefreshParams {
 	query?: Record<string, any>
 }
 
-export interface IRefreshResult {
+interface IRefreshResult {
 	ok: boolean
 	status: number
 	isSessionInvalid: boolean
@@ -60,9 +61,9 @@ async function executeRefresh(
 ): Promise<IRefreshResult> {
 	const { refreshToken, authProvider, clusterHeader, reqHeaders, query } = params
 
-	if (authProvider === 'keycloak') {
-		const { config: kcConfig, errorPayload } = getValidatedKeycloakConfig()
-		if (!kcConfig) {
+	if (authProvider === 'oidc') {
+		const { config: oidcConfig, errorPayload } = getValidatedOidcConfig()
+		if (!oidcConfig) {
 			return {
 				ok: false,
 				status: 500,
@@ -72,36 +73,28 @@ async function executeRefresh(
 		}
 
 		try {
-			const response = await refreshKeycloakToken(kcConfig, String(refreshToken))
-			const data = response.data
-
-			if (response.status >= 400) {
-				const isSessionInvalid =
-					response.status === 401 ||
-					response.status === 403 ||
-					data?.error === 'invalid_grant'
-
+			const tokenSet = await refreshOidcTokens(oidcConfig, String(refreshToken))
+			const tokens = selectUpstreamAuthTokens(tokenSet, oidcConfig.token_source)
+			if (!tokens.access_token) {
+				const detail =
+					oidcConfig.token_source === 'id_token'
+						? 'OIDC provider did not return an id_token or JWT access_token during refresh; configure the provider to return id_token on refresh or use token_source: access_token'
+						: 'OIDC provider did not return a usable token during refresh'
 				return {
 					ok: false,
-					status: response.status,
-					isSessionInvalid,
+					status: 401,
+					isSessionInvalid: true,
 					errorPayload: {
-						status_code: response.status,
+						status_code: 401,
 						success: false,
-						is_session_invalid: isSessionInvalid,
+						is_session_invalid: true,
 						error: {
-							title: 'Keycloak Refresh Error',
-							detail:
-								data?.error_description ||
-								data?.error ||
-								'Failed to refresh token with Keycloak'
-						},
-						data
+							title: 'OIDC Refresh Error',
+							detail
+						}
 					}
 				}
 			}
-
-			const tokens = extractTokenPayload(data)
 			return {
 				ok: true,
 				status: 200,
@@ -109,17 +102,40 @@ async function executeRefresh(
 				tokens
 			}
 		} catch (error: any) {
+			const oauthError = error?.error
+			const responseStatus =
+				typeof error?.status === 'number' && error.status >= 400 && error.status < 600
+					? error.status
+					: undefined
+			const isOAuthBodyError =
+				error?.code === 'OAUTH_RESPONSE_BODY_ERROR' || Boolean(oauthError)
+			const status = responseStatus ?? (isOAuthBodyError ? 400 : 502)
+			const isSessionInvalid =
+				status === 401 || status === 403 || oauthError === 'invalid_grant'
+
 			return {
 				ok: false,
-				status: 502,
-				isSessionInvalid: false,
+				status,
+				isSessionInvalid,
 				errorPayload: {
-					status_code: 502,
+					status_code: status,
 					success: false,
+					is_session_invalid: isSessionInvalid,
 					error: {
-						title: 'Bad Gateway',
-						detail: formatKeycloakConnectionError(error)
-					}
+						title: isOAuthBodyError ? 'OIDC Refresh Error' : 'Bad Gateway',
+						detail: formatOidcConnectionError(
+							error,
+							'Failed to refresh token with OIDC provider'
+						)
+					},
+					...(oauthError
+						? {
+								data: {
+									error: oauthError,
+									error_description: error?.error_description
+								}
+							}
+						: {})
 				}
 			}
 		}
@@ -191,9 +207,6 @@ async function executeRefresh(
 	}
 }
 
-/**
- * Performs a stateless token refresh and applies updated Set-Cookie headers to the event.
- */
 export async function performTokenRefresh(
 	event: H3Event | undefined,
 	params: IRefreshParams
@@ -222,10 +235,6 @@ export async function performTokenRefresh(
 	return result
 }
 
-/**
- * Attempts a transparent token refresh using HttpOnly cookies when an upstream request returns 401.
- * Returns the new access token if successful, or null otherwise.
- */
 export async function tryTransparentRefreshOn401(
 	event: H3Event,
 	clusterHeader?: string | null
@@ -259,9 +268,6 @@ export function withBearerAuthorization(
 	return { ...rest, authorization: `Bearer ${token}` }
 }
 
-/**
- * Proactively refreshes an expired (or missing) access token before fanning out requests to clusters.
- */
 export async function resolveEffectiveRequestHeaders(
 	event: H3Event,
 	reqHeaders: Record<string, any>,
@@ -286,9 +292,6 @@ export async function resolveEffectiveRequestHeaders(
 	return reqHeaders
 }
 
-/**
- * Executes a single-item cluster request with pre-emptive expiry refresh and a single reactive 401 retry.
- */
 export async function executeSingleClusterRequestWithAuthRetry<
 	TItem,
 	TResult extends { status: number }
@@ -310,9 +313,6 @@ export async function executeSingleClusterRequestWithAuthRetry<
 	return { result: results[0]!, effectiveHeaders }
 }
 
-/**
- * Executes per-item cluster requests with pre-emptive expiry refresh and a single reactive 401 retry.
- */
 export async function executeClusterRequestsWithAuthRetry<
 	TItem,
 	TResult extends { status: number }

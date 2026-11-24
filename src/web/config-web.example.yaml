@@ -16,12 +16,22 @@ clusters:
       url: 'http://patrolli1:8080'
 
 auth:
-    keycloak:
-        host: 'https://kc.localtest.me:8443/realms/patrolli'
+    oidc:
+        issuer: 'https://kc.localtest.me:8443/realms/patrolli'
         client_id: 'patrolli-ssr'
         client_secret: 'change-me'
-        redirect_uri: '/auth/oidc/callback'
+        redirect_uri: 'https://localhost:3000/auth/oidc/callback'
+        scopes: 'openid profile email'
+        token_source: 'access_token'
+        display_name: 'SSO'
         ca_cert_path: './certs/ca.crt'
+    # Legacy Keycloak configuration (deprecated; supported as fallback when auth.oidc is omitted)
+    # keycloak:
+    #     host: 'https://kc.localtest.me:8443/realms/patrolli'
+    #     client_id: 'patrolli-ssr'
+    #     client_secret: 'change-me'
+    #     redirect_uri: '/auth/oidc/callback'
+    #     ca_cert_path: './certs/ca.crt'
 
 # CORS (Cross-Origin Resource Sharing) Configuration
 cors:
