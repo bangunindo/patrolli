@@ -77,13 +77,16 @@ const drawerClasses = computed(() => {
 	if (!isDesktop.value) {
 		return 'fixed inset-y-0 right-0 z-50 flex flex-col w-full sm:w-[440px] max-w-full h-full bg-card shadow-2xl border-l border-border transition-transform duration-300 ease-out'
 	}
-	return 'w-[380px] 2xl:w-[420px] shrink-0 rounded-2xl border border-border bg-card shadow-sm flex flex-col h-[calc(100vh-170px)] sticky top-4'
+	return 'w-[380px] 2xl:w-[420px] shrink-0 rounded-2xl border border-border bg-card shadow-sm flex flex-col h-[calc(100vh-170px)]'
 })
 </script>
 
 <template>
 	<Teleport to="body" :disabled="!isMounted || isDesktop">
-		<div v-if="props.modelValue" :class="isDesktop ? 'shrink-0 sticky top-4 z-20' : 'contents'">
+		<div
+			v-if="props.modelValue"
+			:class="isDesktop ? 'shrink-0 sticky top-[72px] z-20' : 'contents'"
+		>
 			<!-- Backdrop for mobile/tablet screens (< xl) -->
 			<div
 				v-if="!isDesktop"

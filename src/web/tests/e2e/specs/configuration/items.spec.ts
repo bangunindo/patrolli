@@ -45,7 +45,7 @@ test.describe('Configuration Management - Items', () => {
 			await expect(itemsPage.modalDialog).not.toBeVisible()
 		})
 
-		test('creates, views detail, inspects trends drawer, and edits a host item lifecycle', async ({
+		test('creates, views detail, inspects stats drawer, and edits a host item lifecycle', async ({
 			hostPage,
 			endpointPage,
 			itemsPage,
@@ -102,7 +102,7 @@ test.describe('Configuration Management - Items', () => {
 				await closeDetailBtn.click()
 				await expect(itemsPage.modalDetail).not.toBeVisible({ timeout: 5_000 })
 
-				await itemsPage.openTrends(itemName)
+				await itemsPage.openStats(itemName)
 				await expect(itemsPage.drawer).toBeVisible({ timeout: 10_000 })
 				await expect(itemsPage.drawer).toContainText(itemName)
 
