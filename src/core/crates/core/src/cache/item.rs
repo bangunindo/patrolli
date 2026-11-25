@@ -897,6 +897,26 @@ fn wall_clock_ms(deadline: Instant) -> i64 {
     common::now().timestamp_millis() + ahead.as_millis() as i64
 }
 
+/// Publish when `entry`'s next check is due, and the deadline past which it
+/// reads as stale.
+///
+/// The stale grace has to exceed the item's own timeout, or a legitimately slow
+/// check — an SNMP walk with a 30s budget — would read as stale just for being
+/// slow.
+fn publish_next_check(entry: &Entry) {
+    let next_check_ms = wall_clock_ms(entry.monitor.next_check);
+    let grace = (entry.item.timeout * 2).max(Duration::from_secs(60));
+    entry
+        .stats
+        .set_next_check(next_check_ms, next_check_ms + grace.as_millis() as i64);
+}
+
+/// Whether a freshly queued item has a next check worth publishing.
+/// `Schedule::Never` parks it a year out, which is "not scheduled", not a date.
+fn has_next_check(item: &item::Item) -> bool {
+    item.schedulable() && !matches!(item.schedule, item::Schedule::Never)
+}
+
 pub struct Item {
     data: FxHashMap<Uuid, Entry>,
     queue: PriorityQueue<Uuid, Reverse<Instant>, FxBuildHasher>,
@@ -996,6 +1016,10 @@ impl Item {
     /// The existing [`item::ItemMonitor`] is kept too, so an interval item's
     /// phase isn't reset on every unrelated edit; `requeue` recomputes
     /// `next_check` from the new schedule on the next cycle anyway.
+    ///
+    /// An item that enters the queue here has its next check published right
+    /// away, so it does not read as "not scheduled" until its first run, which
+    /// for a daily cron can be a day off.
     pub fn insert(&mut self, item: item::Item) {
         let id = item.id;
         let schedulable = item.schedulable();
@@ -1005,6 +1029,9 @@ impl Item {
             let mut entry = Entry::new(item);
             entry.generation = generation;
             let next_check = entry.monitor.next_check;
+            if has_next_check(&entry.item) {
+                publish_next_check(&entry);
+            }
             self.data.insert(id, entry);
             if schedulable {
                 self.queue.push(id, Reverse(next_check));
@@ -1024,9 +1051,15 @@ impl Item {
         // schedulability transitions need the queue touched.
         match (was_schedulable, schedulable) {
             (false, true) => {
+                if has_next_check(&entry.item) {
+                    publish_next_check(entry);
+                }
                 self.queue.push(id, Reverse(next_check));
             }
             (true, false) => {
+                // Same as `requeue`: a next check it will never honour would
+                // make it read as stale forever.
+                entry.stats.set_next_check(0, 0);
                 self.queue.remove(&id);
             }
             _ => {}
@@ -1087,14 +1120,7 @@ impl Item {
         }
         entry.monitor = monitor;
         if entry.item.schedulable() {
-            // The stale grace has to exceed the item's own timeout, or a
-            // legitimately slow check — an SNMP walk with a 30s budget — would read
-            // as stale just for being slow.
-            let next_check_ms = wall_clock_ms(monitor.next_check);
-            let grace = (entry.item.timeout * 2).max(Duration::from_secs(60));
-            entry
-                .stats
-                .set_next_check(next_check_ms, next_check_ms + grace.as_millis() as i64);
+            publish_next_check(entry);
             self.queue.push(id, Reverse(monitor.next_check));
         } else {
             // Became unschedulable mid-flight. Publishing a next check it will
@@ -1328,6 +1354,84 @@ mod tests {
         assert_eq!(
             stats.snapshot_at(clock(next + 60_001)).state,
             ItemState::Stale
+        );
+    }
+
+    /// A daily cron item must not read as "not scheduled" until its first run.
+    #[test]
+    fn insert_publishes_next_check_before_the_first_run() {
+        let mut cache = Item::new();
+        let item = dummy_item(Schedule::Interval(StdDuration::from_secs(60)));
+        let id = item.id;
+        cache.insert(item);
+
+        let stats = cache.stats(&id).unwrap();
+        let snap = stats.snapshot();
+        assert_eq!(snap.state, ItemState::NeverRan);
+        let next = snap
+            .next_check
+            .expect("next check published on insert")
+            .timestamp_millis();
+
+        // Never picked up by the scheduler: stale past the same grace as after a run.
+        assert_eq!(
+            stats.snapshot_at(clock(next + 60_000)).state,
+            ItemState::NeverRan
+        );
+        assert_eq!(
+            stats.snapshot_at(clock(next + 60_001)).state,
+            ItemState::Stale
+        );
+    }
+
+    /// `Never` is parked a year out; that is not a next check to show.
+    #[test]
+    fn insert_publishes_no_next_check_for_a_never_schedule() {
+        let mut cache = Item::new();
+        let item = dummy_item(Schedule::Never);
+        let id = item.id;
+        cache.insert(item);
+
+        assert_eq!(cache.stats(&id).unwrap().snapshot().next_check, None);
+    }
+
+    /// Editing an item's schedule should move both what the scheduler queued and
+    /// what the API shows, without waiting for a run at the old time.
+    #[test]
+    fn insert_applies_an_edited_schedule_right_away() {
+        let day = StdDuration::from_secs(24 * 60 * 60);
+        let second = StdDuration::from_secs(1);
+
+        let mut cache = Item::new();
+        let mut item = dummy_item(Schedule::Interval(day));
+        let id = item.id;
+        cache.insert(item.clone());
+
+        // The edit, as a config reload delivers it: same id, new schedule.
+        item.schedule = Schedule::Interval(second);
+        cache.insert(item);
+
+        let (_, Reverse(queued)) = cache.queue.get(&id).expect("item is queued");
+        let queued_in = queued.saturating_duration_since(Instant::now());
+        assert!(
+            queued_in <= second,
+            "scheduler still holds the old slot: next run in {queued_in:?}, \
+             but the schedule is now every {second:?}"
+        );
+
+        let now_ms = common::now().timestamp_millis();
+        let shown_ms = cache
+            .stats(&id)
+            .unwrap()
+            .snapshot()
+            .next_check
+            .expect("next check published")
+            .timestamp_millis();
+        let shown_in = StdDuration::from_millis((shown_ms - now_ms).max(0) as u64);
+        assert!(
+            shown_in <= second,
+            "API still shows the old slot: next check in {shown_in:?}, \
+             but the schedule is now every {second:?}"
         );
     }
 
