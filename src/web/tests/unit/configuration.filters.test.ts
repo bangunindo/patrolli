@@ -73,28 +73,16 @@ const globalStubs = {
 	UiDropdownMenu: { template: '<div class="dropdown"><slot /></div>' },
 	UiDropdownMenuTrigger: { template: '<div><slot /></div>' },
 	UiDropdownMenuContent: { template: '<div class="dropdown-content"><slot /></div>' },
-	'b-container': { template: '<div><slot /></div>' },
-	'b-flex': { template: '<div><slot /></div>' },
-	'b-flex-item': { template: '<div><slot /></div>' },
-	'b-heading': { template: '<h1><slot /></h1>' },
-	'b-text': { template: '<span><slot /></span>' },
-	'b-button': { template: '<button><slot /></button>' },
-	'b-alert': { template: '<div><slot /></div>' },
-	'b-icon': { template: '<span class="icon-stub" />' },
 	'endpoint-table': { template: '<div class="endpoint-table-stub" />' },
 	'listener-table': { template: '<div class="listener-table-stub" />' },
 	'items-table': { template: '<div class="items-table-stub" />' },
-	'processor-table': { template: '<div class="processor-table-stub" />' },
 	'sink-table': { template: '<div class="sink-table-stub" />' },
 	'config-drawer': { template: '<div class="drawer-stub" />' },
 	stats: { template: '<div class="stats-stub" />' },
-	'b-dropdown': { template: '<div class="b-dropdown"><slot /></div>' },
-	'b-dropdown-toggle': { template: '<div><slot /></div>' },
-	'b-dropdown-content': { template: '<div class="dropdown-content"><slot /></div>' },
 	teleport: true
 }
 
-describe('Configuration Filters with AppInputSelect', () => {
+describe('Configuration Filters', () => {
 	beforeEach(() => {
 		setActivePinia(createPinia())
 		vi.clearAllMocks()
@@ -158,33 +146,102 @@ describe('Configuration Filters with AppInputSelect', () => {
 	})
 
 	describe('Items Filter', () => {
-		it('should render AppInputSelect for Type, Endpoint, and Listener', async () => {
+		it('should render AppInputAutocomplete for Type, Endpoint, and Listener', async () => {
 			const wrapper = mount(ItemIndex, { global: { stubs: globalStubs } })
 			await flushPromises()
 
-			const selects = wrapper.findAllComponents({ name: 'AppInputSelect' })
-			expect(selects.length).toBe(3)
-			expect(selects[0].props('label')).toBe('Type')
-			expect(selects[1].props('label')).toBe('Endpoint')
-			expect(selects[2].props('label')).toBe('Listener')
+			const autocompletes = wrapper.findAllComponents({ name: 'AppInputAutocomplete' })
+			expect(autocompletes.length).toBe(3)
+
+			expect(autocompletes[0].props('label')).toBe('Type')
+			expect(autocompletes[0].props('multiple')).toBe(true)
+			expect(autocompletes[0].props('remote')).toBe(false)
+			expect(autocompletes[0].props('clearable')).toBe(true)
+
+			expect(autocompletes[1].props('label')).toBe('Endpoint')
+			expect(autocompletes[1].props('subLabelKey')).toBe('cluster_name')
+			expect(autocompletes[1].props('multiple')).toBe(true)
+			expect(autocompletes[1].props('remote')).toBe(true)
+			expect(autocompletes[1].props('clearable')).toBe(true)
+
+			expect(autocompletes[2].props('label')).toBe('Listener')
+			expect(autocompletes[2].props('subLabelKey')).toBe('cluster_name')
+			expect(autocompletes[2].props('multiple')).toBe(true)
+			expect(autocompletes[2].props('remote')).toBe(true)
+			expect(autocompletes[2].props('clearable')).toBe(true)
 		})
 
-		it('should update itemsStore.filter and reset on clear', async () => {
+		it('should update itemsStore.filter and trigger remote endpoint and listener search', async () => {
 			const store = useItemsStore()
+			const fetchEndpointsSpy = vi.spyOn(store, 'fetchEndpoints')
+			const fetchListenersSpy = vi.spyOn(store, 'fetchListeners')
 			const wrapper = mount(ItemIndex, { global: { stubs: globalStubs } })
 			await flushPromises()
 
-			const selects = wrapper.findAllComponents({ name: 'AppInputSelect' })
-			await selects[0].vm.$emit('update:modelValue', 'snmp')
-			await selects[1].vm.$emit('update:modelValue', 'ep-123')
+			const filterDropdown = wrapper.findComponent({ name: 'AppFilterDropdown' })
+			expect(filterDropdown.props('active')).toBe(false)
+
+			const autocompletes = wrapper.findAllComponents({ name: 'AppInputAutocomplete' })
+
+			await autocompletes[0].vm.$emit('update:modelValue', ['snmp', 'http'])
+			await autocompletes[1].vm.$emit('update:modelValue', ['ep-123', 'ep-456'])
+			await autocompletes[2].vm.$emit('update:modelValue', ['ls-111', 'ls-222'])
 			await flushPromises()
 
-			expect(store.filter.types).toEqual(['snmp'])
-			expect(store.filter.endpoint_ids).toEqual(['ep-123'])
+			expect(filterDropdown.props('active')).toBe(true)
+			expect(store.filter.types).toEqual(['snmp', 'http'])
+			expect(store.filter.endpoint_ids).toEqual(['ep-123', 'ep-456'])
+			expect(store.filter.listener_ids).toEqual(['ls-111', 'ls-222'])
 
-			await selects[0].vm.$emit('update:modelValue', null)
+			await autocompletes[1].vm.$emit('search', 'router')
+			await autocompletes[2].vm.$emit('search', 'trap')
 			await flushPromises()
+			expect(fetchEndpointsSpy).toHaveBeenCalledWith(undefined, 'router')
+			expect(fetchListenersSpy).toHaveBeenCalledWith(undefined, 'trap')
+
+			await filterDropdown.vm.$emit('reset')
+			await flushPromises()
+			expect(filterDropdown.props('active')).toBe(false)
 			expect(store.filter.types).toBeUndefined()
+			expect(store.filter.endpoint_ids).toBeUndefined()
+			expect(store.filter.listener_ids).toBeUndefined()
+		})
+
+		it('should reset itemsStore filter and query state on unmount without extra fetch', async () => {
+			const store = useItemsStore()
+			const fetchItemsSpy = vi.spyOn(store, 'fetchItems')
+			const wrapper = mount(ItemIndex, { global: { stubs: globalStubs } })
+			await flushPromises()
+
+			const autocompletes = wrapper.findAllComponents({ name: 'AppInputAutocomplete' })
+			await autocompletes[0].vm.$emit('update:modelValue', ['snmp'])
+			await autocompletes[1].vm.$emit('update:modelValue', ['ep-123'])
+			await autocompletes[2].vm.$emit('update:modelValue', ['ls-111'])
+			await flushPromises()
+
+			store.filter.name = 'cpu'
+			store.filter.order_by = 'name'
+			store.filter.order_dir = 'asc'
+			store.filter.offset = 20
+			store.pagination.currentPage = 3
+			const initialLimit = store.filter.limit
+
+			fetchItemsSpy.mockClear()
+			wrapper.unmount()
+			await flushPromises()
+
+			expect(store.filter.types).toBeUndefined()
+			expect(store.filter.endpoint_ids).toBeUndefined()
+			expect(store.filter.listener_ids).toBeUndefined()
+			expect(store.filter.name).toBeUndefined()
+			expect(store.filter.order_by).toBeUndefined()
+			expect(store.filter.order_dir).toBeUndefined()
+			expect(store.filter.offset).toBe(0)
+			expect(store.pagination.currentPage).toBe(1)
+			expect(store.filter.exclusivity).toEqual(['host', 'template_on_host'])
+			expect(store.filter.collect_item_stats).toBe(true)
+			expect(store.filter.limit).toBe(initialLimit)
+			expect(fetchItemsSpy).not.toHaveBeenCalled()
 		})
 	})
 
