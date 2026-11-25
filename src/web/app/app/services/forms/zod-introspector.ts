@@ -446,6 +446,7 @@ export function introspectField(
 	let hint = hints[pathKey]
 	if (!hint) {
 		const dotKey = '.' + key
+		let bestScore = -1
 		for (const [hk, hv] of Object.entries(hints)) {
 			// Prevent cross-branch contamination (e.g. config.snmp_trap.* matching inside syslog)
 			const hkParts = hk.split('.')
@@ -456,8 +457,18 @@ export function introspectField(
 				}
 			}
 			if (hk === key || hk.endsWith(dotKey)) {
-				hint = hv
-				break
+				let sharedPrefix = 0
+				while (
+					sharedPrefix < hkParts.length - 1 &&
+					sharedPrefix < path.length - 1 &&
+					hkParts[sharedPrefix] === path[sharedPrefix]
+				) {
+					sharedPrefix++
+				}
+				if (sharedPrefix > bestScore) {
+					bestScore = sharedPrefix
+					hint = hv
+				}
 			}
 		}
 	}
@@ -479,6 +490,7 @@ export function introspectField(
 	let regex: RegExp | undefined
 	let options: Array<{ label: string; value: any }> | undefined
 	let children: FieldDescriptor[] | undefined
+	let resolveChildren: (() => FieldDescriptor[]) | undefined
 	let unionDiscriminator: string | undefined
 	let unionTagMode: 'internal' | 'external' | undefined
 	let unionBranches: Record<string, FieldDescriptor[]> | undefined
@@ -572,6 +584,29 @@ export function introspectField(
 					path,
 					hints
 				)
+			} else if (elemUnwrapped.typeName === 'lazy') {
+				const getter = getZodDef(elemUnwrapped.innerType)?.getter
+				const resolvedTarget = typeof getter === 'function' ? unwrapZodType(getter()) : null
+				if (
+					resolvedTarget &&
+					(resolvedTarget.typeName === 'object' ||
+						resolvedTarget.typeName === 'intersection')
+				) {
+					widget = 'array-object'
+					let cachedChildren: FieldDescriptor[] | undefined
+					resolveChildren = () => {
+						if (!cachedChildren) {
+							cachedChildren = introspectZodSchema(
+								resolvedTarget.innerType,
+								path,
+								hints
+							)
+						}
+						return cachedChildren
+					}
+				} else {
+					widget = 'array-string'
+				}
 			} else if (
 				elemUnwrapped.typeName === 'tuple' &&
 				(getZodDef(elemUnwrapped.innerType)?.items?.length ?? 0) === 2
@@ -757,6 +792,7 @@ export function introspectField(
 					? hint.options
 					: options,
 		children,
+		resolveChildren,
 		unionDiscriminator,
 		unionTagMode,
 		unionBranches,
