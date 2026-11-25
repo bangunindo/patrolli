@@ -10,7 +10,7 @@ import itemsApi from '@/app/api/items.api'
 import templatesApi from '@/app/api/templates.api'
 
 import { FormMode } from '@@/shared/types/app.type'
-import { type IItem, type IItemListParams, type IItems } from '@@/shared/types/item.type'
+import { ItemType, type IItem, type IItemListParams, type IItems } from '@@/shared/types/item.type'
 import type { ITemplate } from '@@/shared/types/template.type'
 
 export const useTemplateItemsStore = defineStore(
@@ -43,6 +43,14 @@ export const useTemplateItemsStore = defineStore(
 			template: false
 		})
 		const error = ref<string | null>(null)
+		const selection = reactive<{
+			types?: any[]
+		}>({
+			types: Object.entries(ItemType).map(([key, value]) => ({
+				label: key,
+				value: value
+			}))
+		})
 
 		const setTemplateId = (id: string) => {
 			templateId.value = id
@@ -135,6 +143,9 @@ export const useTemplateItemsStore = defineStore(
 			pagination.currentPage = 1
 			pagination.totalRecords = 0
 			filter.name = undefined
+			filter.order_by = undefined
+			filter.order_dir = undefined
+			filter.types = undefined
 			filter.template_ids = undefined
 			filter.offset = 0
 			error.value = null
@@ -149,6 +160,7 @@ export const useTemplateItemsStore = defineStore(
 			currentItem,
 			loading,
 			error,
+			selection,
 			setTemplateId,
 			fetchTemplate,
 			fetchItems,

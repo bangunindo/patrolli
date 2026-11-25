@@ -31,7 +31,8 @@ export const useListenerStore = defineStore(
 			limit: pagination.rows,
 			offset: (pagination.currentPage - 1) * pagination.rows,
 			order_by: undefined,
-			order_dir: undefined
+			order_dir: undefined,
+			types: undefined
 		})
 		const listeners = ref<IListener[]>([])
 		const currentListener = ref<IListener | null>()
@@ -48,12 +49,25 @@ export const useListenerStore = defineStore(
 			}))
 		})
 
-		const fetchListeners = async () => {
+		let activeClusterURLs: string[] | undefined = undefined
+
+		const resetFilter = () => {
+			activeClusterURLs = undefined
+			filter.name = undefined
+			filter.order_by = undefined
+			filter.order_dir = undefined
+			filter.types = undefined
+			filter.offset = 0
+			pagination.currentPage = 1
+		}
+
+		const fetchListeners = async (clusterURLs?: string[]) => {
+			activeClusterURLs = clusterURLs ? [...clusterURLs] : undefined
 			loading.table = true
 			error.value = null
 
 			try {
-				const response = await listenersApi.getListeners(filter)
+				const response = await listenersApi.getListeners(filter, clusterURLs)
 				if (response?.success) {
 					listeners.value = response.data.listeners
 					pagination.totalRecords = response.data.total ?? 0
@@ -91,7 +105,7 @@ export const useListenerStore = defineStore(
 			try {
 				const response = await listenersApi.createListener(payload, clusterURLs)
 				if (response && response.success) {
-					await fetchListeners()
+					await fetchListeners(activeClusterURLs)
 					return response
 				}
 			} catch (err: any) {
@@ -112,7 +126,7 @@ export const useListenerStore = defineStore(
 			try {
 				const response = await listenersApi.updateListener(listenerId, payload, clusterURLs)
 				if (response && response.success) {
-					await fetchListeners()
+					await fetchListeners(activeClusterURLs)
 					return response
 				}
 			} catch (err: any) {
@@ -178,6 +192,7 @@ export const useListenerStore = defineStore(
 			loading,
 			error,
 			selection,
+			resetFilter,
 			fetchListeners,
 			fetchHosts,
 			createListener,

@@ -115,8 +115,6 @@ onMounted(() => {
 		setDefaultFormEdit()
 	}
 
-	endpointsStore.fetchHosts([selectedCluster.value])
-
 	setTimeout(() => {
 		isInitializing.value = false
 	}, 0)

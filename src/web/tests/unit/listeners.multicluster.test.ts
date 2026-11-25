@@ -363,7 +363,7 @@ describe('Multicluster CRUD for Listeners Feature', () => {
 
 			await store.fetchListeners()
 
-			expect(listenersApi.getListeners).toHaveBeenCalledWith(store.filter)
+			expect(listenersApi.getListeners).toHaveBeenCalledWith(store.filter, undefined)
 			expect(store.listeners).toHaveLength(1)
 			expect(store.listeners[0].listener_id).toBe('lis-c1-active')
 		})

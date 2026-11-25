@@ -5,7 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
 import UserStatsCards from '@/components/users/UserStatsCards.vue'
 import UserToolbar from '@/components/users/UserToolbar.vue'
 import UserTable from '@/components/users/UserTable.vue'
@@ -25,6 +25,11 @@ const usersStore = useUsersStore()
 
 onMounted(() => {
 	usersStore.fetchUsers()
+})
+
+onUnmounted(() => {
+	usersStore.resetFilter()
+	usersStore.currentUser = null
 })
 
 const handleSuccessNotification = (message: string) => {

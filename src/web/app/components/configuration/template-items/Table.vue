@@ -84,19 +84,14 @@ function toggleModalDelete(item: IItem | null = null) {
 }
 
 async function onDelete() {
-	const clusterName = route.query.cluster as string
-	const clusterUrl = appHelper.getClusterValue(clusterName)
-	const urls = clusterUrl ? [clusterUrl] : undefined
+	const urls = appHelper.getClusterUrls(route.query.cluster as string)
 	await templateItemsStore.deleteItem(templateItemsStore.currentItem?.item_id ?? '', urls)
 	showModalDelete.value = false
 	fetchItems()
 }
 
 async function fetchItems() {
-	const clusterName = route.query.cluster as string
-	const clusterUrl = appHelper.getClusterValue(clusterName)
-
-	templateItemsStore.fetchItems([clusterUrl])
+	templateItemsStore.fetchItems(appHelper.getClusterUrls(route.query.cluster as string))
 }
 
 onMounted(() => {
