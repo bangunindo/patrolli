@@ -911,6 +911,21 @@ fn publish_next_check(entry: &Entry) {
         .set_next_check(next_check_ms, next_check_ms + grace.as_millis() as i64);
 }
 
+/// Why [`Item::execute_now`] left an item where it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ExecuteNowError {
+    /// Not in this cache. In a cluster that only means this node does not
+    /// monitor the item's host.
+    #[error("item not found")]
+    NotFound,
+    /// A listener item: it has no check to run.
+    #[error("item not schedulable")]
+    NotSchedulable,
+    /// A worker holds it; it goes back to its schedule when the check ends.
+    #[error("item is already running")]
+    AlreadyRunning,
+}
+
 /// Whether a freshly queued item has a next check worth publishing.
 /// `Schedule::Never` parks it a year out, which is "not scheduled", not a date.
 fn has_next_check(item: &item::Item) -> bool {
@@ -1100,18 +1115,24 @@ impl Item {
         None
     }
 
-    pub fn execute_now(&mut self, id: &Uuid) -> Result<()> {
+    /// Move an item's next check to now, so the scheduler's next tick runs it.
+    ///
+    /// Also publishes the new next check: the stats would otherwise show the old
+    /// slot until the forced run requeues.
+    pub fn execute_now(&mut self, id: &Uuid) -> Result<(), ExecuteNowError> {
         let Some(entry) = self.data.get_mut(id) else {
-            return Err(anyhow::anyhow!("item not found"));
+            return Err(ExecuteNowError::NotFound);
         };
         if !entry.item.schedulable() {
-            return Err(anyhow::anyhow!("item not schedulable"));
+            return Err(ExecuteNowError::NotSchedulable);
         }
         let now = Instant::now();
+        // No queue slot means `pop_due` took it and `requeue` has not put it back.
         if self.queue.change_priority(id, Reverse(now)).is_none() {
-            return Err(anyhow::anyhow!("item is already running"));
+            return Err(ExecuteNowError::AlreadyRunning);
         }
         entry.monitor.next_check = now;
+        publish_next_check(entry);
         Ok(())
     }
 
@@ -1602,7 +1623,7 @@ mod tests {
         let err = cache
             .execute_now(&id)
             .expect_err("in-flight item is refused");
-        assert!(err.to_string().contains("already running"), "{err}");
+        assert_eq!(err, ExecuteNowError::AlreadyRunning);
         assert!(
             cache.pop_due().is_empty(),
             "a refused execute_now must not leave a second copy queued"
@@ -1627,7 +1648,55 @@ mod tests {
         let err = cache
             .execute_now(&id)
             .expect_err("listener items don't run");
-        assert!(err.to_string().contains("not schedulable"), "{err}");
+        assert_eq!(err, ExecuteNowError::NotSchedulable);
+    }
+
+    #[test]
+    fn execute_now_reports_an_unknown_item() {
+        let mut cache = Item::new();
+        assert_eq!(
+            cache.execute_now(&Uuid::now_v7()),
+            Err(ExecuteNowError::NotFound)
+        );
+    }
+
+    /// The stats must show the forced run as the next check, not the slot the
+    /// schedule had picked.
+    #[test]
+    fn execute_now_publishes_the_new_next_check() {
+        let hour = StdDuration::from_secs(3600);
+        let mut cache = Item::new();
+        let item = dummy_item(Schedule::Interval(hour));
+        let id = item.id;
+        cache.insert(item);
+        let shown_ms = |cache: &Item| {
+            cache
+                .stats(&id)
+                .unwrap()
+                .snapshot()
+                .next_check
+                .expect("next check published")
+                .timestamp_millis()
+        };
+
+        // Park the slot well ahead, whatever phase the interval grid is in.
+        let ahead = Instant::now() + hour;
+        cache.data.get_mut(&id).unwrap().monitor.next_check = ahead;
+        publish_next_check(cache.data.get(&id).unwrap());
+        let now_ms = common::now().timestamp_millis();
+        assert!(shown_ms(&cache) > now_ms + 60_000);
+
+        cache.execute_now(&id).unwrap();
+        let forced_ms = shown_ms(&cache);
+        assert!(
+            (forced_ms - common::now().timestamp_millis()).abs() < 5_000,
+            "next check should read as now, got {forced_ms}"
+        );
+
+        // In flight: the refusal publishes nothing.
+        assert_eq!(cache.pop_due().len(), 1);
+        assert_eq!(cache.execute_now(&id), Err(ExecuteNowError::AlreadyRunning));
+        assert_eq!(shown_ms(&cache), forced_ms);
     }
 
     #[test]
