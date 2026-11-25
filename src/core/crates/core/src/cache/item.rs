@@ -1013,9 +1013,11 @@ impl Item {
     /// community would otherwise erase the health history of every item on that
     /// device.
     ///
-    /// The existing [`item::ItemMonitor`] is kept too, so an interval item's
-    /// phase isn't reset on every unrelated edit; `requeue` recomputes
-    /// `next_check` from the new schedule on the next cycle anyway.
+    /// The existing [`item::ItemMonitor`] is kept too, so an unrelated edit
+    /// moves nothing. An edited schedule does: the queued slot and the published
+    /// next check follow it at once, instead of after one more run at the old
+    /// time. A run that is already due and a pending retry are left to happen
+    /// first; `requeue` applies the new schedule after them.
     ///
     /// An item that enters the queue here has its next check published right
     /// away, so it does not read as "not scheduled" until its first run, which
@@ -1040,9 +1042,9 @@ impl Item {
         };
 
         let was_schedulable = entry.item.schedulable();
+        let rescheduled = entry.item.schedule != item.schedule;
         entry.item = Arc::new(item);
         entry.generation = generation;
-        let next_check = entry.monitor.next_check;
 
         // Deliberately *not* re-queuing an item that is already known: it may be
         // in flight right now (`pop_due` took its queue slot and the worker will
@@ -1051,16 +1053,39 @@ impl Item {
         // schedulability transitions need the queue touched.
         match (was_schedulable, schedulable) {
             (false, true) => {
+                if rescheduled {
+                    entry.monitor.update_next_check(&entry.item.schedule);
+                }
                 if has_next_check(&entry.item) {
                     publish_next_check(entry);
                 }
-                self.queue.push(id, Reverse(next_check));
+                self.queue.push(id, Reverse(entry.monitor.next_check));
             }
             (true, false) => {
                 // Same as `requeue`: a next check it will never honour would
                 // make it read as stale forever.
                 entry.stats.set_next_check(0, 0);
                 self.queue.remove(&id);
+            }
+            (true, true)
+                if rescheduled && !entry.monitor.is_due() && entry.monitor.retries == 0 =>
+            {
+                let mut monitor = entry.monitor;
+                monitor.update_next_check(&entry.item.schedule);
+                // `change_priority` moves a slot and never adds one, so an item
+                // that is in flight stays out of the queue.
+                if self
+                    .queue
+                    .change_priority(&id, Reverse(monitor.next_check))
+                    .is_some()
+                {
+                    entry.monitor = monitor;
+                    if has_next_check(&entry.item) {
+                        publish_next_check(entry);
+                    } else {
+                        entry.stats.set_next_check(0, 0);
+                    }
+                }
             }
             _ => {}
         }
@@ -1433,6 +1458,90 @@ mod tests {
             "API still shows the old slot: next check in {shown_in:?}, \
              but the schedule is now every {second:?}"
         );
+    }
+
+    /// Reloads re-insert unchanged rows all the time; those must move nothing.
+    #[test]
+    fn insert_of_an_unchanged_schedule_keeps_the_queued_slot() {
+        let mut cache = Item::new();
+        let item = dummy_item(Schedule::Interval(StdDuration::from_secs(3600)));
+        let id = item.id;
+        cache.insert(item.clone());
+        let before = *cache.queue.get(&id).unwrap().1;
+        let shown = cache.stats(&id).unwrap().snapshot().next_check;
+
+        cache.insert(item);
+        assert_eq!(*cache.queue.get(&id).unwrap().1, before);
+        assert_eq!(cache.stats(&id).unwrap().snapshot().next_check, shown);
+    }
+
+    /// An edit to `Never` parks the item and stops showing a next check.
+    #[test]
+    fn insert_of_a_never_schedule_clears_the_published_next_check() {
+        let mut cache = Item::new();
+        let mut item = dummy_item(Schedule::Interval(StdDuration::from_secs(60)));
+        let id = item.id;
+        cache.insert(item.clone());
+
+        item.schedule = Schedule::Never;
+        cache.insert(item);
+
+        assert_eq!(cache.stats(&id).unwrap().snapshot().next_check, None);
+        assert!(cache.pop_due().is_empty());
+    }
+
+    /// A schedule edit while the item is mid-check must not hand it to a second
+    /// worker; the new schedule applies when the check is requeued.
+    #[test]
+    fn insert_of_an_edited_schedule_does_not_requeue_an_in_flight_item() {
+        let mut cache = Item::new();
+        let mut item = dummy_item(Schedule::Never);
+        let id = item.id;
+        cache.insert(item.clone());
+        cache.execute_now(&id).unwrap();
+        let due = cache.pop_due().pop().unwrap();
+
+        item.schedule = Schedule::Interval(StdDuration::from_secs(3600));
+        cache.insert(item);
+        assert!(cache.queue.get(&id).is_none());
+
+        cache.requeue(due.monitor);
+        let (_, Reverse(queued)) = cache.queue.get(&id).expect("requeued");
+        assert!(queued.saturating_duration_since(Instant::now()) <= StdDuration::from_secs(3600));
+    }
+
+    /// A manual run that has not been picked up yet survives a schedule edit.
+    #[test]
+    fn insert_of_an_edited_schedule_keeps_a_due_run() {
+        let mut cache = Item::new();
+        let mut item = dummy_item(Schedule::Never);
+        let id = item.id;
+        cache.insert(item.clone());
+        cache.execute_now(&id).unwrap();
+
+        item.schedule = Schedule::Interval(StdDuration::from_secs(3600));
+        cache.insert(item);
+        assert_eq!(cache.pop_due().len(), 1);
+    }
+
+    /// A pending retry fires at its retry time, not at the new schedule's slot.
+    #[test]
+    fn insert_of_an_edited_schedule_keeps_a_pending_retry() {
+        let mut cache = Item::new();
+        let mut item = dummy_item(Schedule::Never);
+        let id = item.id;
+        cache.insert(item.clone());
+        cache.execute_now(&id).unwrap();
+
+        let mut monitor = cache.pop_due()[0].monitor;
+        let retry_at = Instant::now() + StdDuration::from_secs(30);
+        monitor.retries = 1;
+        monitor.next_check = retry_at;
+        cache.requeue(monitor);
+
+        item.schedule = Schedule::Interval(StdDuration::from_secs(3600));
+        cache.insert(item);
+        assert_eq!(*cache.queue.get(&id).unwrap().1, Reverse(retry_at));
     }
 
     /// An endpoint edit cascades an item upsert to every item on that endpoint, so
