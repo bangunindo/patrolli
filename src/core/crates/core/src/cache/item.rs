@@ -897,6 +897,26 @@ fn wall_clock_ms(deadline: Instant) -> i64 {
     common::now().timestamp_millis() + ahead.as_millis() as i64
 }
 
+/// Publish when `entry`'s next check is due, and the deadline past which it
+/// reads as stale.
+///
+/// The stale grace has to exceed the item's own timeout, or a legitimately slow
+/// check — an SNMP walk with a 30s budget — would read as stale just for being
+/// slow.
+fn publish_next_check(entry: &Entry) {
+    let next_check_ms = wall_clock_ms(entry.monitor.next_check);
+    let grace = (entry.item.timeout * 2).max(Duration::from_secs(60));
+    entry
+        .stats
+        .set_next_check(next_check_ms, next_check_ms + grace.as_millis() as i64);
+}
+
+/// Whether a freshly queued item has a next check worth publishing.
+/// `Schedule::Never` parks it a year out, which is "not scheduled", not a date.
+fn has_next_check(item: &item::Item) -> bool {
+    item.schedulable() && !matches!(item.schedule, item::Schedule::Never)
+}
+
 pub struct Item {
     data: FxHashMap<Uuid, Entry>,
     queue: PriorityQueue<Uuid, Reverse<Instant>, FxBuildHasher>,
@@ -993,9 +1013,15 @@ impl Item {
     /// community would otherwise erase the health history of every item on that
     /// device.
     ///
-    /// The existing [`item::ItemMonitor`] is kept too, so an interval item's
-    /// phase isn't reset on every unrelated edit; `requeue` recomputes
-    /// `next_check` from the new schedule on the next cycle anyway.
+    /// The existing [`item::ItemMonitor`] is kept too, so an unrelated edit
+    /// moves nothing. An edited schedule does: the queued slot and the published
+    /// next check follow it at once, instead of after one more run at the old
+    /// time. A run that is already due and a pending retry are left to happen
+    /// first; `requeue` applies the new schedule after them.
+    ///
+    /// An item that enters the queue here has its next check published right
+    /// away, so it does not read as "not scheduled" until its first run, which
+    /// for a daily cron can be a day off.
     pub fn insert(&mut self, item: item::Item) {
         let id = item.id;
         let schedulable = item.schedulable();
@@ -1005,6 +1031,9 @@ impl Item {
             let mut entry = Entry::new(item);
             entry.generation = generation;
             let next_check = entry.monitor.next_check;
+            if has_next_check(&entry.item) {
+                publish_next_check(&entry);
+            }
             self.data.insert(id, entry);
             if schedulable {
                 self.queue.push(id, Reverse(next_check));
@@ -1013,9 +1042,9 @@ impl Item {
         };
 
         let was_schedulable = entry.item.schedulable();
+        let rescheduled = entry.item.schedule != item.schedule;
         entry.item = Arc::new(item);
         entry.generation = generation;
-        let next_check = entry.monitor.next_check;
 
         // Deliberately *not* re-queuing an item that is already known: it may be
         // in flight right now (`pop_due` took its queue slot and the worker will
@@ -1024,10 +1053,39 @@ impl Item {
         // schedulability transitions need the queue touched.
         match (was_schedulable, schedulable) {
             (false, true) => {
-                self.queue.push(id, Reverse(next_check));
+                if rescheduled {
+                    entry.monitor.update_next_check(&entry.item.schedule);
+                }
+                if has_next_check(&entry.item) {
+                    publish_next_check(entry);
+                }
+                self.queue.push(id, Reverse(entry.monitor.next_check));
             }
             (true, false) => {
+                // Same as `requeue`: a next check it will never honour would
+                // make it read as stale forever.
+                entry.stats.set_next_check(0, 0);
                 self.queue.remove(&id);
+            }
+            (true, true)
+                if rescheduled && !entry.monitor.is_due() && entry.monitor.retries == 0 =>
+            {
+                let mut monitor = entry.monitor;
+                monitor.update_next_check(&entry.item.schedule);
+                // `change_priority` moves a slot and never adds one, so an item
+                // that is in flight stays out of the queue.
+                if self
+                    .queue
+                    .change_priority(&id, Reverse(monitor.next_check))
+                    .is_some()
+                {
+                    entry.monitor = monitor;
+                    if has_next_check(&entry.item) {
+                        publish_next_check(entry);
+                    } else {
+                        entry.stats.set_next_check(0, 0);
+                    }
+                }
             }
             _ => {}
         }
@@ -1087,14 +1145,7 @@ impl Item {
         }
         entry.monitor = monitor;
         if entry.item.schedulable() {
-            // The stale grace has to exceed the item's own timeout, or a
-            // legitimately slow check — an SNMP walk with a 30s budget — would read
-            // as stale just for being slow.
-            let next_check_ms = wall_clock_ms(monitor.next_check);
-            let grace = (entry.item.timeout * 2).max(Duration::from_secs(60));
-            entry
-                .stats
-                .set_next_check(next_check_ms, next_check_ms + grace.as_millis() as i64);
+            publish_next_check(entry);
             self.queue.push(id, Reverse(monitor.next_check));
         } else {
             // Became unschedulable mid-flight. Publishing a next check it will
@@ -1329,6 +1380,168 @@ mod tests {
             stats.snapshot_at(clock(next + 60_001)).state,
             ItemState::Stale
         );
+    }
+
+    /// A daily cron item must not read as "not scheduled" until its first run.
+    #[test]
+    fn insert_publishes_next_check_before_the_first_run() {
+        let mut cache = Item::new();
+        let item = dummy_item(Schedule::Interval(StdDuration::from_secs(60)));
+        let id = item.id;
+        cache.insert(item);
+
+        let stats = cache.stats(&id).unwrap();
+        let snap = stats.snapshot();
+        assert_eq!(snap.state, ItemState::NeverRan);
+        let next = snap
+            .next_check
+            .expect("next check published on insert")
+            .timestamp_millis();
+
+        // Never picked up by the scheduler: stale past the same grace as after a run.
+        assert_eq!(
+            stats.snapshot_at(clock(next + 60_000)).state,
+            ItemState::NeverRan
+        );
+        assert_eq!(
+            stats.snapshot_at(clock(next + 60_001)).state,
+            ItemState::Stale
+        );
+    }
+
+    /// `Never` is parked a year out; that is not a next check to show.
+    #[test]
+    fn insert_publishes_no_next_check_for_a_never_schedule() {
+        let mut cache = Item::new();
+        let item = dummy_item(Schedule::Never);
+        let id = item.id;
+        cache.insert(item);
+
+        assert_eq!(cache.stats(&id).unwrap().snapshot().next_check, None);
+    }
+
+    /// Editing an item's schedule should move both what the scheduler queued and
+    /// what the API shows, without waiting for a run at the old time.
+    #[test]
+    fn insert_applies_an_edited_schedule_right_away() {
+        let day = StdDuration::from_secs(24 * 60 * 60);
+        let second = StdDuration::from_secs(1);
+
+        let mut cache = Item::new();
+        let mut item = dummy_item(Schedule::Interval(day));
+        let id = item.id;
+        cache.insert(item.clone());
+
+        // The edit, as a config reload delivers it: same id, new schedule.
+        item.schedule = Schedule::Interval(second);
+        cache.insert(item);
+
+        let (_, Reverse(queued)) = cache.queue.get(&id).expect("item is queued");
+        let queued_in = queued.saturating_duration_since(Instant::now());
+        assert!(
+            queued_in <= second,
+            "scheduler still holds the old slot: next run in {queued_in:?}, \
+             but the schedule is now every {second:?}"
+        );
+
+        let now_ms = common::now().timestamp_millis();
+        let shown_ms = cache
+            .stats(&id)
+            .unwrap()
+            .snapshot()
+            .next_check
+            .expect("next check published")
+            .timestamp_millis();
+        let shown_in = StdDuration::from_millis((shown_ms - now_ms).max(0) as u64);
+        assert!(
+            shown_in <= second,
+            "API still shows the old slot: next check in {shown_in:?}, \
+             but the schedule is now every {second:?}"
+        );
+    }
+
+    /// Reloads re-insert unchanged rows all the time; those must move nothing.
+    #[test]
+    fn insert_of_an_unchanged_schedule_keeps_the_queued_slot() {
+        let mut cache = Item::new();
+        let item = dummy_item(Schedule::Interval(StdDuration::from_secs(3600)));
+        let id = item.id;
+        cache.insert(item.clone());
+        let before = *cache.queue.get(&id).unwrap().1;
+        let shown = cache.stats(&id).unwrap().snapshot().next_check;
+
+        cache.insert(item);
+        assert_eq!(*cache.queue.get(&id).unwrap().1, before);
+        assert_eq!(cache.stats(&id).unwrap().snapshot().next_check, shown);
+    }
+
+    /// An edit to `Never` parks the item and stops showing a next check.
+    #[test]
+    fn insert_of_a_never_schedule_clears_the_published_next_check() {
+        let mut cache = Item::new();
+        let mut item = dummy_item(Schedule::Interval(StdDuration::from_secs(60)));
+        let id = item.id;
+        cache.insert(item.clone());
+
+        item.schedule = Schedule::Never;
+        cache.insert(item);
+
+        assert_eq!(cache.stats(&id).unwrap().snapshot().next_check, None);
+        assert!(cache.pop_due().is_empty());
+    }
+
+    /// A schedule edit while the item is mid-check must not hand it to a second
+    /// worker; the new schedule applies when the check is requeued.
+    #[test]
+    fn insert_of_an_edited_schedule_does_not_requeue_an_in_flight_item() {
+        let mut cache = Item::new();
+        let mut item = dummy_item(Schedule::Never);
+        let id = item.id;
+        cache.insert(item.clone());
+        cache.execute_now(&id).unwrap();
+        let due = cache.pop_due().pop().unwrap();
+
+        item.schedule = Schedule::Interval(StdDuration::from_secs(3600));
+        cache.insert(item);
+        assert!(cache.queue.get(&id).is_none());
+
+        cache.requeue(due.monitor);
+        let (_, Reverse(queued)) = cache.queue.get(&id).expect("requeued");
+        assert!(queued.saturating_duration_since(Instant::now()) <= StdDuration::from_secs(3600));
+    }
+
+    /// A manual run that has not been picked up yet survives a schedule edit.
+    #[test]
+    fn insert_of_an_edited_schedule_keeps_a_due_run() {
+        let mut cache = Item::new();
+        let mut item = dummy_item(Schedule::Never);
+        let id = item.id;
+        cache.insert(item.clone());
+        cache.execute_now(&id).unwrap();
+
+        item.schedule = Schedule::Interval(StdDuration::from_secs(3600));
+        cache.insert(item);
+        assert_eq!(cache.pop_due().len(), 1);
+    }
+
+    /// A pending retry fires at its retry time, not at the new schedule's slot.
+    #[test]
+    fn insert_of_an_edited_schedule_keeps_a_pending_retry() {
+        let mut cache = Item::new();
+        let mut item = dummy_item(Schedule::Never);
+        let id = item.id;
+        cache.insert(item.clone());
+        cache.execute_now(&id).unwrap();
+
+        let mut monitor = cache.pop_due()[0].monitor;
+        let retry_at = Instant::now() + StdDuration::from_secs(30);
+        monitor.retries = 1;
+        monitor.next_check = retry_at;
+        cache.requeue(monitor);
+
+        item.schedule = Schedule::Interval(StdDuration::from_secs(3600));
+        cache.insert(item);
+        assert_eq!(*cache.queue.get(&id).unwrap().1, Reverse(retry_at));
     }
 
     /// An endpoint edit cascades an item upsert to every item on that endpoint, so

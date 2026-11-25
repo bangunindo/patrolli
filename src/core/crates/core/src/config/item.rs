@@ -73,7 +73,7 @@ impl Config {
 // TODO: CronSchedule is big, measured at 624 Bytes (many BTreeSet), we should either:
 //  - Interned CronSchedule, and use Arc<CronSchedule> instead
 //  - Look for alternative data structures to present CronSchedule
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Schedule {
     Cron(Box<CronSchedule>),
     Interval(Duration),
