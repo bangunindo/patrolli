@@ -146,33 +146,40 @@ describe('Configuration Filters', () => {
 	})
 
 	describe('Items Filter', () => {
-		it('should render AppInputAutocomplete for Type, Endpoint, and Listener', async () => {
+		it('should render AppInputAutocomplete for Type, Host, Endpoint, and Listener', async () => {
 			const wrapper = mount(ItemIndex, { global: { stubs: globalStubs } })
 			await flushPromises()
 
 			const autocompletes = wrapper.findAllComponents({ name: 'AppInputAutocomplete' })
-			expect(autocompletes.length).toBe(3)
+			expect(autocompletes.length).toBe(4)
 
 			expect(autocompletes[0].props('label')).toBe('Type')
 			expect(autocompletes[0].props('multiple')).toBe(true)
 			expect(autocompletes[0].props('remote')).toBe(false)
 			expect(autocompletes[0].props('clearable')).toBe(true)
 
-			expect(autocompletes[1].props('label')).toBe('Endpoint')
+			expect(autocompletes[1].props('label')).toBe('Host')
 			expect(autocompletes[1].props('subLabelKey')).toBe('cluster_name')
 			expect(autocompletes[1].props('multiple')).toBe(true)
 			expect(autocompletes[1].props('remote')).toBe(true)
 			expect(autocompletes[1].props('clearable')).toBe(true)
 
-			expect(autocompletes[2].props('label')).toBe('Listener')
+			expect(autocompletes[2].props('label')).toBe('Endpoint')
 			expect(autocompletes[2].props('subLabelKey')).toBe('cluster_name')
 			expect(autocompletes[2].props('multiple')).toBe(true)
 			expect(autocompletes[2].props('remote')).toBe(true)
 			expect(autocompletes[2].props('clearable')).toBe(true)
+
+			expect(autocompletes[3].props('label')).toBe('Listener')
+			expect(autocompletes[3].props('subLabelKey')).toBe('cluster_name')
+			expect(autocompletes[3].props('multiple')).toBe(true)
+			expect(autocompletes[3].props('remote')).toBe(true)
+			expect(autocompletes[3].props('clearable')).toBe(true)
 		})
 
-		it('should update itemsStore.filter and trigger remote endpoint and listener search', async () => {
+		it('should update itemsStore.filter and trigger remote host, endpoint, and listener search', async () => {
 			const store = useItemsStore()
+			const fetchHostsSpy = vi.spyOn(store, 'fetchHosts')
 			const fetchEndpointsSpy = vi.spyOn(store, 'fetchEndpoints')
 			const fetchListenersSpy = vi.spyOn(store, 'fetchListeners')
 			const wrapper = mount(ItemIndex, { global: { stubs: globalStubs } })
@@ -184,27 +191,93 @@ describe('Configuration Filters', () => {
 			const autocompletes = wrapper.findAllComponents({ name: 'AppInputAutocomplete' })
 
 			await autocompletes[0].vm.$emit('update:modelValue', ['snmp', 'http'])
-			await autocompletes[1].vm.$emit('update:modelValue', ['ep-123', 'ep-456'])
-			await autocompletes[2].vm.$emit('update:modelValue', ['ls-111', 'ls-222'])
+			await autocompletes[2].vm.$emit('update:modelValue', ['ep-123', 'ep-456'])
+			await autocompletes[3].vm.$emit('update:modelValue', ['ls-111', 'ls-222'])
 			await flushPromises()
 
 			expect(filterDropdown.props('active')).toBe(true)
 			expect(store.filter.types).toEqual(['snmp', 'http'])
+			expect(store.filter.host_ids).toBeUndefined()
 			expect(store.filter.endpoint_ids).toEqual(['ep-123', 'ep-456'])
 			expect(store.filter.listener_ids).toEqual(['ls-111', 'ls-222'])
 
-			await autocompletes[1].vm.$emit('search', 'router')
-			await autocompletes[2].vm.$emit('search', 'trap')
+			await autocompletes[1].vm.$emit('search', 'alpha')
+			await autocompletes[2].vm.$emit('search', 'router')
+			await autocompletes[3].vm.$emit('search', 'trap')
 			await flushPromises()
-			expect(fetchEndpointsSpy).toHaveBeenCalledWith(undefined, 'router')
+			expect(fetchHostsSpy).toHaveBeenCalledWith(undefined, 'alpha')
+			expect(fetchEndpointsSpy).toHaveBeenCalledWith(undefined, 'router', undefined)
 			expect(fetchListenersSpy).toHaveBeenCalledWith(undefined, 'trap')
 
 			await filterDropdown.vm.$emit('reset')
 			await flushPromises()
 			expect(filterDropdown.props('active')).toBe(false)
 			expect(store.filter.types).toBeUndefined()
+			expect(store.filter.host_ids).toBeUndefined()
 			expect(store.filter.endpoint_ids).toBeUndefined()
 			expect(store.filter.listener_ids).toBeUndefined()
+		})
+
+		it('should chain host filter with endpoint options, remote search, and prune mismatched endpoints', async () => {
+			const store = useItemsStore()
+			const fetchEndpointsSpy = vi.spyOn(store, 'fetchEndpoints')
+			const fetchItemsSpy = vi.spyOn(store, 'fetchItems')
+			const wrapper = mount(ItemIndex, { global: { stubs: globalStubs } })
+			await flushPromises()
+
+			store.selection.endpoints = [
+				{
+					endpoint_id: 'ep-a1',
+					host_id: 'host-1',
+					host_name: 'Host Alpha',
+					name: 'EP Alpha 1',
+					adm_status: 1,
+					last_updated: '',
+					label: 'EP Alpha 1',
+					value: 'ep-a1'
+				},
+				{
+					endpoint_id: 'ep-b1',
+					host_id: 'host-2',
+					host_name: 'Host Beta',
+					name: 'EP Beta 1',
+					adm_status: 1,
+					last_updated: '',
+					label: 'EP Beta 1',
+					value: 'ep-b1'
+				}
+			]
+			await flushPromises()
+
+			const autocompletes = wrapper.findAllComponents({ name: 'AppInputAutocomplete' })
+			await autocompletes[2].vm.$emit('update:modelValue', ['ep-a1', 'ep-b1'])
+			await flushPromises()
+
+			fetchEndpointsSpy.mockClear()
+			fetchItemsSpy.mockClear()
+
+			// Selecting host-1 should prune ep-b1, keep ep-a1, refetch endpoints for host-1, and fetch items once
+			await autocompletes[1].vm.$emit('update:modelValue', ['host-1'])
+			await flushPromises()
+
+			expect(store.filter.host_ids).toEqual(['host-1'])
+			expect(store.filter.endpoint_ids).toEqual(['ep-a1'])
+			expect(fetchEndpointsSpy).toHaveBeenCalledWith(undefined, undefined, ['host-1'])
+			expect(fetchItemsSpy).toHaveBeenCalledTimes(1)
+
+			// Searching endpoints while host-1 is active forwards host_ids
+			fetchEndpointsSpy.mockClear()
+			await autocompletes[2].vm.$emit('search', 'alpha')
+			await flushPromises()
+			expect(fetchEndpointsSpy).toHaveBeenCalledWith(undefined, 'alpha', ['host-1'])
+
+			// Clearing host selection keeps currently selected endpoints and refetches unfiltered endpoints
+			fetchEndpointsSpy.mockClear()
+			await autocompletes[1].vm.$emit('update:modelValue', [])
+			await flushPromises()
+			expect(store.filter.host_ids).toBeUndefined()
+			expect(store.filter.endpoint_ids).toEqual(['ep-a1'])
+			expect(fetchEndpointsSpy).toHaveBeenCalledWith(undefined, undefined, undefined)
 		})
 
 		it('should reset itemsStore filter and query state on unmount without extra fetch', async () => {
@@ -215,8 +288,9 @@ describe('Configuration Filters', () => {
 
 			const autocompletes = wrapper.findAllComponents({ name: 'AppInputAutocomplete' })
 			await autocompletes[0].vm.$emit('update:modelValue', ['snmp'])
-			await autocompletes[1].vm.$emit('update:modelValue', ['ep-123'])
-			await autocompletes[2].vm.$emit('update:modelValue', ['ls-111'])
+			await autocompletes[1].vm.$emit('update:modelValue', ['host-1'])
+			await autocompletes[2].vm.$emit('update:modelValue', ['ep-123'])
+			await autocompletes[3].vm.$emit('update:modelValue', ['ls-111'])
 			await flushPromises()
 
 			store.filter.name = 'cpu'
@@ -231,6 +305,7 @@ describe('Configuration Filters', () => {
 			await flushPromises()
 
 			expect(store.filter.types).toBeUndefined()
+			expect(store.filter.host_ids).toBeUndefined()
 			expect(store.filter.endpoint_ids).toBeUndefined()
 			expect(store.filter.listener_ids).toBeUndefined()
 			expect(store.filter.name).toBeUndefined()

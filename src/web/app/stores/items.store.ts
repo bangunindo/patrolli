@@ -40,6 +40,7 @@ export const useItemsStore = defineStore(
 			order_by: undefined,
 			order_dir: undefined,
 			types: undefined,
+			host_ids: undefined,
 			listener_ids: undefined,
 			endpoint_ids: undefined,
 			exclusivity: ['host', 'template_on_host'],
@@ -51,6 +52,7 @@ export const useItemsStore = defineStore(
 		const loading = reactive({
 			table: false,
 			form: false,
+			hosts: false,
 			endpoints: false,
 			listeners: false
 		})
@@ -77,6 +79,7 @@ export const useItemsStore = defineStore(
 			filter.order_by = undefined
 			filter.order_dir = undefined
 			filter.types = undefined
+			filter.host_ids = undefined
 			filter.listener_ids = undefined
 			filter.endpoint_ids = undefined
 			filter.offset = 0
@@ -100,26 +103,6 @@ export const useItemsStore = defineStore(
 			}
 		}
 
-		const fetchHosts = async (clusterURLs?: string[]) => {
-			loading.form = true
-			error.value = null
-
-			try {
-				const response = await hostsApi.getHosts({ limit: 100 }, clusterURLs)
-				if (response?.success) {
-					selection.hosts = response.data.hosts.map((host) => ({
-						...host,
-						value: host.host_id,
-						label: host.name
-					}))
-				}
-			} catch (err: any) {
-				error.value = err.message || 'Failed to fetch templates'
-			} finally {
-				loading.form = false
-			}
-		}
-
 		const fetchTemplates = async (clusterURLs?: string[]) => {
 			loading.form = true
 			error.value = null
@@ -140,10 +123,10 @@ export const useItemsStore = defineStore(
 			}
 		}
 
-		const selectionRequestIds = { endpoints: 0, listeners: 0 }
+		const selectionRequestIds = { hosts: 0, endpoints: 0, listeners: 0 }
 
 		const fetchSelection = async <T>(
-			key: 'endpoints' | 'listeners',
+			key: 'hosts' | 'endpoints' | 'listeners',
 			search: string | undefined,
 			fetcher: (query: { limit: number; name?: string }) => Promise<T[] | null>,
 			onSuccess: (data: T[]) => void,
@@ -169,12 +152,33 @@ export const useItemsStore = defineStore(
 			}
 		}
 
-		const fetchEndpoints = (clusterURLs?: string[], search?: string) =>
+		const fetchHosts = (clusterURLs?: string[], search?: string) =>
+			fetchSelection(
+				'hosts',
+				search,
+				async (query) => {
+					const response = await hostsApi.getHosts(query, clusterURLs)
+					return response?.success ? response.data.hosts : null
+				},
+				(hosts) => {
+					selection.hosts = hosts.map((host) => ({
+						...host,
+						value: host.host_id,
+						label: host.name
+					}))
+				},
+				'Failed to fetch hosts'
+			)
+
+		const fetchEndpoints = (clusterURLs?: string[], search?: string, hostIds?: string[]) =>
 			fetchSelection(
 				'endpoints',
 				search,
 				async (query) => {
-					const response = await endpointsApi.getEndpoints(query, clusterURLs)
+					const response = await endpointsApi.getEndpoints(
+						{ ...query, ...(hostIds?.length ? { host_ids: hostIds } : {}) },
+						clusterURLs
+					)
 					return response?.success ? response.data.endpoints : null
 				},
 				(endpoints) => {
