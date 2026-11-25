@@ -11,7 +11,6 @@ import axios, {
 
 import { useAppStore } from '@/stores/app.store'
 import { useAuthStore } from '@/stores/auth.store'
-import tokenHelper from '@/app/helpers/token.helper'
 import { useDebounceFn } from '@vueuse/core'
 
 export type { AxiosInstance }
@@ -19,6 +18,7 @@ export type { AxiosInstance }
 declare module 'axios' {
 	export interface AxiosRequestConfig {
 		suppressErrorStatuses?: number[]
+		rethrowErrors?: boolean
 	}
 }
 
@@ -43,6 +43,7 @@ interface ApiError {
 }
 
 const AUTH_PATH_RE = /^\/?(?:api\/)?auth(?:\/|$)/
+const AUTH_LIFECYCLE_RE = /\/?(?:api\/)?auth\/(?:login|logout|me|refresh|keycloak|oidc)(?:\/|$)/
 const SILENT_AUTH_RE = /\/?(?:api\/)?auth\/(?:logout|refresh)/
 
 export class AxiosService {
@@ -68,23 +69,21 @@ export class AxiosService {
 	}
 
 	private setupInterceptors(): void {
-		// Request interceptor
 		this.instance.interceptors.request.use(
-			(config: InternalAxiosRequestConfig) => {
+			async (config: InternalAxiosRequestConfig) => {
 				if (this.cluster && !config.headers['x-cluster-url']) {
 					config.headers['x-cluster-url'] = this.cluster
 				}
 
-				const url = config.url || ''
-				const isLoginPath = url.startsWith('/auth/login') || url.startsWith('auth/login')
-				if (
-					!isLoginPath &&
-					!config.headers.Authorization &&
-					!config.headers.authorization
-				) {
-					const token = tokenHelper.getAccessToken()
-					if (token) {
-						config.headers.Authorization = `Bearer ${token}`
+				const isAuthLifecyclePath = AUTH_LIFECYCLE_RE.test(config.url ?? '')
+				if (!isAuthLifecyclePath) {
+					try {
+						const authStore = useAuthStore()
+						if (authStore.hasActiveSession() && authStore.isAccessTokenExpiringSoon()) {
+							await authStore.ensureValidAccessToken()
+						}
+					} catch {
+						// Proceed if Pinia store is not active in isolated contexts
 					}
 				}
 
@@ -93,7 +92,6 @@ export class AxiosService {
 			(error) => Promise.reject(error)
 		)
 
-		// Response interceptor
 		this.instance.interceptors.response.use(
 			(response: AxiosResponse) => this.handleResponse(response),
 			(error) => this.handleError(error)
@@ -118,15 +116,14 @@ export class AxiosService {
 				| undefined
 
 			if (error.response?.status === 401 && originalRequest) {
-				const isAuthPath = AUTH_PATH_RE.test(originalRequest.url ?? '')
+				const isAuthLifecyclePath = AUTH_LIFECYCLE_RE.test(originalRequest.url ?? '')
 
-				if (!isAuthPath && !originalRequest._retry) {
+				if (!isAuthLifecyclePath && !originalRequest._retry) {
 					originalRequest._retry = true
 					try {
 						const authStore = useAuthStore()
-						const newToken = await authStore.refreshAccessToken()
-						if (newToken) {
-							originalRequest.headers.Authorization = `Bearer ${newToken}`
+						const refreshed = await authStore.refreshAccessToken()
+						if (refreshed) {
 							return this.instance(originalRequest)
 						}
 					} catch {
@@ -134,19 +131,11 @@ export class AxiosService {
 					}
 				}
 
-				// If not refreshable or refresh failed
-				try {
-					const authStore = useAuthStore()
-					await authStore.logout()
-				} catch {
-					// ignore
-				}
 				return Promise.reject(error.response)
 			}
 
 			if (error.response?.status === 422) {
-				const err = Promise.reject(error.response)
-				return err
+				return Promise.reject(error.response)
 			}
 
 			const apiError: ApiError = {
@@ -175,6 +164,9 @@ export class AxiosService {
 		} catch (error) {
 			if (shouldShowErrorToast(error, config)) {
 				handleErrorMessage(error as any)
+			}
+			if (config?.rethrowErrors) {
+				throw error
 			}
 		}
 	}
@@ -222,6 +214,9 @@ export class AxiosService {
 			if (shouldShowErrorToast(error, config)) {
 				handleErrorMessage(error)
 			}
+			if (config?.rethrowErrors) {
+				throw error
+			}
 		}
 	}
 
@@ -230,8 +225,15 @@ export class AxiosService {
 		data?: any,
 		config?: AxiosRequestConfig
 	): Promise<AxiosResponse<T>> {
-		const response = await this.instance.patch<T>(url, data, config)
-		return response
+		try {
+			const response = await this.instance.patch<T>(url, data, config)
+			return response
+		} catch (error: any) {
+			if (shouldShowErrorToast(error, config)) {
+				handleErrorMessage(error)
+			}
+			throw error
+		}
 	}
 }
 

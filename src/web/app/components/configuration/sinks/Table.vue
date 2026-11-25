@@ -10,6 +10,7 @@ import { onMounted, ref } from 'vue'
 import { useSinksStore } from '@/stores/sinks.store'
 
 import AppTable from '@/components/app/AppTable.vue'
+import AppTableLabels from '@/components/app/AppTableLabels.vue'
 import ModalDetail from '@/components/configuration/sinks/ModalDetail.vue'
 import ModalSinkForm from '@/components/configuration/sinks/ModalForm.vue'
 
@@ -67,16 +68,6 @@ function onChangePage(payload: { limit: number; offset: number; page: number }) 
 		sinksStore.filter.limit = payload.limit
 		sinksStore.filter.offset = payload.offset
 		sinksStore.fetchSinks()
-	}
-}
-
-function parsedLabelsData(labels: any) {
-	if (!labels) return {}
-	if (typeof labels === 'object') return labels
-	try {
-		return JSON.parse(labels) || {}
-	} catch {
-		return {}
 	}
 }
 
@@ -164,20 +155,7 @@ watchDebounced(
 			</template>
 
 			<template #col.labels="prop">
-				<div
-					class="flex flex-row flex-wrap gap-1"
-					v-if="Object.keys(parsedLabelsData(prop.data.labels)).length > 0"
-				>
-					<UiBadge
-						v-for="(value, key) in parsedLabelsData(prop.data.labels)"
-						:key="`labels-${key}-${value}`"
-						variant="outline"
-						class="text-xs font-normal"
-					>
-						{{ key }} : {{ value }}
-					</UiBadge>
-				</div>
-				<span v-else class="text-muted-foreground">-</span>
+				<AppTableLabels :labels="prop.data.labels" />
 			</template>
 
 			<template #col.type="prop">

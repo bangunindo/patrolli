@@ -76,18 +76,18 @@ render_template \
 	"${GEN_DIR}/patrolli-1-config.yaml"
 
 render_template \
-	"${SCRIPT_DIR}/config/frontend/config-fe.template.yaml" \
-	"${GEN_DIR}/config-fe.yaml"
+	"${SCRIPT_DIR}/config/frontend/config-web.template.yaml" \
+	"${GEN_DIR}/config-web.yaml"
 
-chmod 600 "${GEN_DIR}/config-fe.yaml"
+chmod 600 "${GEN_DIR}/config-web.yaml"
 chmod 644 "${GEN_DIR}/realm-config.json" "${GEN_DIR}/patrolli-0-config.yaml" "${GEN_DIR}/patrolli-1-config.yaml"
 
-# Copy config-fe.yaml to src/web/config-fe.yaml if missing or --force
-if [[ ! -f "${WEB_DIR}/config-fe.yaml" || "${FORCE}" == "true" ]]; then
-	cp "${GEN_DIR}/config-fe.yaml" "${WEB_DIR}/config-fe.yaml"
-	chmod 600 "${WEB_DIR}/config-fe.yaml"
+# Copy config-web.yaml to src/web/config-web.yaml if missing or --force
+if [[ ! -f "${WEB_DIR}/config-web.yaml" || "${FORCE}" == "true" ]]; then
+	cp "${GEN_DIR}/config-web.yaml" "${WEB_DIR}/config-web.yaml"
+	chmod 600 "${WEB_DIR}/config-web.yaml"
 else
-	echo "Note: ${WEB_DIR}/config-fe.yaml already exists; rendered copy saved at ${GEN_DIR}/config-fe.yaml (use --force to overwrite)."
+	echo "Note: ${WEB_DIR}/config-web.yaml already exists; rendered copy saved at ${GEN_DIR}/config-web.yaml (use --force to overwrite)."
 fi
 
 # Export credentials for Playwright in GitHub Actions
@@ -96,6 +96,7 @@ if [[ -n "${GITHUB_ENV:-}" ]]; then
 	{
 		echo "E2E_USERNAME=admin"
 		echo "E2E_PASSWORD=${E2E_ADMIN_PASSWORD}"
+		echo "E2E_OIDC_ORIGIN=https://kc.localtest.me:8443"
 	} >> "${GITHUB_ENV}"
 fi
 

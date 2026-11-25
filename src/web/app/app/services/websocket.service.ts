@@ -2,15 +2,15 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import tokenHelper from '../helpers/token.helper'
+import { useAuthStore } from '@/stores/auth.store'
 
 /* global AddEventListenerOptions, BufferSource */
 interface AppWebSocketOptions {
 	protocols?: string | string[]
-	reconnectInterval?: number // Initial reconnect interval (ms)
-	maxReconnectInterval?: number // Maximum reconnect interval (ms)
-	reconnectDecay?: number // Exponential backoff decay factor
-	maxRetries?: number // Maximum reconnect attempts
+	reconnectInterval?: number
+	maxReconnectInterval?: number
+	reconnectDecay?: number
+	maxRetries?: number
 }
 
 export function normalizeWebSocketUrl(rawUrl: string): string {
@@ -21,11 +21,9 @@ export function normalizeWebSocketUrl(rawUrl: string): string {
 
 	let finalUrl = rawUrl
 
-	// 1. Relative path: '/ws/...' -> 'ws(s)://hostname:port/ws/...'
 	if (rawUrl.startsWith('/')) {
 		finalUrl = `${defaultWsProto}//${window.location.host}${rawUrl}`
 	} else if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
-		// 2. HTTP/HTTPS URL -> WS/WSS URL
 		try {
 			const parsed = new URL(rawUrl)
 			parsed.protocol = isPageHttps || rawUrl.startsWith('https://') ? 'wss:' : 'ws:'
@@ -34,22 +32,8 @@ export function normalizeWebSocketUrl(rawUrl: string): string {
 			finalUrl = rawUrl.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')
 		}
 	} else if (isPageHttps && rawUrl.startsWith('ws://')) {
-		// 3. Upgrade ws:// to wss:// if current page is served over HTTPS (Mixed Content prevention)
+		// Upgrade ws:// to wss:// if current page is served over HTTPS (Mixed Content prevention)
 		finalUrl = rawUrl.replace(/^ws:\/\//, 'wss://')
-	}
-
-	// 4. Attach access token query parameter if authenticated and not already present
-	try {
-		const token = tokenHelper.getAccessToken()
-		if (token) {
-			const parsed = new URL(finalUrl)
-			if (!parsed.searchParams.has('token') && !parsed.searchParams.has('access_token')) {
-				parsed.searchParams.set('token', token)
-				finalUrl = parsed.toString()
-			}
-		}
-	} catch {
-		// Ignore any URL parse failures
 	}
 
 	return finalUrl
@@ -66,6 +50,8 @@ export class AppWebSocket extends EventTarget {
 	private maxRetries: number
 	private retries = 0
 	private isExplicitlyClosed = false
+	private connectAttemptId = 0
+	private reconnectTimeoutId: ReturnType<typeof setTimeout> | null = null
 
 	constructor(url: string, options: AppWebSocketOptions = {}) {
 		super()
@@ -76,14 +62,33 @@ export class AppWebSocket extends EventTarget {
 		this.reconnectDecay = options.reconnectDecay ?? 1.5
 		this.maxRetries = options.maxRetries ?? Infinity
 
-		this.connect()
+		void this.connect()
 	}
 
-	private connect(): void {
+	private clearReconnectTimeout(): void {
+		if (this.reconnectTimeoutId !== null) {
+			clearTimeout(this.reconnectTimeoutId)
+			this.reconnectTimeoutId = null
+		}
+	}
+
+	private async connect(): Promise<void> {
+		this.clearReconnectTimeout()
+		const attemptId = ++this.connectAttemptId
+
+		if (import.meta.client || typeof window !== 'undefined') {
+			try {
+				await useAuthStore().ensureValidAccessToken()
+			} catch {
+				// Proceed with WebSocket connection even if pre-flight check fails
+			}
+			if (this.isExplicitlyClosed || attemptId !== this.connectAttemptId) return
+		}
+
 		this.ws = new WebSocket(this.url, this.protocols)
 
 		this.ws.onopen = () => {
-			this.retries = 0 // Reset counter upon successful connection
+			this.retries = 0
 			this.dispatchEvent(new Event('open'))
 		}
 
@@ -97,7 +102,6 @@ export class AppWebSocket extends EventTarget {
 		}
 
 		this.ws.onclose = (event: CloseEvent) => {
-			// 1. Dispatch 'close' event first
 			try {
 				this.dispatchEvent(
 					new CloseEvent('close', {
@@ -111,10 +115,9 @@ export class AppWebSocket extends EventTarget {
 				this.dispatchEvent(new Event('close'))
 			}
 
-			// 2. Perform cleanup AFTER event is dispatched
+			// Cleanup handlers only after 'close' listeners have executed
 			this.cleanup()
 
-			// 3. Automatic reconnect logic
 			if (!this.isExplicitlyClosed && this.retries < this.maxRetries) {
 				const timeout = Math.min(
 					this.reconnectInterval * Math.pow(this.reconnectDecay, this.retries),
@@ -126,12 +129,14 @@ export class AppWebSocket extends EventTarget {
 					`[AppWebSocket] Connection lost. Reconnecting in ${Math.round(timeout)}ms...`
 				)
 
-				setTimeout(() => this.connect(), timeout)
+				this.reconnectTimeoutId = setTimeout(() => {
+					this.reconnectTimeoutId = null
+					void this.connect()
+				}, timeout)
 			}
 		}
 	}
 
-	// --- Type Safety Overloads for addEventListener ---
 	public override addEventListener(
 		type: 'open' | 'error',
 		listener: (event: Event) => void,
@@ -155,9 +160,6 @@ export class AppWebSocket extends EventTarget {
 		super.addEventListener(type, listener, options)
 	}
 
-	/**
-	 * Send data to WebSocket server
-	 */
 	public send(data: string | Blob | BufferSource): void {
 		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
 			this.ws.send(data)
@@ -166,13 +168,14 @@ export class AppWebSocket extends EventTarget {
 		}
 	}
 
-	/**
-	 * Close connection permanently (without reconnecting)
-	 */
 	public close(code?: number, reason?: string): void {
 		this.isExplicitlyClosed = true
+		this.connectAttemptId++
+		this.clearReconnectTimeout()
 		if (this.ws) {
+			this.cleanup()
 			this.ws.close(code, reason)
+			this.ws = null
 		}
 	}
 
@@ -192,6 +195,8 @@ export class AppWebSocket extends EventTarget {
 	public reconnect(): void {
 		this.isExplicitlyClosed = false
 		this.retries = 0
+		this.connectAttemptId++
+		this.clearReconnectTimeout()
 
 		if (this.ws) {
 			this.cleanup()
@@ -199,6 +204,6 @@ export class AppWebSocket extends EventTarget {
 			this.ws = null
 		}
 
-		this.connect()
+		void this.connect()
 	}
 }

@@ -165,6 +165,7 @@ export interface FieldDescriptor {
 	regex?: RegExp
 	options?: Array<{ label: string; value: any }>
 	children?: FieldDescriptor[]
+	resolveChildren?: () => FieldDescriptor[]
 	unionDiscriminator?: string
 	unionTagMode?: 'internal' | 'external'
 	unionBranches?: Record<string, FieldDescriptor[]>

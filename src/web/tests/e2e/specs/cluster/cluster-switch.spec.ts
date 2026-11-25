@@ -5,7 +5,7 @@
 import { test, expect, STORAGE_STATE } from '../../fixtures/test-fixtures'
 
 test.describe('Cluster Switching & Access Restrictions', () => {
-	test.describe('Multi-Cluster Session (Keycloak SSO)', () => {
+	test.describe('Multi-Cluster Session (OIDC SSO)', () => {
 		test('allows switching active cluster and verifies active cluster update', async ({
 			authPage,
 			page

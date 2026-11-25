@@ -10,7 +10,7 @@ pub mod node_lock;
 use crate::inter::InterCommManager as _;
 use anyhow::{Context, Result};
 use chrono::Utc;
-use deadpool_postgres::{Pool, Transaction};
+use deadpool_postgres::Transaction;
 use patrolli::chan::{AdminChannel, PROCESSOR_CHANNEL_NAME, new as new_channel};
 use patrolli::common::internal_metrics::INTERNAL_METRICS;
 use patrolli::common::shutdown::{Shutdown, join_step};
@@ -18,6 +18,7 @@ use patrolli::config::MonitorConfig;
 use patrolli::config::cluster::{Cluster as ClusterConfig, ClusterPolicy};
 use patrolli::config::global::Global;
 use patrolli::config::sensitive::SecretKeys;
+use patrolli::db::Pool;
 use patrolli::db::schema::{ConfigKeys, Configs};
 use patrolli::payload;
 use patrolli::{cache, common};
@@ -26,7 +27,7 @@ use sea_query_postgres::PostgresBinder;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time;
 use tokio_postgres::error::SqlState;
@@ -75,6 +76,12 @@ pub enum NodeStateType {
     LostConnection = 4,
 }
 
+impl NodeStateType {
+    pub fn is_main(self) -> bool {
+        matches!(self, NodeStateType::Leader | NodeStateType::Main)
+    }
+}
+
 impl TryFrom<u8> for NodeStateType {
     type Error = anyhow::Error;
 
@@ -89,32 +96,130 @@ impl TryFrom<u8> for NodeStateType {
     }
 }
 
-pub struct NodeState(AtomicU8);
+const NODE_STATE_EPOCH_MASK: u64 = (1u64 << 56) - 1;
+
+fn pack_node_state(state: NodeStateType, epoch: u64) -> u64 {
+    ((epoch & NODE_STATE_EPOCH_MASK) << 8) | (state as u8 as u64)
+}
+
+fn next_main_epoch(epoch: u64) -> u64 {
+    epoch.wrapping_add(1) & NODE_STATE_EPOCH_MASK
+}
+
+fn unpack_node_state(raw: u64) -> (NodeStateType, u64) {
+    let state = NodeStateType::try_from(raw as u8).unwrap();
+    (state, raw >> 8)
+}
+
+/// Shared node role state, packing the current [`NodeStateType`] (low 8 bits)
+/// with a monotonic main-lock epoch (high 56 bits) so polling tasks can detect
+/// a lock drop and reacquisition that finished between polls, or a tenure the
+/// node lock renewed because the leader expired this node meanwhile.
+pub struct NodeState(AtomicU64);
 
 impl Default for NodeState {
     fn default() -> Self {
-        Self(AtomicU8::new(NodeStateType::LostConnection as u8))
+        Self(AtomicU64::new(pack_node_state(
+            NodeStateType::LostConnection,
+            0,
+        )))
     }
 }
 
 impl NodeState {
     pub fn get_state(&self) -> NodeStateType {
-        NodeStateType::try_from(self.0.load(Ordering::Relaxed)).unwrap()
+        unpack_node_state(self.0.load(Ordering::Acquire)).0
+    }
+
+    /// Returns the active main-lock epoch while the node holds the main lock
+    /// (`Main` or `Leader`), or `None` otherwise.
+    ///
+    /// The epoch increments each time the node enters `Main`/`Leader` from a
+    /// non-main state (`Standby`/`LostConnection`), unless that is a
+    /// [`resume_main`](Self::resume_main), and on
+    /// [`renew_main_epoch`](Self::renew_main_epoch), and stays unchanged across
+    /// `Main <-> Leader` transitions.
+    pub fn main_epoch(&self) -> Option<u64> {
+        let (state, epoch) = unpack_node_state(self.0.load(Ordering::Acquire));
+        state.is_main().then_some(epoch)
     }
 
     pub fn set_state(&self, state: NodeStateType) {
-        let prev = self.0.swap(state as u8, Ordering::Relaxed);
-        if let Ok(prev) = NodeStateType::try_from(prev)
-            && prev != state
-        {
-            info!(from = ?prev, to = ?state, "node state changed");
+        let prev_raw = self
+            .0
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |raw| {
+                let (prev, epoch) = unpack_node_state(raw);
+                let next_epoch = if !prev.is_main() && state.is_main() {
+                    next_main_epoch(epoch)
+                } else {
+                    epoch
+                };
+                Some(pack_node_state(state, next_epoch))
+            })
+            .unwrap();
+        let (prev_state, _) = unpack_node_state(prev_raw);
+        if prev_state != state {
+            // read back, not derived: only the node lock task writes it
+            let (_, epoch) = self.snapshot();
+            info!(from = ?prev_state, to = ?state, epoch, "node state changed");
         }
     }
 
-    pub fn is_main(&self) -> bool {
-        let state = self.get_state();
-        state == NodeStateType::Leader || state == NodeStateType::Main
+    /// Enters `Main`/`Leader` under the epoch the node last held, for a lock
+    /// taken again after a lost connection with nothing missed in between (the
+    /// node lock decides that). Polling tasks that loaded under that epoch carry
+    /// on with what they hold. With no earlier epoch to continue, or from
+    /// `Standby`, which clears what was loaded, this is [`set_state`](Self::set_state).
+    pub fn resume_main(&self, state: NodeStateType) {
+        debug_assert!(state.is_main());
+        let prev_raw = self
+            .0
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |raw| {
+                let (prev, epoch) = unpack_node_state(raw);
+                let next_epoch =
+                    if prev.is_main() || (prev == NodeStateType::LostConnection && epoch != 0) {
+                        epoch
+                    } else {
+                        next_main_epoch(epoch)
+                    };
+                Some(pack_node_state(state, next_epoch))
+            })
+            .unwrap();
+        let (prev_state, _) = unpack_node_state(prev_raw);
+        if prev_state != state {
+            // read back, not derived: only the node lock task writes it
+            let (_, epoch) = self.snapshot();
+            info!(from = ?prev_state, to = ?state, epoch, "node state changed");
+        }
     }
+
+    /// The state and the epoch last started, read together. Unlike
+    /// [`main_epoch`](Self::main_epoch) the epoch is there in any state: it is
+    /// the one a lost connection may yet continue.
+    pub fn snapshot(&self) -> (NodeStateType, u64) {
+        unpack_node_state(self.0.load(Ordering::Acquire))
+    }
+
+    /// Starts a new main-lock epoch without leaving `Main`/`Leader`, for a
+    /// tenure that kept the lock but can no longer trust what it loaded (the
+    /// leader expired this node while its heartbeat was held up). Polling
+    /// tasks then reload as they do after a lock flap. Does nothing while the
+    /// node is not main: entering main starts an epoch by itself.
+    pub fn renew_main_epoch(&self) {
+        _ = self
+            .0
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |raw| {
+                let (state, epoch) = unpack_node_state(raw);
+                state
+                    .is_main()
+                    .then(|| pack_node_state(state, next_main_epoch(epoch)))
+            });
+    }
+
+    pub fn is_main(&self) -> bool {
+        self.get_state().is_main()
+    }
+
     pub fn is(&self, state: NodeStateType) -> bool {
         self.get_state() == state
     }
@@ -543,5 +648,141 @@ impl Cluster {
             }),
             token,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn main_epoch_tracks_lock_flaps_but_not_leader_promotion() {
+        let state = NodeState::default();
+        assert_eq!(state.get_state(), NodeStateType::LostConnection);
+        assert_eq!(state.main_epoch(), None);
+
+        // Acquiring main bumps the epoch.
+        state.set_state(NodeStateType::Main);
+        let first = state.main_epoch().expect("main must have an epoch");
+
+        // Promoting Main -> Leader (or repeating the same state) keeps the same epoch.
+        state.set_state(NodeStateType::Main);
+        assert_eq!(state.main_epoch(), Some(first));
+        state.set_state(NodeStateType::Leader);
+        assert_eq!(state.main_epoch(), Some(first));
+        state.set_state(NodeStateType::Leader);
+        assert_eq!(state.main_epoch(), Some(first));
+
+        // Dropping to LostConnection and reacquiring bumps the epoch.
+        state.set_state(NodeStateType::LostConnection);
+        assert_eq!(state.main_epoch(), None);
+        state.set_state(NodeStateType::Leader);
+        let second = state.main_epoch().expect("reacquired leader has an epoch");
+        assert_ne!(second, first);
+
+        // Dropping to Standby and returning to Main bumps the epoch again.
+        state.set_state(NodeStateType::Standby);
+        assert_eq!(state.main_epoch(), None);
+        state.set_state(NodeStateType::Main);
+        let third = state.main_epoch().expect("promoted main has an epoch");
+        assert_ne!(third, second);
+    }
+
+    #[test]
+    fn main_epoch_ignores_non_main_transitions_and_leader_demotion() {
+        let state = NodeState::default();
+        // Flipping between non-main states never yields an epoch or bumps it.
+        state.set_state(NodeStateType::Standby);
+        assert_eq!(state.main_epoch(), None);
+        state.set_state(NodeStateType::LostConnection);
+        assert_eq!(state.main_epoch(), None);
+        state.set_state(NodeStateType::Standby);
+        assert_eq!(state.main_epoch(), None);
+
+        // First entry into main sets epoch to 1.
+        state.set_state(NodeStateType::Leader);
+        assert_eq!(state.main_epoch(), Some(1));
+
+        // Demoting Leader -> Main without leaving main preserves the epoch.
+        state.set_state(NodeStateType::Main);
+        assert_eq!(state.main_epoch(), Some(1));
+        assert!(state.is_main());
+    }
+
+    #[test]
+    fn renewing_the_main_epoch_keeps_the_state_and_needs_the_lock() {
+        let state = NodeState::default();
+        // Not main: nothing to renew, and no epoch appears.
+        state.renew_main_epoch();
+        assert_eq!(state.get_state(), NodeStateType::LostConnection);
+        assert_eq!(state.main_epoch(), None);
+        state.set_state(NodeStateType::Standby);
+        state.renew_main_epoch();
+        assert_eq!(state.get_state(), NodeStateType::Standby);
+
+        // The renewals above were no-ops, so entering main is still epoch 1.
+        state.set_state(NodeStateType::Main);
+        assert_eq!(state.main_epoch(), Some(1));
+
+        // Main: a new epoch, same state.
+        state.renew_main_epoch();
+        assert_eq!(state.get_state(), NodeStateType::Main);
+        assert_eq!(state.main_epoch(), Some(2));
+
+        // Leader too.
+        state.set_state(NodeStateType::Leader);
+        state.renew_main_epoch();
+        assert_eq!(state.get_state(), NodeStateType::Leader);
+        assert_eq!(state.main_epoch(), Some(3));
+    }
+
+    #[test]
+    fn resuming_continues_the_epoch_a_lost_connection_interrupted() {
+        let state = NodeState::default();
+        // No tenure yet: nothing to continue, so this is a first epoch.
+        state.resume_main(NodeStateType::Main);
+        assert_eq!(state.main_epoch(), Some(1));
+
+        // Lost and resumed: same epoch, as Main or as Leader.
+        state.set_state(NodeStateType::LostConnection);
+        assert_eq!(state.main_epoch(), None);
+        assert_eq!(state.snapshot(), (NodeStateType::LostConnection, 1));
+        state.resume_main(NodeStateType::Leader);
+        assert_eq!(state.snapshot(), (NodeStateType::Leader, 1));
+
+        // Lost and taken without resuming: a new one.
+        state.set_state(NodeStateType::LostConnection);
+        state.set_state(NodeStateType::Main);
+        assert_eq!(state.main_epoch(), Some(2));
+
+        // Standby cleared what was loaded: resuming from it starts over.
+        state.set_state(NodeStateType::Standby);
+        state.resume_main(NodeStateType::Main);
+        assert_eq!(state.main_epoch(), Some(3));
+    }
+
+    #[test]
+    fn node_state_epoch_wraps_without_corrupting_state() {
+        // Start right at the 56-bit epoch ceiling in a non-main state.
+        let state = NodeState(AtomicU64::new(pack_node_state(
+            NodeStateType::Standby,
+            NODE_STATE_EPOCH_MASK,
+        )));
+        assert_eq!(state.get_state(), NodeStateType::Standby);
+        assert_eq!(state.main_epoch(), None);
+
+        // Entering main wraps the epoch to 0 while keeping the low 8-bit state intact.
+        state.set_state(NodeStateType::Leader);
+        assert_eq!(state.get_state(), NodeStateType::Leader);
+        assert_eq!(state.main_epoch(), Some(0));
+
+        // Next flap advances normally from 0 -> 1.
+        state.set_state(NodeStateType::LostConnection);
+        assert_eq!(state.get_state(), NodeStateType::LostConnection);
+        assert_eq!(state.main_epoch(), None);
+
+        state.set_state(NodeStateType::Main);
+        assert_eq!(state.get_state(), NodeStateType::Main);
+        assert_eq!(state.main_epoch(), Some(1));
     }
 }

@@ -16,18 +16,21 @@ use patrolli::config::sink::{Config as SinkConfig, Sink};
 use patrolli::db::{query, schema};
 
 use anyhow::{Context, Result};
-use deadpool_postgres::{GenericClient, Pool, Transaction};
+use deadpool_postgres::{GenericClient, Transaction};
 use patrolli::config::{Batch, Channel, MonitorConfig, Retry};
+use patrolli::db::Pool;
 use sea_query::{
     BinOper, Expr, ExprTrait, IntoColumnRef, Order, PostgresQueryBuilder, Query as DbQuery,
     QueryStatementBuilder,
 };
 use sea_query_postgres::PostgresBinder;
 use smol_str::ToSmolStr;
+use std::future::Future;
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Instant;
 use thiserror::Error;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, MissedTickBehavior, interval_at, sleep};
 use tokio_postgres::{IsolationLevel, Row};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
@@ -44,6 +47,30 @@ enum ConfigWatcherError {
 impl From<anyhow::Error> for ConfigWatcherError {
     fn from(e: anyhow::Error) -> Self {
         ConfigWatcherError::Other(e)
+    }
+}
+
+/// How long a step of the watcher may run before it is reported, and how often
+/// it is reported again while it still runs.
+const SLOW_STEP: Duration = Duration::from_secs(30);
+
+/// Runs one step of the watcher, naming it for as long as it overruns. A step
+/// that never returns (a sink that will not drain, a query that hangs) would
+/// otherwise leave the node `initializing` with nothing in the log to say where.
+async fn watched<T>(step: &'static str, fut: impl Future<Output = T>) -> T {
+    let started = Instant::now();
+    let mut reminder = interval_at(tokio::time::Instant::now() + SLOW_STEP, SLOW_STEP);
+    reminder.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    tokio::pin!(fut);
+    loop {
+        tokio::select! {
+            out = &mut fut => return out,
+            _ = reminder.tick() => warn!(
+                step,
+                elapsed_s = started.elapsed().as_secs(),
+                "config watcher step is slow"
+            ),
+        }
     }
 }
 
@@ -738,11 +765,10 @@ impl ConfigWatcher {
         Ok(())
     }
 
-    async fn initialize(&mut self) -> Result<(), ConfigWatcherError> {
-        debug!("initializing configuration cache");
-        let mut client = self
-            .db_pool
-            .get()
+    async fn initialize(&mut self, epoch: u64) -> Result<(), ConfigWatcherError> {
+        let started = Instant::now();
+        info!(epoch, "loading configuration");
+        let mut client = watched("get_connection", self.db_pool.get())
             .await
             .context("failed to get db connection")?;
         let tx = client
@@ -758,7 +784,7 @@ impl ConfigWatcher {
         tx.commit()
             .await
             .context("failed to commit db transaction")?;
-        if !self.node_lock.is_main() {
+        if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
         let tx = client
@@ -767,63 +793,66 @@ impl ConfigWatcher {
             .start()
             .await
             .context("failed to start db transaction")?;
-        self.clean_all_logs(&tx)
+        watched("clean_logs", self.clean_all_logs(&tx))
             .await
             .context("failed to clean all logs")?;
         // Before the processors: a lookup processor resolves against the registry,
         // so the tables have to be there by the time a processor compiles.
-        self.initialize_lookup_tables(&tx)
+        watched("lookup_tables", self.initialize_lookup_tables(&tx))
             .await
             .context("failed to load lookup tables")?;
-        if !self.node_lock.is_main() {
+        if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.initialize_processors(&tx)
+        watched("processors_and_sinks", self.initialize_processors(&tx))
             .await
             .context("failed to load processors and sinks")?;
-        if !self.node_lock.is_main() {
+        if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.initialize_listeners(&tx)
+        watched("listeners", self.initialize_listeners(&tx))
             .await
             .context("failed to load listeners")?;
-        if !self.node_lock.is_main() {
+        if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.initialize_hosts(&tx)
+        watched("hosts", self.initialize_hosts(&tx))
             .await
             .context("failed to load hosts")?;
-        if !self.node_lock.is_main() {
+        if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.initialize_endpoints(&tx)
+        watched("endpoints", self.initialize_endpoints(&tx))
             .await
             .context("failed to load endpoints")?;
-        if !self.node_lock.is_main() {
+        if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.initialize_items(&tx)
+        watched("items", self.initialize_items(&tx))
             .await
             .context("failed to load items")?;
-        if !self.node_lock.is_main() {
+        if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.initialize_listener_items_and_endpoints(&tx)
-            .await
-            .context("failed to load listener items and endpoints")?;
-        if !self.node_lock.is_main() {
+        watched(
+            "listener_items",
+            self.initialize_listener_items_and_endpoints(&tx),
+        )
+        .await
+        .context("failed to load listener items and endpoints")?;
+        if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.initialize_cluster_nodes(&tx)
+        watched("cluster_nodes", self.initialize_cluster_nodes(&tx))
             .await
             .context("failed to load cluster nodes")?;
-        if !self.node_lock.is_main() {
+        if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
-        self.read_monitor_config(&tx)
+        watched("monitor_config", self.read_monitor_config(&tx))
             .await
             .context("failed to load the monitor config")?;
-        if !self.node_lock.is_main() {
+        if self.node_lock.main_epoch() != Some(epoch) {
             return Err(ConfigWatcherError::NodeLockLost);
         }
         tx.commit()
@@ -849,6 +878,8 @@ impl ConfigWatcher {
             endpoints = self.cache.endpoint.read().len(),
             items = self.cache.item.read().len(),
             listeners = self.cache.listener.read().len(),
+            epoch,
+            elapsed_ms = started.elapsed().as_millis() as u64,
             "configuration cache loaded"
         );
         Ok(())
@@ -944,6 +975,11 @@ impl ConfigWatcher {
             .await?;
         let (n_processors, n_sinks) = (processors.len(), sinks.len());
         let (n_del_processors, n_del_sinks) = (delete_processors.len(), delete_sinks.len());
+        if n_processors + n_sinks + n_del_processors + n_del_sinks == 0 {
+            // `write` clones the whole graph into a draft and `compile`
+            // republishes it: not something to do on every idle poll.
+            return Ok(());
+        }
         {
             let mut guard = self.cache.processor.write();
             let cache = guard.as_mut().unwrap();
@@ -1238,86 +1274,128 @@ impl ConfigWatcher {
         Ok(())
     }
 
-    async fn poll(&mut self) -> Result<(), ConfigWatcherError> {
+    async fn poll(&mut self, epoch: u64) -> Result<(), ConfigWatcherError> {
         if self.initialized {
-            self.delta_read().await?;
+            watched("apply_changes", self.delta_read()).await?;
         } else {
-            self.initialize().await?;
+            self.initialize(epoch).await?;
             self.initialized = true;
         };
         Ok(())
+    }
+
+    /// The main epoch this watcher loaded its configuration under is over:
+    /// whatever it holds has to be loaded again before it is trusted.
+    fn end_epoch(&mut self) {
+        if self.node_lock.is_main() {
+            // lost and taken again between two polls, or renewed by the node lock
+            // after the leader expired this node
+            warn!("node lock epoch changed, configuration will be reloaded");
+        } else {
+            warn!("node lock is lost, config will not update");
+        }
+        self.initialized = false;
     }
 
     #[tracing::instrument(skip_all, fields(node_id = %self.node_id, node = %self.node_name))]
     pub async fn run(mut self) {
         'root_loop: loop {
             let mut cache_cleared = false;
-            loop {
-                if !self.node_lock.is_main() {
-                    if self.node_lock.is(NodeStateType::Standby) && !cache_cleared {
-                        info!(
-                            "node entered standby mode, clearing configuration, listeners, and sinks"
-                        );
-                        {
-                            let mut guard = self.cache.listener.write();
-                            guard.clear();
-                        }
-                        self.listeners.close_all_listener().await;
-                        {
-                            let mut guard = self.cache.item.write();
-                            guard.clear();
-                        }
-                        {
-                            let mut guard = self.cache.endpoint.write();
-                            guard.clear();
-                        }
-                        {
-                            let mut guard = self.cache.host.write();
-                            guard.clear();
-                        }
-                        {
-                            let mut guard = self.cache.processor.write();
-                            guard.as_mut().unwrap().clear();
-                            if let Err(e) = self.cache.processor.compile(guard) {
-                                error!(error = %format!("{e:#}"), "failed to compile processor cache");
-                            }
-                        }
-                        // Otherwise this node keeps answering lookups from data
-                        // it is no longer responsible for, and its reloader
-                        // keeps re-reading the source files to maintain it.
-                        self.cache.lookup_table.clear();
-                        self.sinks.close_all_sink().await;
-                        self.inter_comm.close_all().await;
-                        cache_cleared = true;
-                    }
-                    tokio::select! {
-                        _ = self.token.cancelled() => return,
-                        _ = sleep(Duration::from_secs(1)) => {},
-                    }
-                    continue;
+            let epoch = loop {
+                if let Some(epoch) = self.node_lock.main_epoch() {
+                    break epoch;
                 }
-                break;
-            }
-            info!("starting config watcher");
+                if self.node_lock.is(NodeStateType::Standby) && !cache_cleared {
+                    info!(
+                        "node entered standby mode, clearing configuration, listeners, and sinks"
+                    );
+                    {
+                        let mut guard = self.cache.listener.write();
+                        guard.clear();
+                    }
+                    watched("close_listeners", self.listeners.close_all_listener()).await;
+                    {
+                        let mut guard = self.cache.item.write();
+                        guard.clear();
+                    }
+                    {
+                        let mut guard = self.cache.endpoint.write();
+                        guard.clear();
+                    }
+                    {
+                        let mut guard = self.cache.host.write();
+                        guard.clear();
+                    }
+                    {
+                        let mut guard = self.cache.processor.write();
+                        guard.as_mut().unwrap().clear();
+                        if let Err(e) = self.cache.processor.compile(guard) {
+                            error!(error = %format!("{e:#}"), "failed to compile processor cache");
+                        }
+                    }
+                    // Otherwise this node keeps answering lookups from data
+                    // it is no longer responsible for, and its reloader
+                    // keeps re-reading the source files to maintain it.
+                    self.cache.lookup_table.clear();
+                    watched("close_sinks", self.sinks.close_all_sink()).await;
+                    watched("close_peers", self.inter_comm.close_all()).await;
+                    info!("configuration cleared, standing by");
+                    cache_cleared = true;
+                }
+                tokio::select! {
+                    _ = self.token.cancelled() => return,
+                    _ = sleep(Duration::from_secs(1)) => {},
+                }
+            };
+            info!(epoch, "starting config watcher");
+            let mut paused = false;
             loop {
-                if !self.node_lock.is_main() {
-                    warn!("node lock is lost, config will not update");
-                    self.initialized = false;
-                    continue 'root_loop;
+                match self.node_lock.snapshot() {
+                    (state, current) if state.is_main() && current == epoch => {
+                        if paused {
+                            info!("node lock is back with nothing missed, config updates resume");
+                            paused = false;
+                        }
+                    }
+                    // The node lock may yet take the lock again under this same
+                    // epoch, when nothing was missed meanwhile. Until it does, or
+                    // starts another, keep what is loaded and read nothing.
+                    (NodeStateType::LostConnection, current) if current == epoch => {
+                        if !paused {
+                            warn!("node lock is lost, config will not update");
+                            paused = true;
+                        }
+                        tokio::select! {
+                            _ = self.token.cancelled() => return,
+                            _ = sleep(Duration::from_secs(1)) => {},
+                        }
+                        continue;
+                    }
+                    _ => {
+                        self.end_epoch();
+                        continue 'root_loop;
+                    }
                 }
                 let initializing = !self.initialized;
-                if let Err(ConfigWatcherError::Other(e)) = self.poll().await {
-                    // `{:#}` renders the whole anyhow chain: the step, the resource, then
-                    // the cause. Both roll back and the next poll retries the same work.
-                    let error = format!("{e:#}");
-                    let key_id = e
-                        .chain()
-                        .find_map(|c| c.downcast_ref::<SecretError>())
-                        .and_then(SecretError::key_id);
-                    if initializing {
-                        error!(%error, key_id, "failed to load the configuration, retrying");
-                    } else {
-                        error!(%error, key_id, "failed to apply configuration changes, retrying");
+                match self.poll(epoch).await {
+                    Ok(()) => {}
+                    Err(ConfigWatcherError::NodeLockLost) => {
+                        self.end_epoch();
+                        continue 'root_loop;
+                    }
+                    Err(ConfigWatcherError::Other(e)) => {
+                        // `{:#}` renders the whole anyhow chain: the step, the resource, then
+                        // the cause. Both roll back and the next poll retries the same work.
+                        let error = format!("{e:#}");
+                        let key_id = e
+                            .chain()
+                            .find_map(|c| c.downcast_ref::<SecretError>())
+                            .and_then(SecretError::key_id);
+                        if initializing {
+                            error!(%error, key_id, "failed to load the configuration, retrying");
+                        } else {
+                            error!(%error, key_id, "failed to apply configuration changes, retrying");
+                        }
                     }
                 }
                 tokio::select! {

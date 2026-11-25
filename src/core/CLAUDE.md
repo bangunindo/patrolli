@@ -156,9 +156,11 @@ monitor::WorkerGroup   (snmp, snmp_walk, prometheus_scrape,         │
   loads and applies what the pure `cluster::balancer::plan` returns. `configs.cluster`
   (`ClusterPolicy`, re-read every tick, last good value kept on a bad edit) caps how many live
   nodes carry hosts with `max_active_nodes` (`0` = all); the other live nodes stay empty as spares.
-  A node stale past `heartbeat_interval + 2s` (or `heartbeat_timeout`, if shorter) hands its hosts
-  as one block to a spare, a returning node becomes the spare (nothing moves back), and lowering
-  the cap evacuates one node per tick. Hosts always move straight to their new owner, never via
+  A node stale past `heartbeat_stale_after` (or `heartbeat_timeout`, if shorter) hands its hosts
+  as one block to a spare. Stale and expired are judged against the leader's own previous
+  heartbeat, never the clock, so a database stall that holds every heartbeat up marks nobody.
+  A returning node becomes the spare (nothing moves back), and lowering the cap evacuates one
+  node per tick. Hosts always move straight to their new owner, never via
   `monitored_by = NULL` (each change makes the hosts trigger log to every node), and an expired
   node is deleted only once it owns no hosts. Sticky hosts are invisible to the balancer and never
   moved: a dead node still owning one keeps its `cluster_nodes` row (inactive, logs purged every
@@ -257,6 +259,11 @@ handlers.
   and the driver owns batching, the sink's `retry:` backoff, metrics and ack/nack. A worker never
   returns because its destination failed; it retries the batch it holds, and nacks it only when
   cancelled. Classify an error as `Retry` only when sure it is transient.
+- **Database pool**: the pool is `db::Pool` (`crates/core/src/db/pool.rs`), never
+  `deadpool_postgres::Pool`: it times every checkout's wait and hold for the `db_pool` internal
+  metrics (cluster mode only, like the forwarder's). `get()` hands out a guard that derefs to
+  deadpool's `Object`; pass `&*client` where `&impl GenericClient` is wanted (the trait is
+  sealed), and take a connection out of the pool with `Client::detach`, not `Object::take`.
 - **Types**: `SmolStr` for short strings, `FxHashMap`/`ahash` over std hashing, `parking_lot` locks
   in sync code, `papaya`/`ArcSwap` where readers must not block. IDs are UUIDv7 (`Uuid::now_v7`).
 - **Migrations**: refinery, embedded from `crates/core/migrations/` as `V<n>__<name>.sql`; they run

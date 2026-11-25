@@ -6,15 +6,15 @@ This guide is intended for DevOps and engineers to run and integrate frontend E2
 
 ## 1. E2E Stack Architecture
 
-The Web E2E suite (`npm run test:e2e`) tests the Nuxt SSR + Nitro BFF application end-to-end against real backend services:
+The Web E2E suite (`pnpm test:e2e`) tests the Nuxt SSR + Nitro BFF application end-to-end against real backend services:
 
-| Service      | Image / Runtime                                             | Host Port         | Role                                                                          |
-| ------------ | ----------------------------------------------------------- | ----------------- | ----------------------------------------------------------------------------- |
-| `postgres`   | `postgres:18-alpine`                                        | `127.0.0.1:5432`  | Database for `patrolli` (`patrolli`, `patrolli1`) and `keycloak` (`keycloak`) |
-| `keycloak`   | `quay.io/keycloak/keycloak:26.7.1`                          | `127.0.0.1:8443`  | OIDC SSO Identity Provider (`https://kc.localtest.me:8443/realms/patrolli`)   |
-| `patrolli`   | `${PATROLLI_CORE_IMAGE}`                                    | `127.0.0.1:8080`  | Primary Patrolli Core cluster (local auth + OIDC)                             |
-| `patrolli_1` | `${PATROLLI_CORE_IMAGE}`                                    | `127.0.0.1:30001` | Secondary cluster for multi-cluster switching tests                           |
-| `frontend`   | Playwright `webServer` (`npm run build && npm run preview`) | `3000`            | Nuxt/Nitro BFF server (`https://localhost:3000`)                              |
+| Service      | Image / Runtime                                       | Host Port         | Role                                                                          |
+| ------------ | ----------------------------------------------------- | ----------------- | ----------------------------------------------------------------------------- |
+| `postgres`   | `postgres:18-alpine`                                  | `127.0.0.1:5432`  | Database for `patrolli` (`patrolli`, `patrolli1`) and `keycloak` (`keycloak`) |
+| `keycloak`   | `quay.io/keycloak/keycloak:26.7.1`                    | `127.0.0.1:8443`  | OIDC SSO Identity Provider (`https://kc.localtest.me:8443/realms/patrolli`)   |
+| `patrolli`   | `${PATROLLI_CORE_IMAGE}`                              | `127.0.0.1:8080`  | Primary Patrolli Core cluster (local auth + OIDC)                             |
+| `patrolli_1` | `${PATROLLI_CORE_IMAGE}`                              | `127.0.0.1:30001` | Secondary cluster for multi-cluster switching tests                           |
+| `frontend`   | Playwright `webServer` (`pnpm build && pnpm preview`) | `3000`            | Nuxt/Nitro BFF server (`https://localhost:3000`)                              |
 
 ---
 
@@ -38,7 +38,7 @@ src/web/dev/
 │   │   ├── patrolli-0-config.template.yaml
 │   │   └── patrolli-1-config.template.yaml
 │   ├── frontend/
-│   │   └── config-fe.template.yaml
+│   │   └── config-web.template.yaml
 │   └── keycloak/
 │       └── realm-config.template.json
 ├── .env                             # (Gitignored) Ephemeral secrets for docker compose
@@ -57,11 +57,11 @@ No TLS private keys or static secrets are stored in Git:
 2. **`./dev/setup.sh`**:
     - Runs `ssl.sh`.
     - Generates random ephemeral secrets (`E2E_JWT_SECRET`, `E2E_OIDC_SECRET`, `E2E_SECRET_KEY`, `E2E_SECRET_KEY_1`, `E2E_POSTGRES_PASSWORD`, `E2E_KC_BOOTSTRAP_PASSWORD`, `E2E_ADMIN_PASSWORD`) and writes them to `dev/.env` (`chmod 600`). All values can be overridden via environment variables before running the script.
-    - Renders all `*.template.*` files into `dev/.generated/` (with `chmod 600` on `config-fe.yaml`) and copies `config-fe.yaml` to `src/web/config-fe.yaml` (if it does not exist yet, or always overwrites when passed the `--force` flag).
+    - Renders all `*.template.*` files into `dev/.generated/` (with `chmod 600` on `config-web.yaml`) and copies `config-web.yaml` to `src/web/config-web.yaml` (if it does not exist yet, or always overwrites when passed the `--force` flag).
     - If `GITHUB_ENV` is active (in GitHub Actions), masks passwords (`::add-mask::`) and exports `E2E_USERNAME=admin` and `E2E_PASSWORD=${E2E_ADMIN_PASSWORD}`.
 3. **`playwright.config.ts`**:
     - Locally, if `E2E_PASSWORD` is not already set in the shell, `playwright.config.ts` reads only `E2E_ADMIN_PASSWORD` from `dev/.env` (using `node:util` `parseEnv`) without loading other backend secrets into the Playwright environment.
-    - The frontend config file can be pointed via the `CONFIG_FILE` env var, falling back to `src/web/config-fe.yaml` by default.
+    - The frontend config file can be pointed via the `CONFIG_FILE` env var, falling back to `src/web/config-web.yaml` by default.
 
 ---
 
@@ -75,8 +75,8 @@ Node.js 22 with npm 9 does not work: `npm ci` fails with `EBADPLATFORM` on an op
 cd src/web
 
 # 1. Install dependencies & Playwright browsers
-npm ci
-npx playwright install chromium --with-deps
+pnpm install --frozen-lockfile
+pnpm exec playwright install chromium --with-deps
 
 # 2. Generate TLS certificates & ephemeral configs
 ./dev/setup.sh --force
@@ -85,7 +85,7 @@ npx playwright install chromium --with-deps
 docker compose -f dev/docker-compose.yml up -d --wait
 
 # 4. Run E2E tests
-npm run test:e2e
+pnpm test:e2e
 
 # 5. Clean up when finished (optional: -v removes the Postgres volume)
 docker compose -f dev/docker-compose.yml down -v
@@ -141,12 +141,12 @@ The GHCR packages must stay **public** so forks can pull without logging in. `tr
 
 1. Sets up Node 24 and maps `kc.localtest.me` to `127.0.0.1` in `/etc/hosts`.
 2. Resolves the core image as described above and exports `PATROLLI_CORE_IMAGE` and `PATROLLI_CORE_PULL_POLICY` for Compose.
-3. Runs `npm ci` and `./dev/setup.sh --force`.
+3. Runs `pnpm install --frozen-lockfile` and `./dev/setup.sh --force`.
 4. Starts the stack with `docker compose up -d --wait`, then polls the two core `/health` endpoints and the Keycloak realm. Only Postgres has a healthcheck, so `--wait` alone returns too early.
-5. Installs Chromium with `npx playwright install chromium --with-deps` and runs `npm run test:e2e` with `CONFIG_FILE=dev/.generated/config-fe.yaml`. `CI=true` makes Playwright use one worker and two retries.
+5. Installs Chromium with `pnpm exec playwright install chromium --with-deps` and runs `pnpm test:e2e` with `CONFIG_FILE=dev/.generated/config-web.yaml`. `CI=true` makes Playwright use one worker and two retries.
 6. On failure, prints the backend logs and uploads `test-results` (traces and screenshots) as the `playwright-report` artifact, kept for 7 days.
 
-Reference timings on a 22-core machine with nothing cached: `npm ci` 45s, Chromium download 25s, stack start 45s, e2e run 3 minutes (including a 20s Nuxt build).
+Reference timings on a 22-core machine with nothing cached: `pnpm install --frozen-lockfile` 45s, Chromium download 25s, stack start 45s, e2e run 3 minutes (including a 20s Nuxt build).
 
 ---
 
@@ -154,10 +154,10 @@ Reference timings on a 22-core machine with nothing cached: `npm ci` 45s, Chromi
 
 - **AGPL-3.0 / REUSE (`fsfe/reuse-action`)**:
     - Every new file in `src/web/dev/` must have `SPDX-FileCopyrightText` & `SPDX-License-Identifier` (`AGPL-3.0-only`) headers, or be covered in `/REUSE.toml` (such as `**/*.json`, `**/*.md`, `src/web/dev/certs/*.cnf`, and `src/web/dev/.dockerignore`).
-- **Prettier & ESLint (`npm run lint`)**:
+- **Prettier & ESLint (`pnpm lint`)**:
     - `src/web/.prettierignore` ignores `dev` so Compose/YAML/JSON config files do not trigger formatting errors when running `prettier --check .`.
 - **Docker Build Hygiene (`src/web/.dockerignore`)**:
-    - `.env`, `.env.*`, `config-fe.yaml`, `config-fe.yml`, and `dev` are included in `src/web/.dockerignore` so local E2E artifacts are not bundled into the production `src/web/Dockerfile` image build.
+    - `.env`, `.env.*`, `config-web.yaml`, `config-web.yml`, and `dev` are included in `src/web/.dockerignore` so local E2E artifacts are not bundled into the production `src/web/Dockerfile` image build.
 
 ---
 

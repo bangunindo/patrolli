@@ -5,9 +5,9 @@
 use arc_swap::Guard;
 use patrolli::common::internal_metrics::visit::SKIP_REASONS;
 use patrolli::common::internal_metrics::{
-    BgpListener, Channel, Dns, DnsForwarder, DnsRecord, Forwarder, ForwarderNode, ForwarderServer,
-    InternalMetrics, Listener, LookupTable, LookupTableProcessor, Monitor, Processor, Sink,
-    SkipCounts,
+    BgpListener, Channel, DbPool, Dns, DnsForwarder, DnsRecord, Forwarder, ForwarderNode,
+    ForwarderServer, InternalMetrics, Listener, LookupTable, LookupTableProcessor, Monitor,
+    Processor, Sink, SkipCounts,
 };
 use patrolli::payload::{ValueOwned, ZStringOwned};
 use smol_str::SmolStr;
@@ -1969,6 +1969,70 @@ fn _get_dns_metric_throughput(
     (metrics, Some(entry))
 }
 
+const DB_POOL_GAUGES: [DnsField<DbPool>; 4] = [
+    ("max_size", |p| p.max_size),
+    ("size", |p| p.size),
+    ("available", |p| p.available),
+    ("waiting", |p| p.waiting),
+];
+
+const DB_POOL_COUNTERS: [DnsField<DbPool>; 3] = [
+    ("checkouts", |p| p.checkouts),
+    ("checkout_errors", |p| p.checkout_errors),
+    ("connections_created", |p| p.connections_created),
+];
+
+type DbPoolDuration = (&'static str, fn(&DbPool) -> Duration);
+
+const DB_POOL_DURATIONS: [DbPoolDuration; 2] = [
+    ("checkout_wait_time", |p| p.checkout_wait_time),
+    ("hold_time", |p| p.hold_time),
+];
+
+/// The `db_pool` section: running totals, or with `prev` per-second rates
+/// (and the seconds waited and held within the window), gauges absolute in
+/// both. All zero in local mode, which has no database.
+fn _db_pool_entry(pool: &DbPool, prev: Option<(&DbPool, f64)>) -> ValueOwned {
+    let mut map = Vec::<(ZStringOwned, ValueOwned)>::with_capacity(
+        DB_POOL_GAUGES.len() + DB_POOL_COUNTERS.len() + DB_POOL_DURATIONS.len(),
+    );
+    for (name, read) in DB_POOL_GAUGES {
+        map.push(kv(name, ValueOwned::Int64(read(pool) as i64)));
+    }
+    for (name, read) in DB_POOL_COUNTERS {
+        let value = match prev {
+            None => ValueOwned::Int64(read(pool) as i64),
+            Some((prev, elapsed)) => {
+                ValueOwned::Double(read(pool).saturating_sub(read(prev)) as f64 / elapsed)
+            }
+        };
+        map.push(kv(name, value));
+    }
+    for (name, read) in DB_POOL_DURATIONS {
+        let value = match prev {
+            None => ValueOwned::Int64(read(pool).as_nanos() as i64),
+            Some((prev, _)) => {
+                ValueOwned::Double(read(pool).saturating_sub(read(prev)).as_secs_f64())
+            }
+        };
+        map.push(kv(name, value));
+    }
+    ValueOwned::KvList(map)
+}
+
+fn _get_db_pool_metric_throughput(
+    snapshots: &InternalMetrics,
+    prev_value: &Arc<(Instant, DbPool)>,
+) -> (Arc<(Instant, DbPool)>, Option<ValueOwned>) {
+    let metrics = snapshots.db_pool.load_full();
+    if metrics.0 == prev_value.0 {
+        return (metrics, None);
+    }
+    let elapsed = metrics.0.duration_since(prev_value.0).as_secs_f64();
+    let entry = _db_pool_entry(&metrics.1, Some((&prev_value.1, elapsed)));
+    (metrics, Some(entry))
+}
+
 /// The snapshots the previous throughput pass diffed against. One per
 /// listener, so two listeners never consume each other's window.
 pub(super) struct PrevValue {
@@ -1983,6 +2047,7 @@ pub(super) struct PrevValue {
     forwarder_server: Arc<(Instant, ForwarderServer)>,
     lookup_table: Arc<(Instant, Vec<LookupTable>)>,
     dns: Arc<(Instant, Dns)>,
+    db_pool: Arc<(Instant, DbPool)>,
 }
 
 /// One record's attributes: a nested document of every subsystem's snapshot,
@@ -1994,7 +2059,7 @@ pub(super) fn render(
     report_throughput: bool,
     baseline: &mut Option<PrevValue>,
 ) -> Option<Vec<(ZStringOwned, ValueOwned)>> {
-    let mut attrs = Vec::<(ZStringOwned, ValueOwned)>::with_capacity(11);
+    let mut attrs = Vec::<(ZStringOwned, ValueOwned)>::with_capacity(12);
     if report_throughput {
         if let Some(prev_value) = baseline {
             let (sink_channel_prev, sink_channel) = _get_channel_throughput(
@@ -2084,6 +2149,12 @@ pub(super) fn render(
                 prev_value.dns = dns_prev;
                 attrs.push((ZStringOwned::from_static("dns"), dns));
             }
+            let (db_pool_prev, db_pool) =
+                _get_db_pool_metric_throughput(snapshots, &prev_value.db_pool);
+            if let Some(db_pool) = db_pool {
+                prev_value.db_pool = db_pool_prev;
+                attrs.push((ZStringOwned::from_static("db_pool"), db_pool));
+            }
         } else {
             *baseline = Some(PrevValue {
                 sink_channel: snapshots.sink_channel.load_full(),
@@ -2097,6 +2168,7 @@ pub(super) fn render(
                 forwarder_server: snapshots.forwarder_server.load_full(),
                 lookup_table: snapshots.lookup_table.load_full(),
                 dns: snapshots.dns.load_full(),
+                db_pool: snapshots.db_pool.load_full(),
             });
             return None;
         }
@@ -2142,6 +2214,9 @@ pub(super) fn render(
 
         let dns = _dns_entry(&snapshots.dns.load().1, None);
         attrs.push((ZStringOwned::from_static("dns"), dns));
+
+        let db_pool = _db_pool_entry(&snapshots.db_pool.load().1, None);
+        attrs.push((ZStringOwned::from_static("db_pool"), db_pool));
     }
     Some(attrs)
 }
@@ -2305,5 +2380,46 @@ mod dns_tests {
         assert!(matches!(field(record, "lookups_hit"), ValueOwned::Double(v) if *v == 10.0));
         let forwarder = first(field(&rate, "forwarders"));
         assert!(matches!(field(forwarder, "requests"), ValueOwned::Double(v) if *v == 2.0));
+    }
+}
+
+#[cfg(test)]
+mod db_pool_tests {
+    use super::*;
+
+    fn field<'a>(value: &'a ValueOwned, name: &str) -> &'a ValueOwned {
+        let ValueOwned::KvList(fields) = value else {
+            panic!("expected a map")
+        };
+        &fields
+            .iter()
+            .find(|(key, _)| key.as_ref() == name)
+            .unwrap()
+            .1
+    }
+
+    #[test]
+    fn counters_become_rates_and_gauges_stay_absolute() {
+        let snapshot = |checkouts, waiting, hold| DbPool {
+            max_size: 10,
+            waiting,
+            checkouts,
+            hold_time: Duration::from_secs(hold),
+            ..Default::default()
+        };
+        let (previous, current) = (snapshot(10, 1, 4), snapshot(30, 3, 7));
+
+        let total = _db_pool_entry(&current, None);
+        assert!(matches!(field(&total, "max_size"), ValueOwned::Int64(10)));
+        assert!(matches!(field(&total, "checkouts"), ValueOwned::Int64(30)));
+        assert!(matches!(
+            field(&total, "hold_time"),
+            ValueOwned::Int64(7_000_000_000)
+        ));
+
+        let rate = _db_pool_entry(&current, Some((&previous, 2.0)));
+        assert!(matches!(field(&rate, "waiting"), ValueOwned::Int64(3)));
+        assert!(matches!(field(&rate, "checkouts"), ValueOwned::Double(v) if *v == 10.0));
+        assert!(matches!(field(&rate, "hold_time"), ValueOwned::Double(v) if *v == 3.0));
     }
 }

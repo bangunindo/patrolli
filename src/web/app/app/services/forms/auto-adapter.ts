@@ -881,6 +881,14 @@ export class AutoFormAdapter {
 
 		const unwrapped = unwrapZodType(schema)
 
+		if (unwrapped.typeName === 'lazy') {
+			const getter = getZodDef(unwrapped.innerType)?.getter
+			if (typeof getter === 'function') {
+				return this.deepSanitize(val, getter(), currentPath, hints, root)
+			}
+			return val
+		}
+
 		// 1. Sanitize empty strings
 		if (val === '') {
 			if (hint.emptyPolicy === 'null') return null

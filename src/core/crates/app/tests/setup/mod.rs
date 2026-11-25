@@ -11,9 +11,10 @@ pub mod otlp;
 pub mod patrolli;
 mod upstream;
 
+use ::patrolli::db::Pool;
 use ::patrolli::{common, common::mib, config, db};
 use anyhow::Context;
-use deadpool_postgres::{Config as PgConfig, Pool, PoolConfig, Runtime, Transaction};
+use deadpool_postgres::{Config as PgConfig, PoolConfig, Transaction};
 use std::sync::{Arc, Once};
 use std::time::Duration;
 use testcontainers::core::WaitFor;
@@ -81,6 +82,8 @@ pub fn secret_keys() -> Arc<config::sensitive::SecretKeys> {
 
 pub const CLUSTER_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(2);
 pub const CLUSTER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+/// Capped by the timeout wherever that one is shorter.
+pub const CLUSTER_HEARTBEAT_STALE_AFTER: Duration = Duration::from_secs(3);
 
 /// How long [`eventually`] keeps retrying. Generous on purpose: a check returns
 /// as soon as it holds, so only a failing test waits this long, and a loaded CI
@@ -267,18 +270,20 @@ pub async fn setup_db() -> (TestDb, Pool) {
         }
     };
 
-    let mut cfg = PgConfig::new();
-    cfg.url = Some(test_db.url.clone());
-    cfg.pool = Some(PoolConfig {
-        max_size: 10,
-        ..Default::default()
-    });
-    let pool = cfg
-        .create_pool(Some(Runtime::Tokio1), NoTls)
-        .expect("failed to create pool");
-
+    let pool = pool(&test_db.url, 10);
     db::run_migrations(&pool).await.expect("migrations failed");
     (test_db, pool)
+}
+
+/// A pool of up to `max_size` connections to the database at `url`.
+pub fn pool(url: &str, max_size: usize) -> Pool {
+    let mut cfg = PgConfig::new();
+    cfg.url = Some(url.to_string());
+    cfg.pool = Some(PoolConfig {
+        max_size,
+        ..Default::default()
+    });
+    Pool::build(cfg.builder(NoTls).expect("invalid pool config")).expect("failed to create pool")
 }
 
 /// `url` with its database swapped for `name`, keeping any `?query`. Only the

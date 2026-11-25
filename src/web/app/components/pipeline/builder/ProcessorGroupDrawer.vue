@@ -139,13 +139,6 @@ function handleOpenPreviewData() {
 	}
 }
 
-function handlePreviewProcessor(item: IGroupProcessorItem) {
-	activeMenuProcessorId.value = null
-	if (nodeId.value) {
-		store.openPreviewDataModal(nodeId.value, item.processor_id)
-	}
-}
-
 function toggleMenu(id: string, event: MouseEvent) {
 	event.stopPropagation()
 	if (activeMenuProcessorId.value === id) {
@@ -441,16 +434,6 @@ function onDragEnd() {
 						v-if="activeMenuProcessorId === item.processor_id"
 						class="absolute right-0 top-full mt-1 w-36 bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100 text-xs font-medium"
 					>
-						<!-- Preview Data -->
-						<button
-							type="button"
-							class="w-full px-3.5 py-2 text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700/60 text-left transition-colors"
-							@click="handlePreviewProcessor(item)"
-						>
-							Preview Data
-						</button>
-
-						<!-- View / Edit -->
 						<button
 							type="button"
 							class="w-full px-3.5 py-2 text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700/60 text-left transition-colors"

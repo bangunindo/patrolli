@@ -6,11 +6,13 @@ FROM node:26-slim AS build-stage
 
 WORKDIR /app
 
+RUN npm install -g pnpm@12
+
 COPY . .
 
-RUN npm ci
+RUN pnpm install --frozen-lockfile
 
-RUN npm run build
+RUN pnpm build
 
 FROM node:26 AS production-stage
 LABEL org.opencontainers.image.source="https://github.com/bangunindo/patrolli" \

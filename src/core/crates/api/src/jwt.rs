@@ -15,10 +15,11 @@ use axum::{
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use chrono::{DateTime, Duration, Utc};
-use deadpool_postgres::{GenericClient, Pool};
+use deadpool_postgres::GenericClient;
 use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::jwk::{AlgorithmParameters, JwkSet, PublicKeyUse};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use patrolli::db::Pool;
 use sea_query::{Expr, ExprTrait, PostgresQueryBuilder, Query as DbQuery};
 use sea_query_postgres::{PostgresBinder, PostgresValues};
 use serde::{Deserialize, Serialize};

@@ -5,9 +5,11 @@
 import { defineStore } from 'pinia'
 import { computed, reactive, ref } from 'vue'
 import pipelinesApi from '@/app/api/pipelines.api'
-import hostsApi from '@/app/api/hosts.api'
-import sinksApi from '@/app/api/sinks.api'
 import appHelper from '@/app/helpers/app.helper'
+import {
+	createHostsPaginatedResource,
+	createSinksPaginatedResource
+} from '@/app/helpers/pipeline-resource.helper'
 import { FormMode } from '@@/shared/types/app.type'
 import type {
 	CreatePipelineRequest,
@@ -42,7 +44,10 @@ export const usePipelineStore = defineStore(
 		const loading = reactive({
 			table: false,
 			form: false,
-			resources: false
+			hosts: false,
+			hostsMore: false,
+			sinks: false,
+			sinksMore: false
 		})
 
 		const error = ref<string | null>(null)
@@ -50,8 +55,74 @@ export const usePipelineStore = defineStore(
 		const pipelines = ref<IPipelineItem[]>([])
 		const currentPipeline = ref<IPipelineItem | null>(null)
 
-		const availableHosts = ref<IHostSelectorItem[]>([])
-		const availableSinks = ref<ISinkSelectorItem[]>([])
+		function resolveClusterUrls(clusterURL?: string): string[] | undefined {
+			const target = clusterURL !== undefined ? clusterURL : form.cluster_url
+			return target ? [target] : undefined
+		}
+
+		const hostsResource = createHostsPaginatedResource<IHostSelectorItem>({
+			mapItem: (h) => ({
+				id: h.host_id,
+				name: h.name,
+				ip: h.ip || h.host_id,
+				environment: (h.environment as any) || 'prod'
+			}),
+			getId: (h) => h.id,
+			clearOnError: true,
+			onLoadingChange: (isLoading, isMore) => {
+				loading.hosts = isLoading
+				loading.hostsMore = isMore
+			}
+		})
+
+		const sinksResource = createSinksPaginatedResource<ISinkSelectorItem>({
+			mapItem: (s) => ({
+				id: s.sink_id,
+				name: s.name,
+				type: s.type || 'sink'
+			}),
+			getId: (s) => s.id,
+			clearOnError: true,
+			onLoadingChange: (isLoading, isMore) => {
+				loading.sinks = isLoading
+				loading.sinksMore = isMore
+			}
+		})
+
+		function buildNameMap<T extends { name?: string }>(
+			cache: Record<string, T>
+		): Record<string, string> {
+			const map: Record<string, string> = {}
+			for (const [id, item] of Object.entries(cache)) {
+				if (item?.name) map[id] = item.name
+			}
+			return map
+		}
+
+		const availableHosts = hostsResource.items
+		const availableHostsTotal = hostsResource.total
+		const hostsSearchQuery = hostsResource.searchQuery
+		const hostNameCache = computed(() => buildNameMap(hostsResource.cache.value))
+
+		const availableSinks = sinksResource.items
+		const availableSinksTotal = sinksResource.total
+		const sinksSearchQuery = sinksResource.searchQuery
+		const sinkNameCache = computed(() => buildNameMap(sinksResource.cache.value))
+
+		const FORM_VISIBLE_TAG_HYDRATION_LIMIT = 50
+
+		function hydrateHostsByIds(ids: string[], clusterURL?: string) {
+			return hostsResource.hydrateByIds(ids, resolveClusterUrls(clusterURL))
+		}
+
+		function hydrateSinksByIds(ids: string[], clusterURL?: string) {
+			return sinksResource.hydrateByIds(ids, resolveClusterUrls(clusterURL))
+		}
+
+		function resetSelectorCaches() {
+			hostsResource.reset()
+			sinksResource.reset()
+		}
 
 		const pipelineModalShow = ref<boolean>(false)
 		const pipelineFormMode = ref<FormMode>(FormMode.ADD)
@@ -77,6 +148,7 @@ export const usePipelineStore = defineStore(
 			form.assignedHosts = []
 			form.assignedSinks = []
 			form.last_updated = undefined
+			resetSelectorCaches()
 		}
 
 		const fetchPipelines = async (clusterURLs?: string[]) => {
@@ -124,49 +196,28 @@ export const usePipelineStore = defineStore(
 			}
 		}
 
-		// Fetch hosts for selector popover using hostsApi
-		async function fetchHostsForCluster(clusterURL?: string) {
-			loading.resources = true
-			try {
-				const cUrls = clusterURL ? [clusterURL] : undefined
-				const res = await hostsApi.getHosts({ limit: 100 }, cUrls)
-				if (res?.success && res.data?.hosts) {
-					availableHosts.value = res.data.hosts.map((h: any) => ({
-						id: h.host_id,
-						name: h.name,
-						ip: h.ip || h.host_id,
-						environment: (h.environment as any) || 'prod'
-					}))
-				} else {
-					availableHosts.value = []
-				}
-			} catch {
-				availableHosts.value = []
-			} finally {
-				loading.resources = false
-			}
+		function fetchHostsForCluster(clusterURL?: string, search = '') {
+			return hostsResource.fetchFirst(resolveClusterUrls(clusterURL), search)
 		}
 
-		// Fetch sinks for selector popover using sinksApi
-		async function fetchSinksForCluster(clusterURL?: string) {
-			loading.resources = true
-			try {
-				const cUrls = clusterURL ? [clusterURL] : undefined
-				const res = await sinksApi.getSinks({ limit: 100 }, cUrls)
-				if (res?.success && res.data?.sinks) {
-					availableSinks.value = res.data.sinks.map((s: any) => ({
-						id: s.sink_id,
-						name: s.name,
-						type: s.type || 'sink'
-					}))
-				} else {
-					availableSinks.value = []
-				}
-			} catch {
-				availableSinks.value = []
-			} finally {
-				loading.resources = false
-			}
+		function loadMoreHosts(clusterURL?: string) {
+			return hostsResource.loadMore(resolveClusterUrls(clusterURL))
+		}
+
+		function resolveAllHostIds(clusterURL?: string, search = ''): Promise<string[]> {
+			return hostsResource.resolveAllIds(resolveClusterUrls(clusterURL), search)
+		}
+
+		function fetchSinksForCluster(clusterURL?: string, search = '') {
+			return sinksResource.fetchFirst(resolveClusterUrls(clusterURL), search)
+		}
+
+		function loadMoreSinks(clusterURL?: string) {
+			return sinksResource.loadMore(resolveClusterUrls(clusterURL))
+		}
+
+		function resolveAllSinkIds(clusterURL?: string, search = ''): Promise<string[]> {
+			return sinksResource.resolveAllIds(resolveClusterUrls(clusterURL), search)
 		}
 
 		async function openPipelineDetail(id: string, clusterURL?: string) {
@@ -192,6 +243,7 @@ export const usePipelineStore = defineStore(
 			currentPipeline.value = pipeline
 
 			if (value && pipeline && formMode === FormMode.UPDATE) {
+				resetSelectorCaches()
 				form.name = pipeline.name
 				form.cluster_url = pipeline.cluster_url || appHelper.getDefaultClusterValue() || ''
 				form.access = pipeline.access
@@ -214,6 +266,17 @@ export const usePipelineStore = defineStore(
 					form.visibility = detail.visibility
 					form.access = detail.visibility === 1 ? 'public' : 'private'
 					form.adm_status = detail.adm_status
+
+					await Promise.all([
+						hydrateHostsByIds(
+							form.assignedHosts.slice(0, FORM_VISIBLE_TAG_HYDRATION_LIMIT),
+							form.cluster_url
+						),
+						hydrateSinksByIds(
+							form.assignedSinks.slice(0, FORM_VISIBLE_TAG_HYDRATION_LIMIT),
+							form.cluster_url
+						)
+					])
 				}
 			} else if (!value) {
 				resetForm()
@@ -379,7 +442,13 @@ export const usePipelineStore = defineStore(
 			loading,
 			error,
 			availableHosts,
+			availableHostsTotal,
+			hostsSearchQuery,
+			hostNameCache,
 			availableSinks,
+			availableSinksTotal,
+			sinksSearchQuery,
+			sinkNameCache,
 			startSelected,
 			stopSelected,
 			deleteSelected,
@@ -387,7 +456,14 @@ export const usePipelineStore = defineStore(
 			deletePipeline,
 			fetchPipelines,
 			fetchHostsForCluster,
+			loadMoreHosts,
+			resolveAllHostIds,
+			hydrateHostsByIds,
 			fetchSinksForCluster,
+			loadMoreSinks,
+			resolveAllSinkIds,
+			hydrateSinksByIds,
+			resetSelectorCaches,
 			openPipelineDetail,
 			pipelineModalShow,
 			pipelineFormMode,

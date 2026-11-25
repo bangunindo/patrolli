@@ -3,20 +3,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { logClusterError, logClusterForward, logClusterResponse } from './logger.service'
+import {
+	executeClusterRequestsWithAuthRetry,
+	executeSingleClusterRequestWithAuthRetry
+} from './auth-refresh.service'
 import { handleSingleClusterResponse, mergeDynamicResponses } from '@@/server/utils/response'
 import { executeHttpRequest } from '@@/server/services/apibase.service'
 import { extractProxyContext } from '@@/server/modules/proxy/proxy.utils'
-import type { ICluster, IKeycloakConfig } from '@@/shared/types/cluster.type'
+import type {
+	ICluster,
+	IKeycloakConfig,
+	IOidcConfig,
+	OidcTokenEndpointAuthMethod,
+	OidcTokenSource
+} from '@@/shared/types/cluster.type'
 import { type H3Event, readBody, setResponseStatus } from 'h3'
-import fs from 'node:fs'
-import path from 'node:path'
-import process from 'node:process'
 import YAML from 'yaml'
+import { getCandidateConfigFilePaths, readCachedYamlConfigFile } from './config-file.service'
 
 /**
  * Parses raw cluster configuration from various formats (YAML string, JSON string, Array of objects, Record map).
  * Supports:
- * - config-fe.yaml file content:
+ * - config-web.yaml file content:
  *     clusters:
  *       - name: 'patrolli'
  *         url: 'http://patrolli:8080'
@@ -99,64 +107,139 @@ export function parseClustersConfig(raw: any): ICluster[] {
 	return []
 }
 
-export interface IAppConfig {
-	clusters?: any
-	auth?: {
-		keycloak?: IKeycloakConfig
-	}
+const loggedConfigWarnings = new Set<string>()
+const clustersByParsedConfig = new WeakMap<object, ICluster[]>()
+const oidcByParsedConfig = new WeakMap<object, IOidcConfig | null>()
+
+export function resetConfigWarnings(): void {
+	loggedConfigWarnings.clear()
+}
+
+function warnConfigOnce(message: string): void {
+	if (loggedConfigWarnings.has(message)) return
+	loggedConfigWarnings.add(message)
+	console.warn(message)
 }
 
 export function getAppConfigFileContent(configPath?: string): { parsed: any; raw: string } {
-	const explicitPath = configPath || process.env.CONFIG_FILE
-
-	const candidatePaths = explicitPath
-		? [explicitPath]
-		: [
-				path.resolve(process.cwd(), 'config-fe.yaml'),
-				path.resolve(process.cwd(), 'config-fe.yml'),
-				'/app/config-fe.yaml',
-				'/config-fe.yaml'
-			]
-
-	for (const filePath of candidatePaths) {
-		try {
-			if (fs.existsSync(filePath)) {
-				const content = fs.readFileSync(filePath, 'utf-8')
-				if (content.trim()) {
-					const parsed = YAML.parse(content)
-					return { parsed, raw: content }
-				}
-			}
-		} catch {
-			// Skip to next candidate if error reading file
-		}
+	const loaded = readCachedYamlConfigFile(configPath)
+	if (loaded) {
+		return { parsed: loaded.parsed, raw: loaded.raw }
 	}
 
+	const candidatePaths = getCandidateConfigFilePaths(configPath)
 	throw new Error(
 		`[Patrolli-FE Config] Configuration file not found or empty. Checked paths: ${candidatePaths.join(', ')}`
 	)
 }
 
-export function getKeycloakConfig(configPath?: string): IKeycloakConfig | null {
+function normalizeTokenSource(value: unknown, fallback: OidcTokenSource): OidcTokenSource {
+	if (value === 'access_token' || value === 'id_token') {
+		return value
+	}
+	if (value !== undefined && value !== null && String(value).trim() !== '') {
+		warnConfigOnce(
+			`[Patrolli-FE Config] Unknown auth.oidc.token_source "${String(value)}"; falling back to "${fallback}".`
+		)
+	}
+	return fallback
+}
+
+function normalizeTokenEndpointAuthMethod(value: unknown): OidcTokenEndpointAuthMethod | undefined {
+	if (value === 'client_secret_post' || value === 'client_secret_basic') {
+		return value
+	}
+	if (value !== undefined && value !== null && String(value).trim() !== '') {
+		warnConfigOnce(
+			`[Patrolli-FE Config] Unknown auth.oidc.token_endpoint_auth_method "${String(value)}"; falling back to auto-detection.`
+		)
+	}
+	return undefined
+}
+
+export function getOidcConfig(configPath?: string): IOidcConfig | null {
 	const fileConfig = getAppConfigFileContent(configPath)
-	if (fileConfig?.parsed?.auth?.keycloak) {
-		const kc = fileConfig.parsed.auth.keycloak
-		return {
-			host: String(kc.host || '')
+	const parsed = fileConfig?.parsed
+	const canMemoize = parsed !== null && typeof parsed === 'object'
+	if (canMemoize && oidcByParsedConfig.has(parsed)) {
+		return oidcByParsedConfig.get(parsed) ?? null
+	}
+
+	const auth = parsed?.auth
+	let resolved: IOidcConfig | null = null
+
+	if (auth?.oidc) {
+		const oidc = auth.oidc
+		const clientSecret = String(oidc.client_secret || '').trim()
+		const redirectUri = String(oidc.redirect_uri || '').trim()
+		resolved = {
+			issuer: String(oidc.issuer || '').trim(),
+			client_id: String(oidc.client_id || '').trim(),
+			client_secret: clientSecret || undefined,
+			redirect_uri: redirectUri || undefined,
+			scopes: String(oidc.scopes ?? '').trim() || 'openid profile email',
+			token_source: normalizeTokenSource(oidc.token_source, 'id_token'),
+			token_endpoint_auth_method: normalizeTokenEndpointAuthMethod(
+				oidc.token_endpoint_auth_method
+			),
+			display_name: String(oidc.display_name ?? '').trim() || 'SSO',
+			ca_cert_path: oidc.ca_cert_path ? String(oidc.ca_cert_path).trim() : undefined
+		}
+	} else if (auth?.keycloak) {
+		warnConfigOnce(
+			'[Patrolli-FE Config] "auth.keycloak" is deprecated in config-web.yaml; migrate to "auth.oidc".'
+		)
+		const kc = auth.keycloak
+		const clientSecret = String(kc.client_secret || '').trim()
+		const redirectUri = String(kc.redirect_uri || '').trim()
+		resolved = {
+			issuer: String(kc.issuer || kc.host || '')
 				.trim()
 				.replace(/\/+$/, ''),
 			client_id: String(kc.client_id || '').trim(),
-			client_secret: String(kc.client_secret || '').trim(),
-			redirect_uri: String(kc.redirect_uri || '').trim(),
+			client_secret: clientSecret || undefined,
+			redirect_uri: redirectUri || undefined,
+			scopes: String(kc.scopes ?? '').trim() || 'openid profile email',
+			token_source: normalizeTokenSource(kc.token_source, 'access_token'),
+			token_endpoint_auth_method: normalizeTokenEndpointAuthMethod(
+				kc.token_endpoint_auth_method
+			),
+			display_name: String(kc.display_name ?? '').trim() || 'Keycloak',
 			ca_cert_path: kc.ca_cert_path ? String(kc.ca_cert_path).trim() : undefined
 		}
 	}
-	return null
+
+	if (canMemoize) {
+		oidcByParsedConfig.set(parsed, resolved)
+	}
+	return resolved
+}
+
+export function getKeycloakConfig(configPath?: string): IKeycloakConfig | null {
+	const oidc = getOidcConfig(configPath)
+	if (!oidc) return null
+	return {
+		host: oidc.issuer.replace(/\/+$/, ''),
+		client_id: oidc.client_id,
+		client_secret: oidc.client_secret || '',
+		redirect_uri: oidc.redirect_uri || '',
+		ca_cert_path: oidc.ca_cert_path
+	}
 }
 
 export function getClustersConfig(_event?: H3Event, configPath?: string): ICluster[] {
 	const fileConfig = getAppConfigFileContent(configPath)
-	return parseClustersConfig(fileConfig.parsed)
+	const parsed = fileConfig?.parsed
+	if (parsed !== null && typeof parsed === 'object') {
+		const cached = clustersByParsedConfig.get(parsed)
+		if (cached) {
+			return cached
+		}
+		const resolved = parseClustersConfig(parsed)
+		clustersByParsedConfig.set(parsed, resolved)
+		return resolved
+	}
+	return parseClustersConfig(parsed)
 }
 
 export function resolveClusterTargets(
@@ -221,7 +304,6 @@ export async function forwardToCluster(
 	}
 
 	const reqHeaders: Record<string, string> = {}
-	if (options.headers?.cookie) reqHeaders.cookie = options.headers.cookie
 	let authHeader = options.headers?.authorization || options.headers?.Authorization
 	if (!authHeader && options.headers?.cookie) {
 		const match =
@@ -322,7 +404,7 @@ export async function handleClusterMutation(event: H3Event) {
 			success: false,
 			error: {
 				title: 'Bad Gateway',
-				detail: 'No clusters configured. Please configure clusters in config-fe.yaml or environment variables.'
+				detail: 'No clusters configured. Please configure clusters in config-web.yaml or environment variables.'
 			}
 		}
 		setResponseStatus(event, 502)
@@ -338,30 +420,37 @@ export async function handleClusterMutation(event: H3Event) {
 		}
 	}
 
-	// 1. Single cluster target
 	const singleTarget = targetClusters[0]
 	if (targetClusters.length === 1 && singleTarget) {
-		const res = await forwardToCluster(singleTarget, fullApiPath, {
-			method,
-			headers: reqHeaders,
-			query,
-			body
+		const { result } = await executeSingleClusterRequestWithAuthRetry(event, {
+			item: singleTarget,
+			reqHeaders,
+			clusterHeader,
+			execute: (cluster, headers) =>
+				forwardToCluster(cluster, fullApiPath, {
+					method,
+					headers,
+					query,
+					body
+				})
 		})
-		return handleSingleClusterResponse(event, singleTarget, res)
+		return handleSingleClusterResponse(event, singleTarget, result)
 	}
 
-	// 2. Multi-cluster mutations (POST, PUT, DELETE, PATCH)
-	const mutationResponses = await Promise.all(
-		targetClusters.map(async (cluster) => {
+	const { results: mutationResponses } = await executeClusterRequestsWithAuthRetry(event, {
+		items: targetClusters,
+		reqHeaders,
+		clusterHeader,
+		execute: async (cluster, headers) => {
 			const res = await forwardToCluster(cluster, fullApiPath, {
 				method,
-				headers: reqHeaders,
+				headers,
 				query,
 				body
 			})
 			return { cluster, data: res.data, status: res.status }
-		})
-	)
+		}
+	})
 
 	const merged = mergeDynamicResponses(mutationResponses)
 	const finalStatus = merged.status_code || 200

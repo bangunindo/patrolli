@@ -418,6 +418,7 @@ mod tests {
             "monitor",
             "processor",
             "sink",
+            "db_pool",
         ] {
             assert!(has_section(attrs, section), "missing {section}");
         }

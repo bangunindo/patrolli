@@ -10,6 +10,7 @@ import { onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import AppTable from '@/components/app/AppTable.vue'
+import AppTableLabels from '@/components/app/AppTableLabels.vue'
 import ModalListenerForm from '@/components/configuration/listener/ModalForm.vue'
 
 import ModalDetail from '@/components/configuration/listener/ModalDetail.vue'
@@ -61,16 +62,6 @@ function onChangePage(payload: { limit: number; offset: number; page: number }) 
 		listenersStore.filter.limit = payload.limit
 		listenersStore.filter.offset = payload.offset
 		listenersStore.fetchListeners()
-	}
-}
-
-function parsedLabelsData(labels: any) {
-	if (!labels) return {}
-	if (typeof labels === 'object') return labels
-	try {
-		return JSON.parse(labels) || {}
-	} catch {
-		return {}
 	}
 }
 
@@ -156,19 +147,7 @@ watchDebounced(
 				</div>
 			</template>
 			<template #col.labels="prop">
-				<div class="flex gap-1 flex-wrap max-w-sm">
-					<template v-if="Object.keys(parsedLabelsData(prop.data.labels)).length > 0">
-						<UiBadge
-							v-for="(value, key) in parsedLabelsData(prop.data.labels)"
-							:key="`labels-${key}-${value}`"
-							variant="outline"
-							class="text-xs font-normal"
-						>
-							{{ key }} : {{ value }}
-						</UiBadge>
-					</template>
-					<span v-else class="text-muted-foreground">-</span>
-				</div>
+				<AppTableLabels :labels="prop.data.labels" />
 			</template>
 			<template #col.type="prop">
 				<UiBadge

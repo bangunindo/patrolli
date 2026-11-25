@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 PT Bangunindo Teknusa Jaya
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+shamefullyHoist: true
+
+allowBuilds:
+    '@parcel/watcher': true
+    esbuild: true
+    vue-demi: true
+
+overrides:
+    minimatch: 11.0.8
+    deepmerge: 4.3.1
+    glob: 14.0.6
+    esbuild: 0.25.0
+    form-data: 4.0.6
+    js-yaml: 4.3.2
+    dompurify: 3.4.18
+    postcss: 8.5.27
+    devalue: 5.9.4
+    source-map-js: 1.2.2
+    braces: 3.0.3
+    chokidar: 4.0.3
+    micromatch: 4.0.8
+    fast-glob: 3.3.3
+    '@simple-git/argv-parser': 2.0.1
+    simple-git: 4.0.2
+    node-forge: 1.4.3
+    postcss-selector-parser: 7.1.6
+    '@vue/server-renderer': 3.5.43
+    markdown-it: 14.3.3
+    serialize-javascript: 7.1.4

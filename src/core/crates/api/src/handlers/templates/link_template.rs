@@ -338,7 +338,7 @@ pub async fn link_template(
         ),
         item_tree AS (
             SELECT
-                uuidv7() AS new_item_id,
+                patrolli_uuidv7() AS new_item_id,
                 (SELECT host_template_id FROM curr_template) AS host_template_id,
                 i.item_id AS template_item_id,
                 i.listener_id,
@@ -355,7 +355,7 @@ pub async fn link_template(
             FROM parent_items i
             UNION ALL
             SELECT
-                uuidv7() AS new_item_id,
+                patrolli_uuidv7() AS new_item_id,
                 e.child_id AS host_template_id,
                 it.new_item_id AS template_item_id,
                 NULL::uuid AS listener_id,

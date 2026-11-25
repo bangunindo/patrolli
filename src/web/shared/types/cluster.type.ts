@@ -12,6 +12,21 @@ export interface ICluster {
 	clientPath?: string
 }
 
+export type OidcTokenSource = 'id_token' | 'access_token'
+export type OidcTokenEndpointAuthMethod = 'client_secret_post' | 'client_secret_basic'
+
+export interface IOidcConfig {
+	issuer: string
+	client_id: string
+	client_secret?: string
+	redirect_uri?: string
+	scopes: string
+	token_source: OidcTokenSource
+	token_endpoint_auth_method?: OidcTokenEndpointAuthMethod
+	display_name: string
+	ca_cert_path?: string
+}
+
 export interface IKeycloakConfig {
 	host: string
 	client_id: string
@@ -32,7 +47,7 @@ export interface ICorsConfig {
 	max_age?: number
 }
 
-export interface IClusterSelect extends ICluster {
+interface IClusterSelect extends ICluster {
 	label: string
 	value: string
 }

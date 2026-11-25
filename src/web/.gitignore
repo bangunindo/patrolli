@@ -32,7 +32,6 @@ coverage
 *.sln
 *.sw?
 
-pnpm-lock.yaml
 .env
 .env.dev
 .env.production
@@ -61,7 +60,7 @@ config/config.json
 
 /init.sql
 
-/config-fe.yaml
+/config-web.yaml
 /*compose.yml
 Dockerfile.*
 

@@ -154,7 +154,7 @@ onUnmounted(() => {
 		>
 			<Background pattern-color="#94A3B8" :gap="16" :size="1" />
 			<CanvasBottomControls />
-			<CanvasNodeToolbar />
+			<CanvasNodeToolbar v-if="!store.loading.canvas" />
 
 			<!-- Custom Node Renderers matching Figma 2778:139774 -->
 			<template #node-source="props">

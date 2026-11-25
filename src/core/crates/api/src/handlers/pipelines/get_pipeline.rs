@@ -36,8 +36,8 @@ pub async fn get_pipeline(
     Path(pipeline_id): Path<Uuid>,
 ) -> Result<ResponseData<PipelineDetail>, ResponseError> {
     let client = state.db_pool.get().await.ctx("get database connection")?;
-    let pipeline = find_pipeline(&client, pipeline_id, auth_user.user_id, false).await?;
-    let detail = load_detail(&client, pipeline).await?;
+    let pipeline = find_pipeline(&*client, pipeline_id, auth_user.user_id, false).await?;
+    let detail = load_detail(&*client, pipeline).await?;
 
     Ok(ResponseData::from_status(StatusCode::OK).with_data(detail))
 }

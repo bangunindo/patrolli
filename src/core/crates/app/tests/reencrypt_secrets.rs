@@ -5,10 +5,9 @@
 mod setup;
 
 use anyhow::{Context, Result};
-use deadpool_postgres::Pool;
 use patrolli::config::sensitive::{SecretKeys, Sensitive, SensitiveFields};
 use patrolli::config::{endpoint, listener, sink};
-use patrolli::db;
+use patrolli::db::{self, Pool};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use uuid::Uuid;

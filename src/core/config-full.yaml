@@ -185,6 +185,9 @@ global:
   #     insecure_skip_verify: false
   #     ca_cert_path: /etc/patrolli/db-ca.crt
   #   db_pool_size: 20
+  #   # A node refuses to start on a PostgreSQL server older than 14. true lets
+  #   # it start anyway, with a warning: older servers are untested.
+  #   db_skip_version_check: false
   #   watcher_interval: 5            # seconds between config-change polls
   #   # The REST API. Omit this whole block on the nodes that should not serve
   #   # it: one node per cluster is enough. `enabled` defaults to true when the
@@ -238,8 +241,13 @@ global:
   #   cluster:
   #     node_id: 019d8eec-203e-7e83-895e-6a07d6f2f58e
   #     node_name: patrolli-node-1
-  #     heartbeat_timeout: 15        # seconds; declare a peer dead after this
-  #     heartbeat_interval: 5        # seconds between heartbeats
+  #     heartbeat_timeout: 60        # seconds; a node silent this long is removed
+  #                                  # and reloads everything when it returns.
+  #                                  # Must be greater than heartbeat_interval.
+  #     heartbeat_stale_after: 20    # seconds; a node silent this long has its
+  #                                  # hosts failed over. Must be greater than
+  #                                  # heartbeat_interval, capped at heartbeat_timeout.
+  #     heartbeat_interval: 5        # seconds between heartbeats, at least 1
   #     metadata:
   #       # Address peers reach this node on (host:port, resolvable).
   #       advertise_address: "10.0.0.10:4636"

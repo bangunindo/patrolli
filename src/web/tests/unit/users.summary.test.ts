@@ -33,6 +33,7 @@ let mockRequestHeaders: Record<string, string> = { authorization: 'Bearer test-t
 
 vi.mock('h3', () => ({
 	defineEventHandler: (fn: any) => fn,
+	getCookie: vi.fn(() => undefined),
 	getRequestHeaders: vi.fn(() => ({ authorization: 'Bearer test-token' })),
 	getRequestHeader: vi.fn((_event: any, name: string) => mockRequestHeaders[name])
 }))
@@ -245,6 +246,25 @@ describe('User Summary / Stats Feature', () => {
 					total_allow_sso: 0,
 					user_cluster: {}
 				}
+			})
+		})
+
+		it('findClusterUserByUsername should resolve user when cluster returns a top-level array', async () => {
+			const { findClusterUserByUsername } =
+				await import('@@/server/modules/users/users.controller')
+			const cluster = { name: 'Cluster Alpha', url: 'http://alpha.cluster' } as any
+			vi.mocked(clusterService.forwardToCluster).mockResolvedValueOnce({
+				status: 200,
+				data: [
+					{ user_id: 'u-1', username: 'alice' },
+					{ user_id: 'u-2', username: 'bob' }
+				]
+			} as any)
+
+			const found = await findClusterUserByUsername(cluster, 'bob', {})
+			expect(found).toEqual({
+				status: 200,
+				user: { user_id: 'u-2', username: 'bob' }
 			})
 		})
 	})

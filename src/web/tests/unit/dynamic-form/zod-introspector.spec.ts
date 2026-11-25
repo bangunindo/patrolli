@@ -121,4 +121,58 @@ describe('zod-introspector', () => {
 			expect(descriptors[2].name).toBe('priority')
 		})
 	})
+
+	describe('introspectZodSchema - Lazy Recursive Arrays', () => {
+		it('should defer and memoize resolveChildren for lazy recursive object arrays', () => {
+			type ChainNode = {
+				oid: string
+				chain?: ChainNode[]
+			}
+			const chainNodeSchema: z.ZodType<ChainNode> = z.lazy(() =>
+				z.object({
+					oid: z.string(),
+					chain: z.array(chainNodeSchema).optional()
+				})
+			)
+			const rootSchema = z.object({
+				oids: z.array(chainNodeSchema)
+			})
+
+			const descriptors = introspectZodSchema(rootSchema)
+			const oidsDesc = descriptors.find((d) => d.name === 'oids')!
+
+			expect(oidsDesc.widget).toBe('array-object')
+			expect(oidsDesc.children).toBeUndefined()
+			expect(typeof oidsDesc.resolveChildren).toBe('function')
+
+			const firstResolved = oidsDesc.resolveChildren!()
+			const secondResolved = oidsDesc.resolveChildren!()
+
+			expect(firstResolved).toBe(secondResolved)
+			expect(firstResolved.map((d) => d.name)).toEqual(['oid', 'chain'])
+			expect(firstResolved.find((d) => d.name === 'chain')?.widget).toBe('array-object')
+		})
+
+		it('should resolve fields from both sides when lazy array element is an intersection', () => {
+			const baseSchema = z.object({
+				oid: z.string()
+			})
+			const extraSchema = z.object({
+				label: z.string()
+			})
+			const lazyIntersection = z.lazy(() => z.intersection(baseSchema, extraSchema))
+			const rootSchema = z.object({
+				items: z.array(lazyIntersection)
+			})
+
+			const descriptors = introspectZodSchema(rootSchema)
+			const itemsDesc = descriptors.find((d) => d.name === 'items')!
+
+			expect(itemsDesc.widget).toBe('array-object')
+			expect(typeof itemsDesc.resolveChildren).toBe('function')
+
+			const resolved = itemsDesc.resolveChildren!()
+			expect(resolved.map((d) => d.name)).toEqual(['oid', 'label'])
+		})
+	})
 })

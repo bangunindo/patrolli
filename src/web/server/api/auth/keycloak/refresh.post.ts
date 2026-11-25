@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { defineEventHandler } from 'h3'
-import { handleKeycloakRefresh } from '@@/server/modules/keycloak/keycloak.controller'
+import { handleAuthRefresh } from '@@/server/modules/auth/auth.controller'
 
 export default defineEventHandler((event) => {
-	return handleKeycloakRefresh(event)
+	return handleAuthRefresh(event, 'oidc')
 })

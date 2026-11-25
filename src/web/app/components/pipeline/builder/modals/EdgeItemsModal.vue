@@ -52,7 +52,16 @@ watch(
 
 const availableHosts = computed(() => {
 	const hostIds = store.pipelineDetail?.host_ids || []
-	return store.availableHosts.filter((h) => hostIds.includes(h.host_id))
+	const itemHostNames = new Map<string, string>()
+	for (const item of store.pipelineItems || []) {
+		if (item?.host_id && item?.host_name && !itemHostNames.has(item.host_id)) {
+			itemHostNames.set(item.host_id, item.host_name)
+		}
+	}
+	return hostIds.map((hostId) => ({
+		host_id: hostId,
+		name: store.hostById.get(hostId)?.name || itemHostNames.get(hostId) || hostId
+	}))
 })
 
 const hostFilterOptions = computed(() => [

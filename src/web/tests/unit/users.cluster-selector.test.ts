@@ -84,12 +84,12 @@ describe('ClusterSelector Component - Single vs Multi-Cluster Login', () => {
 		expect(emitted?.[0]?.[0]).toEqual(['patrolli2'])
 	})
 
-	it('should display ALL clusters when logged in as multi-cluster (SSO/Keycloak)', async () => {
+	it('should display ALL clusters when logged in as multi-cluster (SSO/OIDC)', async () => {
 		const authStore = useAuthStore()
 		const appStore = useAppStore()
 
 		// Simulate multi-cluster SSO login
-		authStore.authProvider = 'keycloak'
+		authStore.authProvider = 'oidc'
 		expect(authStore.isClusterReadonly).toBe(false)
 		appStore.activeClusterURL = null
 
