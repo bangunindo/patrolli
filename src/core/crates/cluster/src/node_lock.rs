@@ -39,6 +39,9 @@ pub struct NodeLock {
     /// when the lock is taken again, no other process held the lock meanwhile:
     /// a main writes its heartbeat before its watcher touches anything.
     last_heartbeat: Option<DateTime<Utc>>,
+    /// The heartbeat committed before `last_heartbeat`, kept and dropped with
+    /// it: what a leader judges the other nodes against (see `leader_tasks`).
+    heartbeat_before_last: Option<DateTime<Utc>>,
     /// Watches the process holding our node lock while this one stands by.
     main_watch: HolderWatch,
 }
@@ -160,6 +163,7 @@ impl NodeLock {
             standby_client: None,
             policy: ClusterPolicy::default(),
             last_heartbeat: None,
+            heartbeat_before_last: None,
             main_watch: HolderWatch::default(),
         }
     }
@@ -342,13 +346,22 @@ impl NodeLock {
         Ok(updated)
     }
 
-    /// `judged_from` is the heartbeat this leader committed on its previous tick
-    /// (this tick's, when it has none). Every peer is judged against it instead
-    /// of the clock: a database stall holds every node's heartbeat up alike, and
-    /// the heartbeats it releases still carry the time they were started at.
-    /// Against the clock they would all look stale at once. Against a stamp as
-    /// old as theirs, only a node that fell behind the leader does. A node that
-    /// died is found one tick later for it.
+    /// `judged_from` is the heartbeat this leader committed two ticks ago. Every
+    /// peer is judged against it instead of the clock: a database stall holds
+    /// every node's heartbeat up alike, and the heartbeats it releases still
+    /// carry the time they were started at. Against the clock they would all
+    /// look stale at once. Against a stamp as old as theirs, only a node that
+    /// fell behind the leader does.
+    ///
+    /// Two ticks, not one: a heartbeat is as old as its start, and visible only
+    /// once committed. The previous heartbeat may have started while a peer's
+    /// was still waiting to commit, any time later, and this tick judges right
+    /// after its own commit, when the peer's next one may still be waiting. The
+    /// one before was committed a whole interval before this tick started, so a
+    /// peer no slower than the leader has a heartbeat in that is as young. A
+    /// leader with no such heartbeat yet (a process that just started) does not
+    /// judge: nothing it has says how long the others have been held up. A node
+    /// that died is found two ticks later for it.
     async fn leader_tasks(
         &mut self,
         tx: &Transaction<'_>,
@@ -704,10 +717,10 @@ impl NodeLock {
             }
             tx.commit().await.context("failed to commit transaction")?;
             // what the leader tasks below judge the other nodes against
-            let judged_from = self.last_heartbeat.unwrap_or(heartbeat);
+            let judged_from = self.heartbeat_before_last;
             // only once committed: after a commit that failed, the row may or may
             // not carry it, and not matching is the answer that reloads
-            self.last_heartbeat = Some(heartbeat);
+            self.heartbeat_before_last = self.last_heartbeat.replace(heartbeat);
             let since_last_heartbeat_ms = last_beat.map(|at| at.elapsed().as_millis() as u64);
             last_beat = Some(Instant::now());
             // A lock taken again after a lost connection continues the tenure it
@@ -749,12 +762,16 @@ impl NodeLock {
                 self.node_lock.set_state(state);
             }
             if leader_lock {
-                let tx = client
-                    .transaction()
-                    .await
-                    .context("failed to start transaction")?;
-                self.leader_tasks(&tx, judged_from).await?;
-                tx.commit().await.context("failed to commit transaction")?;
+                if let Some(judged_from) = judged_from {
+                    let tx = client
+                        .transaction()
+                        .await
+                        .context("failed to start transaction")?;
+                    self.leader_tasks(&tx, judged_from).await?;
+                    tx.commit().await.context("failed to commit transaction")?;
+                } else {
+                    debug!("no heartbeat to judge the other nodes against yet");
+                }
                 leader_watch = HolderWatch::default();
             } else {
                 self.watch_leader(&client, &mut leader_watch).await?;
@@ -781,6 +798,7 @@ impl NodeLock {
             match self.main_loop().await {
                 Ok(_) => {
                     self.last_heartbeat = None;
+                    self.heartbeat_before_last = None;
                     self.node_lock.set_state(NodeStateType::Standby)
                 }
                 Err(e) => {
@@ -791,6 +809,7 @@ impl NodeLock {
                         error!(error = %format!("{e:#}"), "node lock loop failed");
                         // standby clears what the watcher holds: nothing to resume
                         self.last_heartbeat = None;
+                        self.heartbeat_before_last = None;
                         self.node_lock.set_state(NodeStateType::Standby);
                     }
                 }

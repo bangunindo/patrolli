@@ -1700,3 +1700,101 @@ async fn a_silent_node_keeps_its_hosts_until_stale_after() -> Result<()> {
     leader.stop().await?;
     Ok(())
 }
+
+/// A process that starts leading while every heartbeat is slow has no heartbeat
+/// of its own from before: its first one starts later than the heartbeat a peer
+/// has under way by however long that one has been waiting, and it judges as
+/// soon as both are through, when the peer's next one is still held up. Against
+/// that first heartbeat, a peer whose heartbeats take longer than
+/// `heartbeat_stale_after` loses its hosts although it never stopped.
+#[tokio::test]
+async fn a_leader_that_starts_while_heartbeats_are_slow_marks_nobody_stale() -> Result<()> {
+    setup::setup_logging();
+    let (_db, db_pool) = setup::setup_db().await;
+    let stale_after = Duration::from_secs(2);
+    let timeout = Duration::from_secs(60);
+    // how long every heartbeat takes, as on a disk whose commits wait this long
+    let slow = 5.0_f64;
+    let (leader, owner) = start_spare_leader_and_owner(&db_pool, timeout, stale_after).await?;
+    let conn = db_pool.get().await.context("failed to get connection")?;
+    conn.batch_execute(&format!(
+        "CREATE FUNCTION slow_heartbeat() RETURNS trigger AS $$ \
+         BEGIN \
+           PERFORM pg_sleep({slow}); \
+           RETURN NEW; \
+         END $$ LANGUAGE plpgsql; \
+         CREATE TRIGGER trg_slow_heartbeat BEFORE INSERT ON cluster_nodes \
+         FOR EACH ROW EXECUTE FUNCTION slow_heartbeat();"
+    ))
+    .await?;
+
+    // A slow heartbeat becomes visible `slow` after it started, which is when the
+    // owner starts its next one. Wait for that next one to have been under way
+    // for longer than the stale threshold, with time left before it is through.
+    let under_way = stale_after.as_secs_f64() + 1.0;
+    eventually(async || {
+        let row = conn
+            .query_one(
+                "SELECT clock_timestamp() - last_heartbeat > make_interval(secs := $2), \
+                        clock_timestamp() - last_heartbeat < make_interval(secs := $3) \
+                 FROM cluster_nodes WHERE node_id = $1",
+                &[
+                    &owner.node_id,
+                    &(slow + under_way),
+                    &(slow + under_way + 1.0),
+                ],
+            )
+            .await?;
+        let (waited, in_time): (bool, bool) = (row.try_get(0)?, row.try_get(1)?);
+        ensure!(
+            waited && in_time,
+            "waiting for a slow owner heartbeat to be under way"
+        );
+        Ok(())
+    })
+    .await;
+
+    // the leader goes away, and a process that never led takes over before the
+    // owner's next tick could
+    leader.token.cancel();
+    terminate_leader_backend(&conn).await?;
+    leader.task.await?;
+    let started: chrono::DateTime<chrono::Utc> = conn
+        .query_one("SELECT clock_timestamp()", &[])
+        .await?
+        .try_get(0)?;
+    let fresh = RunningNode::start_with(&db_pool, Uuid::now_v7(), "fresh", timeout, stale_after);
+
+    // four of its heartbeats are in, so it has been through three whole ticks:
+    // the first one it judges on is among them
+    for heartbeats in [2.0, 4.0] {
+        eventually(async || {
+            let ticked: Option<bool> = conn
+                .query_opt(
+                    "SELECT last_heartbeat > $2::timestamptz + make_interval(secs := $3) \
+                     FROM cluster_nodes WHERE node_id = $1",
+                    &[&fresh.node_id, &started, &(slow * (heartbeats - 1.0) - 1.0)],
+                )
+                .await?
+                .map(|row| row.try_get(0))
+                .transpose()?;
+            ensure!(
+                fresh.state.is(cluster::NodeStateType::Leader) && ticked == Some(true),
+                "waiting for the new leader's ticks, got {:?}, {ticked:?}",
+                fresh.state.get_state()
+            );
+            Ok(())
+        })
+        .await;
+    }
+
+    assert_eq!(
+        host_counts(&db_pool).await?,
+        HashMap::from([(Some(owner.node_id), 2)]),
+        "a node as slow as the leader that just started keeps its hosts"
+    );
+
+    fresh.stop().await?;
+    owner.stop().await?;
+    Ok(())
+}
