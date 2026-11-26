@@ -52,6 +52,7 @@ pub struct InternalLogsListener {
     export: Arc<LogExport>,
     filter: Targets,
     buffer_size: usize,
+    throttle: bool,
     batch_size: usize,
     batch_timeout: Duration,
     capture: Mutex<Capture>,
@@ -121,6 +122,7 @@ impl InternalLogsListener {
         let filter = log_export::targets(logs.level, &logs.include, &exclude);
         Self {
             buffer_size: logs.buffer_size,
+            throttle: logs.enable_throttle,
             batch_size: conf.batch.batch_size,
             batch_timeout: conf.batch.batch_timeout,
             conf,
@@ -142,7 +144,8 @@ impl InternalLogsListener {
             Some((_, rx)) => rx.clone(),
             None => {
                 let (registration, rx) =
-                    self.export.register(self.filter.clone(), self.buffer_size);
+                    self.export
+                        .register(self.filter.clone(), self.buffer_size, self.throttle);
                 capture.active = Some((registration, rx.clone()));
                 rx
             }
@@ -496,7 +499,7 @@ mod tests {
     #[test]
     fn an_event_maps_to_one_row() {
         let export = LogExport::new();
-        let (_reg, rx) = export.register(log_export::targets(Level::Info, &[], &[]), 16);
+        let (_reg, rx) = export.register(log_export::targets(Level::Info, &[], &[]), 16, false);
         let subscriber = tracing_subscriber::registry().with(
             log_export::layer(export.clone()).with_filter(log_export::filter(export.clone())),
         );

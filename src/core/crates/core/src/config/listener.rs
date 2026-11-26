@@ -750,6 +750,11 @@ pub struct InternalLogs {
     /// Events held between capture and this listener; beyond it events are
     /// dropped and counted, never waited for.
     pub buffer_size: usize,
+    /// Rate-limit repeats of one event (same level, target, message and field
+    /// values), as the logger does for its own output. Off by default: every
+    /// occurrence is exported and `buffer_size` is the only bound on a burst.
+    /// Independent of `global.logger.disable_throttle`.
+    pub enable_throttle: bool,
 }
 
 fn default_internal_logs_buffer_size() -> usize {
@@ -763,6 +768,7 @@ impl Default for InternalLogs {
             include: Vec::new(),
             exclude: Vec::new(),
             buffer_size: default_internal_logs_buffer_size(),
+            enable_throttle: false,
         }
     }
 }

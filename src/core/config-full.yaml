@@ -59,6 +59,7 @@ global:
     # are rate-limited by default, with a periodic summary of what was
     # suppressed. Set true to emit every occurrence instead — useful when
     # debugging a burst, at the cost of unbounded log volume from hot paths.
+    # Log output only: an internal_logs listener has its own enable_throttle.
     disable_throttle: false
     # Per-module overrides — handy to silence noisy crates like async_snmp.
     modules:
@@ -767,6 +768,12 @@ listeners:
         - patrolli_sink::kafka
       # Events held between capture and this listener. Default 10000.
       buffer_size: 10000
+      # Rate-limit repeats of one event (same level, target, message and
+      # field values), as global.logger does for its own output. Default
+      # false: every occurrence is exported and buffer_size is the only bound
+      # on a burst, so exclude the destination sink's module (see above).
+      # Independent of global.logger.disable_throttle.
+      enable_throttle: false
 
   # ── Internal metrics: patrolli's own throughput / queue counters, every
   #    `interval`. Every main cluster node runs its listeners, so each node

@@ -13,6 +13,12 @@
 //! channel drops the event and counts it in [`Registration::dropped`]; turning
 //! events into records is the consumer's job, on its own task.
 //!
+//! Throttling is a registration's choice, yet it happens here: it has to cut a
+//! burst before the bounded channel, not after. The layer consults its
+//! throttle ([`LogExportLayer::with_throttle`]) at most once per event, and
+//! only when a registration that asked for it matches, so one instance serves
+//! them all and an event nobody throttles is never charged.
+//!
 //! Span fields are recorded into an extension so an event carries the identity
 //! of its scope (`sink_id`, `listener`, ...), which the logging convention puts
 //! on spans rather than events.
@@ -82,6 +88,8 @@ pub struct LogEvent {
 struct Subscription {
     id: u64,
     filter: Targets,
+    /// Whether the layer's throttle may withhold events from this one.
+    throttle: bool,
     tx: flume::Sender<Arc<LogEvent>>,
     dropped: Arc<AtomicU64>,
 }
@@ -128,12 +136,15 @@ impl LogExport {
     }
 
     /// Starts delivering events that `filter` enables into a channel holding at
-    /// most `buffer_size` events. Delivery stops when the returned
-    /// [`Registration`] is dropped.
+    /// most `buffer_size` events. With `throttle`, repeats of one event are
+    /// rate-limited by the layer's throttle; without, every occurrence is
+    /// delivered and only the channel bounds a burst. Delivery stops when the
+    /// returned [`Registration`] is dropped.
     pub fn register(
         self: &Arc<Self>,
         filter: Targets,
         buffer_size: usize,
+        throttle: bool,
     ) -> (Registration, flume::Receiver<Arc<LogEvent>>) {
         let (tx, rx) = flume::bounded(buffer_size.max(1));
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -141,6 +152,7 @@ impl LogExport {
         let sub = Arc::new(Subscription {
             id,
             filter,
+            throttle,
             tx,
             dropped: dropped.clone(),
         });
@@ -220,8 +232,12 @@ pub fn targets(level: ConfigLevel, include: &[LogModule], exclude: &[String]) ->
     targets
 }
 
+/// A layer that throttles nothing until given [`LogExportLayer::with_throttle`].
 pub fn layer(export: Arc<LogExport>) -> LogExportLayer {
-    LogExportLayer { export }
+    LogExportLayer {
+        export,
+        throttle: Unthrottled,
+    }
 }
 
 pub fn filter(export: Arc<LogExport>) -> LogExportFilter {
@@ -284,15 +300,42 @@ impl<S> Filter<S> for LogExportFilter {
 /// Span fields, kept as a span extension.
 struct SpanFields(Fields);
 
-pub struct LogExportLayer {
-    export: Arc<LogExport>,
+/// The throttle of a layer built without one: lets every event through.
+pub struct Unthrottled;
+
+impl<S> Filter<S> for Unthrottled {
+    fn enabled(&self, _meta: &Metadata<'_>, _cx: &Context<'_, S>) -> bool {
+        true
+    }
 }
 
-impl<S> Layer<S> for LogExportLayer
+pub struct LogExportLayer<T = Unthrottled> {
+    export: Arc<LogExport>,
+    throttle: T,
+}
+
+impl<T> LogExportLayer<T> {
+    /// Rate-limits what registrations made with `throttle` receive.
+    ///
+    /// `throttle` is a `Filter` only for its `event_enabled` (and the span
+    /// hooks it may keep state with): the layer calls it from `on_event`
+    /// instead of stacking it in `with_filter`, where it would decide for
+    /// every registration at once.
+    pub fn with_throttle<U>(self, throttle: U) -> LogExportLayer<U> {
+        LogExportLayer {
+            export: self.export,
+            throttle,
+        }
+    }
+}
+
+impl<S, T> Layer<S> for LogExportLayer<T>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
+    T: Filter<S> + 'static,
 {
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        self.throttle.on_new_span(attrs, id, ctx.clone());
         let Some(span) = ctx.span(id) else {
             return;
         };
@@ -306,6 +349,7 @@ where
     }
 
     fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
+        self.throttle.on_record(id, values, ctx.clone());
         let Some(span) = ctx.span(id) else {
             return;
         };
@@ -325,11 +369,16 @@ where
         // fields of a placeholder callsite; match and record on those.
         let normalized = event.normalized_metadata();
         let meta = normalized.as_ref().unwrap_or_else(|| event.metadata());
-        let matched: SmallVec<[&Arc<Subscription>; 4]> = state
+        let mut matched: SmallVec<[&Arc<Subscription>; 4]> = state
             .subs
             .iter()
             .filter(|s| s.filter.would_enable(meta.target(), meta.level()))
             .collect();
+        // Asked once, and only on behalf of a registration that wants it: the
+        // throttle charges the event's signature on every call.
+        if matched.iter().any(|s| s.throttle) && !self.throttle.event_enabled(event, &ctx) {
+            matched.retain(|s| !s.throttle);
+        }
         if matched.is_empty() {
             return;
         }
@@ -509,7 +558,7 @@ mod tests {
         // level is derived from live subscribers, and other tests' changes
         // re-derive it at any moment.
         let (_reg, rx, line) = with_export(&export, || {
-            let (reg, rx) = export.register(include("fake_dep", ConfigLevel::Warn), 16);
+            let (reg, rx) = export.register(include("fake_dep", ConfigLevel::Warn), 16, false);
             tracing_log::log::warn!(target: "other_dep", "not included");
             tracing_log::log::warn!(target: "fake_dep::storage", "disk {} slow", 3);
             (reg, rx, line!() - 1)
@@ -533,7 +582,7 @@ mod tests {
         with_export(&export, || {
             // Where `init_logging` leaves it with nothing asking for more.
             tracing_log::log::set_max_level(tracing_log::log::LevelFilter::Info);
-            let (_reg, rx) = export.register(include("fake_dep", ConfigLevel::Debug), 16);
+            let (_reg, rx) = export.register(include("fake_dep", ConfigLevel::Debug), 16, false);
             assert!(tracing_log::log::max_level() >= tracing_log::log::LevelFilter::Debug);
             tracing_log::log::debug!(target: "fake_dep::cache", "evicted");
             let messages: Vec<_> = drain(&rx).iter().map(|e| e.message.clone()).collect();
@@ -571,6 +620,7 @@ mod tests {
                 &["patrolli_sink::kafka".into()],
             ),
             16,
+            false,
         );
         with_export(&export, || {
             info!(target: "patrolli_sink::kafka::producer", "excluded");
@@ -586,7 +636,7 @@ mod tests {
     #[test]
     fn empty_include_defaults_to_patrolli() {
         let export = LogExport::new();
-        let (_reg, rx) = export.register(patrolli_info(), 16);
+        let (_reg, rx) = export.register(patrolli_info(), 16, false);
         with_export(&export, || {
             info!(target: "patrolli::x", "ours");
             info!(target: "hyper::proto", "theirs");
@@ -599,7 +649,7 @@ mod tests {
     #[test]
     fn a_full_buffer_drops_and_counts() {
         let export = LogExport::new();
-        let (reg, rx) = export.register(patrolli_info(), 2);
+        let (reg, rx) = export.register(patrolli_info(), 2, false);
         with_export(&export, || {
             for i in 0..5 {
                 info!(target: "patrolli::x", i, "burst");
@@ -609,10 +659,62 @@ mod tests {
         assert_eq!(reg.dropped(), 3);
     }
 
+    /// Stands in for the rate limiter: lets `burst` events through, and counts
+    /// how often it was asked.
+    struct FirstN {
+        burst: u64,
+        asked: Arc<AtomicU64>,
+    }
+
+    impl<S> Filter<S> for FirstN {
+        fn enabled(&self, _meta: &Metadata<'_>, _cx: &Context<'_, S>) -> bool {
+            true
+        }
+
+        fn event_enabled(&self, _event: &Event<'_>, _cx: &Context<'_, S>) -> bool {
+            self.asked.fetch_add(1, Ordering::Relaxed) < self.burst
+        }
+    }
+
+    #[test]
+    fn the_throttle_only_holds_back_registrations_that_asked_for_it() {
+        let export = LogExport::new();
+        let asked = Arc::new(AtomicU64::new(0));
+        let throttle = FirstN {
+            burst: 2,
+            asked: asked.clone(),
+        };
+        let subscriber = tracing_subscriber::registry().with(
+            layer(export.clone())
+                .with_throttle(throttle)
+                .with_filter(filter(export.clone())),
+        );
+        let (_all, rx_all) = export.register(patrolli_info(), 16, false);
+        tracing::subscriber::with_default(subscriber, || {
+            for _ in 0..3 {
+                info!(target: "patrolli::x", "burst");
+            }
+            // nobody throttled is listening: the throttle is not charged
+            assert_eq!(asked.load(Ordering::Relaxed), 0);
+            assert_eq!(drain(&rx_all).len(), 3);
+
+            let (_some, rx_some) = export.register(patrolli_info(), 16, true);
+            let (_warn, rx_warn) = export.register(targets(ConfigLevel::Warn, &[], &[]), 16, true);
+            for _ in 0..5 {
+                info!(target: "patrolli::x", "burst");
+            }
+            // once per event, however many throttled registrations match
+            assert_eq!(asked.load(Ordering::Relaxed), 5);
+            assert_eq!(drain(&rx_all).len(), 5);
+            assert_eq!(drain(&rx_some).len(), 2);
+            assert!(drain(&rx_warn).is_empty());
+        });
+    }
+
     #[test]
     fn fields_keep_their_types() {
         let export = LogExport::new();
-        let (_reg, rx) = export.register(patrolli_info(), 16);
+        let (_reg, rx) = export.register(patrolli_info(), 16, false);
         let err = std::io::Error::other("boom");
         with_export(&export, || {
             warn!(
@@ -648,7 +750,7 @@ mod tests {
     #[test]
     fn span_fields_innermost_wins_and_follow_record() {
         let export = LogExport::new();
-        let (_reg, rx) = export.register(patrolli_info(), 16);
+        let (_reg, rx) = export.register(patrolli_info(), 16, false);
         with_export(&export, || {
             let outer = info_span!(target: "patrolli_sink", "sink", sink_id = 1u64, sink = "outer", host = tracing::field::Empty);
             let _o = outer.enter();
@@ -670,7 +772,7 @@ mod tests {
         with_export(&export, || {
             let span = info_span!(target: "patrolli::listener", "listen", listener = "syslog");
             let _e = span.enter();
-            let (_reg, rx) = export.register(patrolli_info(), 16);
+            let (_reg, rx) = export.register(patrolli_info(), 16, false);
             info!(target: "patrolli::listener", "packet dropped");
             let events = drain(&rx);
             assert_eq!(
@@ -683,8 +785,8 @@ mod tests {
     #[test]
     fn registrations_get_their_own_subset_of_one_event() {
         let export = LogExport::new();
-        let (_all, rx_all) = export.register(patrolli_info(), 16);
-        let (_warn, rx_warn) = export.register(targets(ConfigLevel::Warn, &[], &[]), 16);
+        let (_all, rx_all) = export.register(patrolli_info(), 16, false);
+        let (_warn, rx_warn) = export.register(targets(ConfigLevel::Warn, &[], &[]), 16, false);
         with_export(&export, || {
             info!(target: "patrolli::x", "info");
             warn!(target: "patrolli::x", "warn");
@@ -699,7 +801,7 @@ mod tests {
     #[test]
     fn dropping_the_registration_stops_delivery() {
         let export = LogExport::new();
-        let (reg, rx) = export.register(patrolli_info(), 16);
+        let (reg, rx) = export.register(patrolli_info(), 16, false);
         with_export(&export, || {
             info!(target: "patrolli::x", "before");
             drop(reg);

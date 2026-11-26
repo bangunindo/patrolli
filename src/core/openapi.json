@@ -7880,6 +7880,11 @@
             "default": 10000,
             "minimum": 0
           },
+          "enable_throttle": {
+            "type": "boolean",
+            "description": "Rate-limit repeats of one event (same level, target, message and field\nvalues), as the logger does for its own output. Off by default: every\noccurrence is exported and `buffer_size` is the only bound on a burst.\nIndependent of `global.logger.disable_throttle`.",
+            "default": false
+          },
           "exclude": {
             "type": "array",
             "items": {

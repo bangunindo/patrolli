@@ -446,12 +446,9 @@ pub fn init_logging(config: &Logger) -> WorkerGuard {
     // occurrence of an event must be seen (debugging a burst, or a capture fed
     // to an external aggregator that does its own deduplication). `None` filters
     // nothing, so the cost is that a hot path logging unconditionally is no
-    // longer bounded.
+    // longer bounded. It covers this output only: log export has its own
+    // throttle, see `export_layer`.
     let throttle = NoLevelBound((!config.disable_throttle).then(|| build_throttle(true)));
-    // Log export gets its own throttle instance: a clone shares storage, so
-    // two layers consulting one instance would charge every event twice.
-    // Summaries stay off here so they aren't printed twice.
-    let export_throttle = NoLevelBound((!config.disable_throttle).then(|| build_throttle(false)));
     let filter = targets.and(throttle);
 
     let registry = tracing_subscriber::registry();
@@ -462,10 +459,7 @@ pub fn init_logging(config: &Logger) -> WorkerGuard {
                 .with_timer(LocalTimer)
                 .json()
                 .with_filter(filter);
-            registry
-                .with(layer)
-                .with(export_layer(export_throttle))
-                .init();
+            registry.with(layer).with(export_layer()).init();
         }
         Format::Text => {
             let mut layer = tracing_subscriber::fmt::layer()
@@ -475,10 +469,7 @@ pub fn init_logging(config: &Logger) -> WorkerGuard {
                 layer = layer.with_ansi(false);
             }
             let layer = layer.with_filter(filter);
-            registry
-                .with(layer)
-                .with(export_layer(export_throttle))
-                .init();
+            registry.with(layer).with(export_layer()).init();
         }
     }
     guard
@@ -486,12 +477,20 @@ pub fn init_logging(config: &Logger) -> WorkerGuard {
 
 /// Added after the fmt layer so it runs second: stdout is never delayed by
 /// export. See `common::log_export` for why its `on_event` never blocks.
-fn export_layer<S>(throttle: NoLevelBound<Option<TracingRateLimitLayer>>) -> impl Layer<S>
+///
+/// Log export gets its own throttle instance: a clone shares storage, so two
+/// layers consulting one instance would charge every event twice. Summaries
+/// stay off here so they aren't printed twice. It is handed to the layer
+/// rather than stacked as a filter, and always built: whether it applies is
+/// each `internal_logs` listener's `enable_throttle`, not
+/// `logger.disable_throttle`.
+fn export_layer<S>() -> impl Layer<S>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     log_export::layer(LOG_EXPORT.clone())
-        .with_filter(log_export::filter(LOG_EXPORT.clone()).and(throttle))
+        .with_throttle(build_throttle(false))
+        .with_filter(log_export::filter(LOG_EXPORT.clone()))
 }
 
 /// Passes every call through to `F` but reports no level bound.
@@ -1123,6 +1122,33 @@ mod logging_tests {
     }
 
     const BURST: usize = 500;
+
+    /// `enable_throttle` of an `internal_logs` listener: the one export
+    /// throttle holds a burst back from the registration that asked for it and
+    /// from no other.
+    #[tokio::test]
+    async fn the_export_throttle_applies_per_registration() {
+        let export = log_export::LogExport::new();
+        let targets = || Targets::default().with_target("patrolli", LevelFilter::INFO);
+        let (_throttled, throttled) = export.register(targets(), BURST, true);
+        let (_unthrottled, unthrottled) = export.register(targets(), BURST, false);
+        let sub = tracing_subscriber::registry().with(
+            log_export::layer(export.clone())
+                .with_throttle(build_throttle(false))
+                .with_filter(log_export::filter(export.clone())),
+        );
+        subscriber::with_default(sub, || {
+            for i in 0..BURST {
+                error!(target: "patrolli::x", error = %format!("connection {i} refused"), "kafka send failed");
+            }
+        });
+        assert_eq!(unthrottled.len(), BURST);
+        assert!(
+            (1..BURST / 2).contains(&throttled.len()),
+            "got {} of {BURST} events",
+            throttled.len()
+        );
+    }
 
     /// The convention's whole mechanical justification: the throttle signature includes the
     /// rendered message text, so an error interpolated into the message makes every occurrence

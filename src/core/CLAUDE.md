@@ -333,6 +333,11 @@ Logs can also be exported into the pipeline. `common::log_export` is a layer, in
 of every registration. `listener::internal_logs` (listener type `internal_logs`) is the consumer:
 one registration per listener, shared by all its workers. It turns events into log records with
 event fields and span fields as attributes.
+- **Throttling is per listener** (`enable_throttle`, default `false`), decided at capture, before
+  the bounded buffer. The export layer owns one throttle instance (`with_throttle`, never a
+  `with_filter`, which would decide for every registration) and asks it once per event, only when
+  a registration that wants it matches. `global.logger.disable_throttle` is about the log output
+  alone.
 - **`on_event` runs inside the caller's `warn!`**, so it never blocks, awaits, does I/O or logs. A
   full buffer drops the event and counts it in the listener's `total_items_dropped`.
 - **INFO spans are always recorded**, so identity set on long-lived task spans survives until a
@@ -343,8 +348,8 @@ event fields and span fields as attributes.
   the filters' `max_level_hint` (so every filter must report one — see `NoLevelBound` in
   `main.rs`), and registrations move it along in `rebuild_interest`.
 - **Feedback loops.** The listener excludes its own module. Warnings from the path it sends
-  through (`patrolli_listener`, the destination sink) can still come back through it. The export
-  layer's own throttle instance and the bounded buffer keep that finite.
+  through (`patrolli_listener`, the destination sink) can still come back through it. The bounded
+  buffer keeps that finite, and the export throttle too with `enable_throttle: true`.
 
 ### API layer
 
