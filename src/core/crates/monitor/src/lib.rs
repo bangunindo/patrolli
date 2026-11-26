@@ -1823,8 +1823,7 @@ mod tests {
         }
 
         struct RunningAgent {
-            agent: Arc<Agent>,
-            handle: JoinHandle<async_snmp::Result<()>>,
+            agent: async_snmp::agent::RunningAgent,
         }
 
         impl RunningAgent {
@@ -1838,24 +1837,18 @@ mod tests {
                     .community(b"public")
                     .handler(oid(PREFIX), handler)
                     .allow_all_access()
-                    .build()
+                    .spawn()
                     .await
                     .unwrap();
-                let agent = Arc::new(agent);
-                let handle = tokio::spawn({
-                    let agent = agent.clone();
-                    async move { agent.run().await }
-                });
-                Self { agent, handle }
+                Self { agent }
             }
 
             fn address(&self) -> String {
-                self.agent.local_addr().to_string()
+                self.agent.bound_addresses()[0].local_addr.to_string()
             }
 
             async fn stop(self) {
-                self.agent.cancel();
-                let _ = self.handle.await;
+                let _ = self.agent.shutdown().await;
             }
         }
 
@@ -2068,7 +2061,7 @@ mod tests {
                     ));
                 }
                 // The agent is stuck in its handler and would not see a cancel.
-                agent.handle.abort();
+                agent.agent.task().abort();
             });
         }
 

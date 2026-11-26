@@ -7,7 +7,8 @@ use anyhow::Context;
 use async_recursion::async_recursion;
 use async_snmp::{
     Auth, Client, DEFAULT_MAX_OIDS_PER_REQUEST, EngineCache, Error as SnmpError, ErrorStatus, Oid,
-    Retry, UdpHandle, UdpTransport, Value, WalkAbortReason, WalkMethod, WalkOptions, WalkStream,
+    Retry, RunningUdpEndpoint, UdpEndpoint, UdpHandle, Value, WalkAbortReason, WalkMethod,
+    WalkOptions, WalkStream,
 };
 use chrono::Utc;
 use patrolli::cache;
@@ -89,7 +90,8 @@ fn map_snmp_err(e: &SnmpError) -> super::Error {
     }
 }
 
-static UDP_TRANSPORT: OnceLock<Vec<UdpTransport>> = OnceLock::new();
+/// The running owners: dropping one shuts its endpoint down, and these never drop.
+static UDP_TRANSPORT: OnceLock<Vec<RunningUdpEndpoint>> = OnceLock::new();
 static ENGINE_CACHE: LazyLock<Arc<EngineCache>> = LazyLock::new(|| Arc::new(EngineCache::new()));
 
 /// `get_udp_transport` binds its sockets once per process, on whichever
@@ -105,14 +107,17 @@ pub(super) static TEST_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::ne
         .unwrap()
 });
 
-fn udp_select_shard(shards: &'static [UdpTransport], dest: SocketAddr) -> &'static UdpTransport {
+fn udp_select_shard(
+    shards: &'static [RunningUdpEndpoint],
+    dest: SocketAddr,
+) -> &'static UdpEndpoint {
     let mut hasher = FxHasher::default();
     dest.hash(&mut hasher);
     let shard_idx = hasher.finish() as usize % shards.len();
     &shards[shard_idx]
 }
 
-async fn get_udp_transport(dest: SocketAddr) -> &'static UdpTransport {
+async fn get_udp_transport(dest: SocketAddr) -> &'static UdpEndpoint {
     match UDP_TRANSPORT.get() {
         Some(transport) => udp_select_shard(transport, dest),
         None => {
@@ -122,7 +127,7 @@ async fn get_udp_transport(dest: SocketAddr) -> &'static UdpTransport {
                 .unwrap_or(8);
             let mut transports = Vec::with_capacity(default_shards);
             for _ in 0..default_shards {
-                let udp_transport = UdpTransport::builder().bind("0.0.0.0:0").build().await;
+                let udp_transport = UdpEndpoint::builder().bind("0.0.0.0:0").spawn().await;
                 if let Err(e) = &udp_transport {
                     error!(error = %e, "failed to bind snmp udp transport");
                 }

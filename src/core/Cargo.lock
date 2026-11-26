@@ -490,9 +490,9 @@ dependencies = [
 
 [[package]]
 name = "async-snmp"
-version = "0.18.1"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62c73521f81d79ffef8d7b3d4ece05c5d46f30729526a71af422aa0399cdc0b4"
+checksum = "7cba02ce552f8fc6839ecb0cecf6709abdfbc14ba98e43e6fd0e6930e3ecdff3"
 dependencies = [
  "aes",
  "bytes",
@@ -506,7 +506,7 @@ dependencies = [
  "hmac",
  "libc",
  "md-5",
- "nix 0.31.4",
+ "nix 0.32.0",
  "sha1 0.11.0",
  "sha2",
  "smallvec",
@@ -4317,7 +4317,6 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
- "memoffset",
 ]
 
 [[package]]
