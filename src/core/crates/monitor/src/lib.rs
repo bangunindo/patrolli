@@ -1749,7 +1749,8 @@ mod tests {
         };
         use async_snmp::{Oid, Value};
         use patrolli::config::endpoint::{Config as EndpointConfig, SnmpV1, SnmpV2C};
-        use patrolli::config::item::Snmp;
+        use patrolli::config::item::{Snmp, SnmpWalk};
+        use patrolli::config::snmp::OidChain;
 
         use crate::snmp::TEST_RUNTIME as RUNTIME;
 
@@ -1822,9 +1823,67 @@ mod tests {
             }
         }
 
+        /// Answers from a fixed set of oids: three rows of three columns.
+        ///
+        /// | row | `.1` name | `.2` index | `.4.<index>` alias |
+        /// |-----|-----------|------------|--------------------|
+        /// | 1   | eth1      | 10         | a                  |
+        /// | 2   | eth2      | 20         | b                  |
+        /// | 3   | eth3      | 30         | c                  |
+        struct Table(std::collections::BTreeMap<Oid, Value>);
+
+        impl Table {
+            fn new() -> Arc<Self> {
+                let mut oids = std::collections::BTreeMap::new();
+                for (row, alias) in [(1, "a"), (2, "b"), (3, "c")] {
+                    oids.insert(
+                        oid(&format!("{PREFIX}.1.{row}")),
+                        Value::OctetString(format!("eth{row}").into()),
+                    );
+                    oids.insert(oid(&format!("{PREFIX}.2.{row}")), Value::Integer(row * 10));
+                    oids.insert(
+                        oid(&format!("{PREFIX}.4.{}", row * 10)),
+                        Value::OctetString(alias.into()),
+                    );
+                }
+                Arc::new(Self(oids))
+            }
+        }
+
+        impl MibHandler for Table {
+            fn get<'a>(
+                &'a self,
+                _ctx: &'a RequestContext,
+                req: &'a Oid,
+            ) -> BoxFuture<'a, HandlerResult<GetResult>> {
+                Box::pin(async move {
+                    Ok(match self.0.get(req) {
+                        Some(value) => GetResult::Value(value.clone()),
+                        None => GetResult::NoSuchObject,
+                    })
+                })
+            }
+
+            fn get_next<'a>(
+                &'a self,
+                _ctx: &'a RequestContext,
+                req: &'a Oid,
+            ) -> BoxFuture<'a, HandlerResult<GetNextResult>> {
+                Box::pin(async move {
+                    let next = self.0.iter().find(|(next, _)| *next > req);
+                    Ok(match next {
+                        Some((next, value)) => GetNextResult::Value(async_snmp::VarBind::new(
+                            next.clone(),
+                            value.clone(),
+                        )),
+                        None => GetNextResult::EndOfMibView,
+                    })
+                })
+            }
+        }
+
         struct RunningAgent {
-            agent: Arc<Agent>,
-            handle: JoinHandle<async_snmp::Result<()>>,
+            agent: async_snmp::agent::RunningAgent,
         }
 
         impl RunningAgent {
@@ -1838,24 +1897,18 @@ mod tests {
                     .community(b"public")
                     .handler(oid(PREFIX), handler)
                     .allow_all_access()
-                    .build()
+                    .spawn()
                     .await
                     .unwrap();
-                let agent = Arc::new(agent);
-                let handle = tokio::spawn({
-                    let agent = agent.clone();
-                    async move { agent.run().await }
-                });
-                Self { agent, handle }
+                Self { agent }
             }
 
             fn address(&self) -> String {
-                self.agent.local_addr().to_string()
+                self.agent.bound_addresses()[0].local_addr.to_string()
             }
 
             async fn stop(self) {
-                self.agent.cancel();
-                let _ = self.handle.await;
+                let _ = self.agent.shutdown().await;
             }
         }
 
@@ -2068,7 +2121,229 @@ mod tests {
                     ));
                 }
                 // The agent is stuck in its handler and would not see a cancel.
-                agent.handle.abort();
+                agent.agent.task().abort();
+            });
+        }
+
+        fn column(n: u32) -> OidChain {
+            OidChain {
+                oid: oid(&format!("{PREFIX}.{n}")),
+                chain_strategy: Default::default(),
+                chain: vec![],
+            }
+        }
+
+        fn walk(oids: Vec<OidChain>, table_format: bool) -> SnmpWalk {
+            SnmpWalk {
+                oids,
+                table_format,
+                use_mib: false,
+                disable_bulk: None,
+                poll_worker_count: 2,
+                max_results: 0,
+                chunk_size: 100,
+                request_timeout: StdDuration::from_secs(5),
+                request_retries: 0,
+                max_unknown_oids_per_row: None,
+            }
+        }
+
+        /// Walk the `Table` agent once, and hand back the item with every row
+        /// the walk emitted, streamed or returned.
+        async fn run_walk(
+            endpoint: fn(&str) -> EndpointConfig,
+            config: SnmpWalk,
+        ) -> (cache::item::Entry, Vec<MonitorLog>) {
+            let agent = RunningAgent::start_with(Table::new()).await;
+            let mut h = harness();
+            let host_id = add_host(&h.cache);
+            let endpoint_id = Uuid::now_v7();
+            h.cache.endpoint.write().insert(Endpoint::new(
+                endpoint_id,
+                "agent".into(),
+                host_id,
+                endpoint(&agent.address()),
+            ));
+            let unit = schedule_on(
+                &h.cache,
+                host_id,
+                Some(endpoint_id),
+                StdDuration::from_secs(10),
+                ItemConfig::SnmpWalk(config),
+            );
+
+            h.worker
+                .process_item(MonitorItem::Single(unit.clone()))
+                .await;
+
+            let mut rows = Vec::new();
+            while let Ok(record) = h.records.try_recv() {
+                match record {
+                    MonitorRecord::SingleLog(row) => rows.push(*row),
+                    MonitorRecord::BatchLog(batch) => rows.extend(batch),
+                    _ => {}
+                }
+            }
+            agent.stop().await;
+            (unit, rows)
+        }
+
+        /// The row's `key` attribute, a string.
+        fn attr(row: &MonitorLog, key: &str) -> String {
+            let attr = row.row.attrs.iter().find(|(k, _)| k.as_ref() == key);
+            match attr {
+                Some((_, payload::ValueOwned::String(s))) => s.as_ref().to_string(),
+                _ => panic!("no string attribute {key}"),
+            }
+        }
+
+        /// The `value` of every entry of the row's `snmp.data`, in order.
+        fn data(row: &MonitorLog) -> Vec<String> {
+            use payload::ValueOwned as V;
+            let attr = row
+                .row
+                .attrs
+                .iter()
+                .find(|(k, _)| k.as_ref() == "snmp.data");
+            let Some((_, V::Array(data))) = attr else {
+                panic!("snmp.data is a list");
+            };
+            data.iter()
+                .map(|entry| {
+                    let V::KvList(fields) = entry else {
+                        panic!("an snmp.data entry is a kv list");
+                    };
+                    match fields.iter().find(|(k, _)| k.as_ref() == "value") {
+                        Some((_, V::String(s))) => s.as_ref().to_string(),
+                        Some((_, V::Int64(n))) => n.to_string(),
+                        _ => panic!("an snmp.data entry has a value"),
+                    }
+                })
+                .collect()
+        }
+
+        fn assert_ok(unit: &cache::item::Entry, records: u64) {
+            let snap = unit.stats.snapshot();
+            assert_eq!(snap.state, cache::item::ItemState::Ok);
+            assert!(snap.last_failure.is_none());
+            assert_eq!(snap.total_records, records);
+            let logged = check_events(unit.item.id);
+            assert_eq!(logged.len(), 1);
+            assert_eq!(logged[0]["state"], "ok");
+            assert_eq!(logged[0]["records"], records.to_string());
+        }
+
+        /// Without `table_format` a walk is one row per chunk read: the root
+        /// oid, and every value under it.
+        async fn a_column_is_walked_to_its_end(endpoint: fn(&str) -> EndpointConfig) {
+            let (unit, rows) = run_walk(endpoint, walk(vec![column(1)], false)).await;
+
+            assert_ok(&unit, 1);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(attr(&rows[0], "snmp.oid"), format!("{PREFIX}.1"));
+            // And nothing of the next column, where the walk has to stop.
+            assert_eq!(data(&rows[0]), ["eth1", "eth2", "eth3"]);
+        }
+
+        #[test]
+        fn a_v2c_walk_reads_a_column_to_its_end() {
+            RUNTIME.block_on(a_column_is_walked_to_its_end(v2c));
+        }
+
+        /// v1 has no GETBULK, so this one walks by GETNEXT.
+        #[test]
+        fn a_v1_walk_reads_a_column_to_its_end() {
+            RUNTIME.block_on(a_column_is_walked_to_its_end(v1));
+        }
+
+        /// The table's rows, by `snmp.id`, each with its values sorted: two
+        /// columns walked at once answer in either order.
+        fn table_rows(rows: &[MonitorLog]) -> Vec<(String, Vec<String>)> {
+            let mut table: Vec<_> = rows
+                .iter()
+                .map(|row| {
+                    let mut values = data(row);
+                    values.sort();
+                    (attr(row, "snmp.id"), values)
+                })
+                .collect();
+            table.sort();
+            table
+        }
+
+        fn whole_table() -> Vec<(String, Vec<String>)> {
+            (1..=3)
+                .map(|row| {
+                    let values = vec![(row * 10).to_string(), format!("eth{row}")];
+                    (row.to_string(), values)
+                })
+                .collect()
+        }
+
+        /// `table_format` joins the columns on what follows the walked oid.
+        #[test]
+        fn a_table_walk_joins_its_columns_by_row() {
+            RUNTIME.block_on(async {
+                let config = walk(vec![column(1), column(2)], true);
+                let (unit, rows) = run_walk(v2c, config).await;
+
+                assert_ok(&unit, 3);
+                assert_eq!(table_rows(&rows), whole_table());
+            });
+        }
+
+        /// Rows are sent on while the columns are still being read, a chunk at a
+        /// time. No row may leave before every column has got to it.
+        #[test]
+        fn a_table_walk_read_in_small_chunks_keeps_its_rows_whole() {
+            RUNTIME.block_on(async {
+                let mut config = walk(vec![column(1), column(2)], true);
+                config.chunk_size = 1;
+                let (unit, rows) = run_walk(v2c, config).await;
+
+                assert_ok(&unit, 3);
+                assert_eq!(table_rows(&rows), whole_table());
+            });
+        }
+
+        /// A chained oid is fetched for every row, at the oid the row's own
+        /// value points to.
+        #[test]
+        fn a_chain_follows_the_walked_value() {
+            RUNTIME.block_on(async {
+                let mut index = column(2);
+                index.chain = vec![column(4)];
+                let (unit, rows) = run_walk(v2c, walk(vec![index], true)).await;
+
+                assert_ok(&unit, 3);
+                let mut table: Vec<_> = rows
+                    .iter()
+                    .map(|row| (attr(row, "snmp.id"), data(row)))
+                    .collect();
+                table.sort();
+                let expected = [("1", ["10", "a"]), ("2", ["20", "b"]), ("3", ["30", "c"])];
+                assert_eq!(table.len(), expected.len());
+                for ((id, values), (want_id, want)) in table.iter().zip(expected) {
+                    assert_eq!(id, want_id);
+                    assert_eq!(values, &want);
+                }
+            });
+        }
+
+        /// A subtree larger than the item allows fails the check for good: the
+        /// next attempt would only find it as large.
+        #[test]
+        fn a_walk_past_max_results_fails_without_a_retry() {
+            RUNTIME.block_on(async {
+                let mut config = walk(vec![column(1)], false);
+                config.max_results = 2;
+                let (unit, _) = run_walk(v2c, config).await;
+
+                let snap = unit.stats.snapshot();
+                let failure = snap.last_failure.clone().expect("a failure is recorded");
+                assert_eq!(failure.kind, FailureKind::Config, "{failure:?}");
+                assert_eq!(snap.state, cache::item::ItemState::Failing);
+                assert_eq!(snap.retries, 0);
             });
         }
 
