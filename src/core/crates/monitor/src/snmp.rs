@@ -52,6 +52,10 @@ fn walk_method(disable_bulk: Option<bool>) -> WalkMethod {
 /// Classify an SNMP failure into the kind the stats page shows, which is also
 /// what decides whether the check is retried.
 fn map_snmp_err(e: &SnmpError) -> super::Error {
+    // A failure that follows an answered request (any walk past its first
+    // response) comes wrapped in `Exchange` with what was received before it.
+    // Unwrapped, it would match none of the arms below.
+    let e = e.exchange_source();
     match e {
         SnmpError::Timeout { .. } => super::Error::timeout("request timeout"),
         // A closed transport never delivers again, but a fresh one is built on
