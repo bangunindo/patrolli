@@ -105,5 +105,10 @@ export default {
 				c.value === cleanKey
 		)
 		return matched?.value ?? clusterName
+	},
+
+	getClusterUrls(clusterName?: string): string[] | undefined {
+		const clusterUrl = this.getClusterValue(clusterName)
+		return clusterUrl ? [clusterUrl] : undefined
 	}
 }

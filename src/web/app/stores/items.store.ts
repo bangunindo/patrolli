@@ -28,10 +28,6 @@ import type { ITemplateSelect } from '@@/shared/types/template.type'
 export const useItemsStore = defineStore(
 	'items',
 	() => {
-		const ItemTypes = {
-			'Select type': undefined,
-			...ItemType
-		}
 		const pagination = reactive({
 			rows: 10,
 			currentPage: 1,
@@ -44,6 +40,7 @@ export const useItemsStore = defineStore(
 			order_by: undefined,
 			order_dir: undefined,
 			types: undefined,
+			host_ids: undefined,
 			listener_ids: undefined,
 			endpoint_ids: undefined,
 			exclusivity: ['host', 'template_on_host'],
@@ -54,7 +51,10 @@ export const useItemsStore = defineStore(
 		const currentItem = ref<IItem | null>(null)
 		const loading = reactive({
 			table: false,
-			form: false
+			form: false,
+			hosts: false,
+			endpoints: false,
+			listeners: false
 		})
 		const error = ref<string | null>(null)
 		const selection = reactive<{
@@ -66,13 +66,25 @@ export const useItemsStore = defineStore(
 		}>({
 			hosts: undefined,
 			templates: undefined,
-			types: Object.entries(ItemTypes).map(([key, value]) => ({
+			types: Object.entries(ItemType).map(([key, value]) => ({
 				label: key,
 				value: value
 			})),
 			endpoints: undefined,
 			listeners: undefined
 		})
+
+		const resetFilter = () => {
+			filter.name = undefined
+			filter.order_by = undefined
+			filter.order_dir = undefined
+			filter.types = undefined
+			filter.host_ids = undefined
+			filter.listener_ids = undefined
+			filter.endpoint_ids = undefined
+			filter.offset = 0
+			pagination.currentPage = 1
+		}
 
 		const fetchItems = async (clusterURLs?: string[]) => {
 			loading.table = true
@@ -88,26 +100,6 @@ export const useItemsStore = defineStore(
 				error.value = err.message || 'Failed to fetch items'
 			} finally {
 				loading.table = false
-			}
-		}
-
-		const fetchHosts = async (clusterURLs?: string[]) => {
-			loading.form = true
-			error.value = null
-
-			try {
-				const response = await hostsApi.getHosts({ limit: 100 }, clusterURLs)
-				if (response?.success) {
-					selection.hosts = response.data.hosts.map((host) => ({
-						...host,
-						value: host.host_id,
-						label: host.name
-					}))
-				}
-			} catch (err: any) {
-				error.value = err.message || 'Failed to fetch templates'
-			} finally {
-				loading.form = false
 			}
 		}
 
@@ -131,45 +123,91 @@ export const useItemsStore = defineStore(
 			}
 		}
 
-		const fetchEndpoints = async (clusterURLs?: string[]) => {
-			loading.form = true
+		const selectionRequestIds = { hosts: 0, endpoints: 0, listeners: 0 }
+
+		const fetchSelection = async <T>(
+			key: 'hosts' | 'endpoints' | 'listeners',
+			search: string | undefined,
+			fetcher: (query: { limit: number; name?: string }) => Promise<T[] | null>,
+			onSuccess: (data: T[]) => void,
+			fallbackError: string
+		) => {
+			const requestId = ++selectionRequestIds[key]
+			loading[key] = true
 			error.value = null
 
 			try {
-				const response = await endpointsApi.getEndpoints({ limit: 100 }, clusterURLs)
-				if (response?.success) {
-					selection.endpoints = response.data.endpoints.map((endpoint) => ({
+				const trimmed = search?.trim()
+				const query = { limit: 100, ...(trimmed ? { name: trimmed } : {}) }
+				const data = await fetcher(query)
+				if (requestId !== selectionRequestIds[key]) return
+				if (data) onSuccess(data)
+			} catch (err: any) {
+				if (requestId !== selectionRequestIds[key]) return
+				error.value = err.message || fallbackError
+			} finally {
+				if (requestId === selectionRequestIds[key]) {
+					loading[key] = false
+				}
+			}
+		}
+
+		const fetchHosts = (clusterURLs?: string[], search?: string) =>
+			fetchSelection(
+				'hosts',
+				search,
+				async (query) => {
+					const response = await hostsApi.getHosts(query, clusterURLs)
+					return response?.success ? response.data.hosts : null
+				},
+				(hosts) => {
+					selection.hosts = hosts.map((host) => ({
+						...host,
+						value: host.host_id,
+						label: host.name
+					}))
+				},
+				'Failed to fetch hosts'
+			)
+
+		const fetchEndpoints = (clusterURLs?: string[], search?: string, hostIds?: string[]) =>
+			fetchSelection(
+				'endpoints',
+				search,
+				async (query) => {
+					const response = await endpointsApi.getEndpoints(
+						{ ...query, ...(hostIds?.length ? { host_ids: hostIds } : {}) },
+						clusterURLs
+					)
+					return response?.success ? response.data.endpoints : null
+				},
+				(endpoints) => {
+					selection.endpoints = endpoints.map((endpoint) => ({
 						...endpoint,
 						value: endpoint.endpoint_id,
 						label: endpoint.name
 					}))
-				}
-			} catch (err: any) {
-				error.value = err.message || 'Failed to fetch endpoints'
-			} finally {
-				loading.form = false
-			}
-		}
+				},
+				'Failed to fetch endpoints'
+			)
 
-		const fetchListeners = async (clusterURLs?: string[]) => {
-			loading.form = true
-			error.value = null
-
-			try {
-				const response = await listenerApi.getListeners({ limit: 100 }, clusterURLs)
-				if (response?.success) {
-					selection.listeners = response.data.listeners.map((listener) => ({
+		const fetchListeners = (clusterURLs?: string[], search?: string) =>
+			fetchSelection(
+				'listeners',
+				search,
+				async (query) => {
+					const response = await listenerApi.getListeners(query, clusterURLs)
+					return response?.success ? response.data.listeners : null
+				},
+				(listeners) => {
+					selection.listeners = listeners.map((listener) => ({
 						...listener,
 						value: listener.listener_id,
 						label: listener.name
 					}))
-				}
-			} catch (err: any) {
-				error.value = err.message || 'Failed to fetch listeners'
-			} finally {
-				loading.form = false
-			}
-		}
+				},
+				'Failed to fetch listeners'
+			)
 
 		const createItemForHost = async (
 			hostId: string,
@@ -347,6 +385,7 @@ export const useItemsStore = defineStore(
 			loading,
 			error,
 			selection,
+			resetFilter,
 			fetchItems,
 			fetchHosts,
 			fetchTemplates,

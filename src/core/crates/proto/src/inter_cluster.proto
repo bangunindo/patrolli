@@ -60,8 +60,9 @@ message CaptureMessageOtlp {
 // Item self-monitoring
 //
 // Per-item health lives only in the owning node's memory; it is never persisted
-// to Postgres. A monitor item has exactly one owner (`hosts.monitored_by`), so
-// the API resolves the node and asks it directly.
+// to Postgres. A monitor item has exactly one owner (`hosts.monitored_by`), and
+// only that node holds it, so a caller asks every node and the owner is the one
+// that answers for the item.
 // ---------------------------------------------------------------------------
 
 // Coarse health, precomputed by the owning node so callers don't re-derive it
@@ -221,6 +222,37 @@ message ItemStatsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Execute now
+//
+// Runs a monitor item at once instead of at its next scheduled check. Routed
+// like item stats: every node is asked, and all but the owner answer NOT_FOUND.
+// ---------------------------------------------------------------------------
+
+message ExecuteNowRequest {
+  bytes item_id = 1;
+}
+
+// What the answering node did with the request. An outcome rather than a
+// status code, because NOT_FOUND is the ordinary answer of every non-owner.
+enum ExecuteNowOutcome {
+  EXECUTE_NOW_OUTCOME_UNSPECIFIED = 0;
+  // Moved to the front of the node's scheduler queue.
+  EXECUTE_NOW_OUTCOME_SCHEDULED = 1;
+  // This node does not monitor the item.
+  EXECUTE_NOW_OUTCOME_NOT_FOUND = 2;
+  // A listener item: it has no check to run.
+  EXECUTE_NOW_OUTCOME_NOT_SCHEDULABLE = 3;
+  // A check of the item is in flight.
+  EXECUTE_NOW_OUTCOME_ALREADY_RUNNING = 4;
+}
+
+message ExecuteNowResponse {
+  ExecuteNowOutcome outcome = 1;
+  // The answering node.
+  bytes node_id = 2;
+}
+
+// ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
 
@@ -229,4 +261,5 @@ service InterClusterService {
   rpc ForwardPayloads(stream PayloadBatch) returns (stream ForwardAck);
   rpc ProcessorCapture(CaptureRequest) returns (stream CaptureMessage);
   rpc GetItemStats(ItemStatsRequest) returns (stream ItemStatsResponse);
+  rpc ExecuteNow(ExecuteNowRequest) returns (ExecuteNowResponse);
 }

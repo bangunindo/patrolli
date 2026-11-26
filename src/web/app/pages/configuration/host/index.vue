@@ -7,6 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <script setup lang="ts">
 import HostTable from '@/components/configuration/host/Table.vue'
 import { useHostsStore } from '@/stores/hosts.store'
+import { onUnmounted } from 'vue'
 
 definePageMeta({
 	layout: 'configuration',
@@ -14,6 +15,11 @@ definePageMeta({
 })
 
 const hostsStore = useHostsStore()
+
+onUnmounted(() => {
+	hostsStore.resetFilter()
+	hostsStore.currentHost = null
+})
 </script>
 
 <template>

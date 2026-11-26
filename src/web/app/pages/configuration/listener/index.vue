@@ -5,56 +5,70 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
+import appHelper from '@/app/helpers/app.helper'
 import AppFilterDropdown from '@/components/app/AppFilterDropdown.vue'
-import AppInputSelect from '@/components/app/input/AppInputSelect.vue'
+import AppInputAutocomplete from '@/components/app/input/AppInputAutocomplete.vue'
 import ListenerTable from '@/components/configuration/listener/Table.vue'
 import { useListenerStore } from '@/stores/listeners.store'
 import type { ListenerType } from '@@/shared/types/listener.type'
-import { onMounted, reactive, watch } from 'vue'
+import { computed, onUnmounted, reactive, watch } from 'vue'
+import { useRoute } from 'vue-router'
 
 definePageMeta({
 	layout: 'configuration',
 	requiresAuth: true
 })
 
+const route = useRoute()
 const listenersStore = useListenerStore()
 
-const localFilter = reactive<{ type: ListenerType | null }>({
-	type: null
+const getClusterUrls = () => appHelper.getClusterUrls(route.query.cluster as string)
+
+const localFilter = reactive<{
+	types: ListenerType[]
+}>({
+	types: listenersStore.filter.types ? [...listenersStore.filter.types] : []
 })
 
-onMounted(() => {
-	localFilter.type = (listenersStore.filter.types?.[0] as any) || null
-})
+const hasActiveFilter = computed(() => localFilter.types.length > 0)
+
+function resetFilter() {
+	localFilter.types = []
+}
 
 function applyFilter() {
-	listenersStore.filter.types = localFilter.type ? [localFilter.type] : undefined
+	listenersStore.filter.types = localFilter.types.length > 0 ? [...localFilter.types] : undefined
+	listenersStore.pagination.currentPage = 1
 	listenersStore.filter.offset = 0
-	listenersStore.fetchListeners()
+	listenersStore.fetchListeners(getClusterUrls())
 }
 
 watch(
-	() => localFilter.type,
-	(newVal, oldVal) => {
-		if (newVal !== oldVal) {
-			applyFilter()
-		}
-	}
+	localFilter,
+	() => {
+		applyFilter()
+	},
+	{ deep: true }
 )
+
+onUnmounted(() => {
+	listenersStore.resetFilter()
+	listenersStore.currentListener = null
+})
 </script>
 
 <template>
 	<AppLayoutPageContainer>
 		<AppLayoutPageHeader title="Listener">
 			<template #actions>
-				<AppFilterDropdown>
-					<AppInputSelect
-						v-model="localFilter.type"
+				<AppFilterDropdown :active="hasActiveFilter" @reset="resetFilter">
+					<AppInputAutocomplete
+						v-model="localFilter.types"
 						label="Type"
 						placeholder="All Types"
 						:options="listenersStore.selection.types"
-						label-key="label"
-						value-key="value"
+						multiple
+						:portal="false"
 						clearable
 					/>
 				</AppFilterDropdown>

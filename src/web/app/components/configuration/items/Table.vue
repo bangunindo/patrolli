@@ -142,12 +142,12 @@ function getIconFromState(state?: string) {
 	return icon ?? 'information-outline'
 }
 
+const formatCount = (val?: number | null) => (val ?? 0).toLocaleString()
+
 onMounted(() => {
 	itemsStore.pagination.currentPage = 1
 	itemsStore.filter.offset = 0
 	itemsStore.fetchItems()
-	itemsStore.fetchEndpoints()
-	itemsStore.fetchListeners()
 })
 
 // search
@@ -274,7 +274,7 @@ watchDebounced(
 						Last: {{ prop.data.stats.snapshot.last_attempt ?? '-' }}
 					</div>
 					<div class="text-xs font-medium text-foreground">
-						Checks: {{ prop.data.stats.snapshot.total_checks ?? 0 }} rows
+						Checks: {{ formatCount(prop.data.stats.snapshot.total_checks) }}
 					</div>
 				</section>
 				<span v-else class="text-muted-foreground">-</span>
@@ -282,9 +282,9 @@ watchDebounced(
 
 			<template #col.output="prop">
 				<section v-if="prop.data?.stats?.snapshot" class="text-xs space-y-0.5">
-					<div>Records: {{ prop.data.stats.snapshot.total_records ?? 0 }} rows</div>
-					<div>Dropped: {{ prop.data.stats.snapshot.total_dropped ?? 0 }} rows</div>
-					<div>Fails: {{ prop.data.stats.snapshot.total_failures ?? 0 }} rows</div>
+					<div>Records: {{ formatCount(prop.data.stats.snapshot.total_records) }}</div>
+					<div>Dropped: {{ formatCount(prop.data.stats.snapshot.total_dropped) }}</div>
+					<div>Fails: {{ formatCount(prop.data.stats.snapshot.total_failures) }}</div>
 				</section>
 				<span v-else class="text-muted-foreground">-</span>
 			</template>
@@ -315,7 +315,7 @@ watchDebounced(
 								@click="toggleDrawer(prop.data)"
 							>
 								<UiIcon name="chart-line" size="16px" />
-								<span>View Trends</span>
+								<span>View Stats</span>
 							</UiDropdownMenuItem>
 							<UiDropdownMenuItem
 								class="cursor-pointer gap-2"

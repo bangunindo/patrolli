@@ -342,7 +342,7 @@ describe('Multicluster CRUD for Endpoints Feature', () => {
 
 			await store.fetchEndpoints()
 
-			expect(endpointsApi.getEndpoints).toHaveBeenCalledWith(store.filter)
+			expect(endpointsApi.getEndpoints).toHaveBeenCalledWith(store.filter, undefined)
 			expect(store.endpoints).toHaveLength(1)
 			expect(store.endpoints[0].endpoint_id).toBe('ep-c1-active')
 		})

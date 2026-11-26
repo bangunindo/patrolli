@@ -242,7 +242,7 @@ watch([() => totalRecords.value, () => rowsPerPage.value], ([total, rows]) => {
 <template>
 	<section class="patrolli-table w-full">
 		<div
-			class="patrolli-table-container w-full overflow-x-auto rounded-lg border border-[#D8D9DB] dark:border-border bg-white dark:bg-card shadow-xs"
+			class="patrolli-table-container w-full overflow-x-auto overflow-y-hidden rounded-lg border border-[#D8D9DB] dark:border-border bg-white dark:bg-card shadow-xs"
 		>
 			<table class="w-full caption-bottom text-sm border-collapse">
 				<thead

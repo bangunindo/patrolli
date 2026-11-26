@@ -9,12 +9,12 @@ import { useHostsStore } from '@/stores/hosts.store'
 import { FormMode } from '@@/shared/types/app.type'
 import type { IHost } from '@@/shared/types/host.type'
 import { watchDebounced } from '@vueuse/core'
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
 import AppTable from '@/components/app/AppTable.vue'
 import AppTableLabels from '@/components/app/AppTableLabels.vue'
-import AppInputSelect from '@/components/app/input/AppInputSelect.vue'
+import AppInputAutocomplete from '@/components/app/input/AppInputAutocomplete.vue'
 import ModalDetail from '@/components/configuration/host/ModalDetail.vue'
 import ModalHostForm from '@/components/configuration/host/ModalForm.vue'
 import ModalConfirmationDelete from '@/components/modal/ModalConfirmationDelete.vue'
@@ -92,6 +92,16 @@ async function onDelete() {
 	hostsStore.fetchHosts()
 }
 
+const selectedNode = computed<string>({
+	get: () => hostsStore.filter.monitored_by ?? '',
+	set: (value) => {
+		const normalized = value?.trim() || undefined
+		if (hostsStore.filter.monitored_by === normalized) return
+		hostsStore.filter.monitored_by = normalized
+		onFilter()
+	}
+})
+
 async function onFilter() {
 	hostsStore.pagination.currentPage = 1
 	hostsStore.filter.offset = 0
@@ -107,10 +117,6 @@ onMounted(() => {
 
 	hostsStore.fetchHosts()
 	hostsStore.fetchNodes()
-})
-
-onBeforeUnmount(() => {
-	hostsStore.filter.monitored_by = undefined
 })
 
 // search
@@ -155,13 +161,13 @@ hostsStore.$onAction((context) => {
 					/>
 				</div>
 				<div class="w-full sm:w-56">
-					<AppInputSelect
-						v-model="hostsStore.filter.monitored_by"
-						variant="outline"
+					<AppInputAutocomplete
+						v-model="selectedNode"
 						placeholder="Select Node"
 						:options="hostsStore.selection.nodes"
+						sub-label-key="cluster_name"
+						:loading="hostsStore.loading.nodes"
 						clearable
-						@update:model-value="onFilter"
 					/>
 				</div>
 			</div>

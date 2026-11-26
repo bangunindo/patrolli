@@ -34,7 +34,8 @@ export const useSinksStore = defineStore(
 			limit: pagination.rows,
 			offset: (pagination.currentPage - 1) * pagination.rows,
 			order_by: undefined,
-			order_dir: undefined
+			order_dir: undefined,
+			types: undefined
 		})
 		const sinks = ref<ISinks[]>([])
 		const currentSink = ref<ISink | null>(null)
@@ -66,7 +67,20 @@ export const useSinksStore = defineStore(
 			processors: undefined
 		})
 
+		let activeClusterURLs: string[] | undefined = undefined
+
+		const resetFilter = () => {
+			activeClusterURLs = undefined
+			filter.name = undefined
+			filter.order_by = undefined
+			filter.order_dir = undefined
+			filter.types = undefined
+			filter.offset = 0
+			pagination.currentPage = 1
+		}
+
 		const fetchSinks = async (clusterURLs?: string[]) => {
+			activeClusterURLs = clusterURLs ? [...clusterURLs] : undefined
 			loading.table = true
 			error.value = null
 
@@ -105,7 +119,7 @@ export const useSinksStore = defineStore(
 			try {
 				const response = await sinksApi.createSink(payload, clusterURLs)
 				if (response && response.success) {
-					await fetchSinks()
+					await fetchSinks(activeClusterURLs)
 					return response
 				}
 			} catch (err: any) {
@@ -122,7 +136,7 @@ export const useSinksStore = defineStore(
 			try {
 				const response = await sinksApi.updateSink(sinkId, payload, clusterURLs)
 				if (response && response.success) {
-					await fetchSinks()
+					await fetchSinks(activeClusterURLs)
 					return response
 				}
 			} catch (err: any) {
@@ -187,6 +201,7 @@ export const useSinksStore = defineStore(
 			error,
 
 			selection,
+			resetFilter,
 			fetchSinks,
 			fetchSinkById,
 			createSink,
