@@ -810,6 +810,7 @@ mod tests {
             Duration::from_millis(30),
             1,
             true,
+            0,
         );
         stats.add_dropped(2);
         stats.set_next_check(3_000, 9_000);
@@ -867,6 +868,7 @@ mod tests {
             Duration::from_millis(30),
             0,
             false,
+            0,
         );
 
         let snap = stats.snapshot_at(clock(at_bucket(73)));
@@ -959,6 +961,7 @@ mod tests {
             Duration::from_millis(30),
             1,
             true,
+            0,
         );
         stats.add_dropped(2);
         stats.set_next_check(at_bucket(73), at_bucket(80));
@@ -1228,6 +1231,7 @@ mod tests {
             std::time::Duration::ZERO,
             0,
             false,
+            0,
         );
         (Uuid::now_v7(), Arc::new(stats))
     }

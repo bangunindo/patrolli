@@ -34,6 +34,15 @@ use uuid::Uuid;
 /// sweeping every item on a timer, which does not scale to a million items.
 pub const STATE_LOG_TARGET: &str = "patrolli::item_state";
 
+/// Target of the per-check stream emitted by [`Stats::log_check`]: one `debug`
+/// event per monitor check, per item, carrying what the stats read after it.
+///
+/// A stream of its own for the same reason as [`STATE_LOG_TARGET`], and opt-in
+/// per target: its volume is every item times its check rate. Both targets are
+/// exempt from the log throttle (`build_throttle` in `main.rs`), since every
+/// event is a distinct fact rather than a repeat.
+pub const CHECK_LOG_TARGET: &str = "patrolli::item_check";
+
 pub(super) static ITEM_CACHE: LazyLock<Arc<RwLock<Item>>> =
     LazyLock::new(|| Arc::new(RwLock::new(Item::new())));
 
@@ -581,6 +590,12 @@ impl Stats {
     /// Record a failed check. `retrying` distinguishes "will try again shortly"
     /// from "gave up until the next scheduled run".
     ///
+    /// `records` is the rows the check had already shipped downstream when it
+    /// failed: a streaming collector (SNMP walk, Prometheus with `stream`) sends
+    /// as it reads, so a walk that times out halfway has still collected rows.
+    /// They count, and nothing else about the failure changes: the state, the
+    /// activity map and `last_nonempty` say the check failed.
+    ///
     /// Returns the state change this caused, if any; see [`Transition`].
     pub fn record_failure(
         &self,
@@ -588,8 +603,12 @@ impl Stats {
         duration: Duration,
         retries: u8,
         retrying: bool,
+        records: u64,
     ) -> Option<Transition> {
         self.total_failures.fetch_add(1, Relaxed);
+        self.total_records.fetch_add(records, Relaxed);
+        self.last_record_count
+            .store(records.min(u32::MAX as u64) as u32, Relaxed);
         self.consecutive_failures.fetch_add(1, Relaxed);
         self.last_duration_ms
             .store(as_millis_u32(duration), Relaxed);
@@ -678,6 +697,48 @@ impl Stats {
     /// the tell.
     pub fn add_dropped(&self, n: u64) {
         self.total_dropped.fetch_add(n, Relaxed);
+    }
+
+    /// Emit what the check that just finished left behind, on
+    /// [`CHECK_LOG_TARGET`]. Call it after [`Item::requeue`], so the next check
+    /// it reports is the new one.
+    ///
+    /// Read back from the stats instead of passed in: a monitor item is
+    /// single-writer (see [`Stats`]), so what is stored is this check. `records`
+    /// is the rows this attempt collected, shipped ones of a failed check
+    /// included; the `total_*` counters run since process start, so a consumer
+    /// that lost events can still take differences. Identity is on the event
+    /// for the reasons [`Transition::log`] gives.
+    ///
+    /// Only the state is read when the target is disabled.
+    pub fn log_check(&self, item: &item::Item) {
+        // First and `Acquire`, as in `snapshot_at`: a failing state read here
+        // has its `Failure` already published.
+        let state = ItemState::from(self.state.load(Acquire));
+        let failure = matches!(state, ItemState::Retrying | ItemState::Failing)
+            .then(|| self.last_failure.load_full())
+            .flatten();
+        debug!(
+            target: CHECK_LOG_TARGET,
+            item_id = %item.id,
+            item = %item.name,
+            host_id = %item.host_id,
+            item_type = <&'static str>::from(item::ItemKind::from(&item.config)),
+            state = %state,
+            duration_ms = self.last_duration_ms.load(Relaxed),
+            lag_ms = self.last_lag_ms.load(Relaxed),
+            records = self.last_record_count.load(Relaxed),
+            retries = self.retries.load(Relaxed),
+            consecutive_failures = self.consecutive_failures.load(Relaxed),
+            failure_kind = failure.as_deref().map(|f| <&'static str>::from(f.kind)),
+            reason = failure.as_deref().map(|f| f.reason.as_str()),
+            total_checks = self.total_checks.load(Relaxed),
+            total_failures = self.total_failures.load(Relaxed),
+            total_records = self.total_records.load(Relaxed),
+            total_dropped = self.total_dropped.load(Relaxed),
+            next_check_unix_ms = Some(self.next_check_ms.load(Relaxed)).filter(|ms| *ms != 0),
+            "item checked"
+        );
     }
 
     /// Store the new state — always the last write of a `record_*` call, see the
@@ -1762,6 +1823,7 @@ mod tests {
             StdDuration::from_millis(3),
             1,
             true,
+            0,
         );
         assert_eq!(stats.snapshot_at(clock(0)).state, ItemState::Retrying);
 
@@ -1770,6 +1832,7 @@ mod tests {
             StdDuration::from_millis(4),
             0,
             false,
+            0,
         );
         let snap = stats.snapshot_at(clock(0));
         assert_eq!(snap.state, ItemState::Failing);
@@ -1799,6 +1862,7 @@ mod tests {
                 StdDuration::ZERO,
                 0,
                 false,
+                0,
             );
         }
         let snap = stats.snapshot_at(clock(0));
@@ -1869,6 +1933,7 @@ mod tests {
             StdDuration::ZERO,
             0,
             false,
+            0,
         );
 
         let snap = stats.snapshot_at(clock(at));
@@ -2008,6 +2073,7 @@ mod tests {
             StdDuration::ZERO,
             0,
             false,
+            0,
         );
 
         let snap = stats.snapshot_at(clock(at_bucket(36 + 288)));
@@ -2147,6 +2213,7 @@ mod tests {
             StdDuration::ZERO,
             0,
             false,
+            0,
         );
         assert_eq!(failing.snapshot_at(clock(3_000)).state, ItemState::Failing);
 
@@ -2158,6 +2225,7 @@ mod tests {
             StdDuration::ZERO,
             1,
             true,
+            0,
         );
         assert_eq!(retrying.snapshot_at(clock(3_000)).state, ItemState::Stale);
     }
@@ -2198,7 +2266,8 @@ mod tests {
                 failure(FailureKind::Timeout, "a"),
                 StdDuration::ZERO,
                 1,
-                true
+                true,
+                0,
             ),
             change(ItemState::OkEmpty, ItemState::Retrying)
         );
@@ -2207,7 +2276,8 @@ mod tests {
                 failure(FailureKind::Timeout, "b"),
                 StdDuration::ZERO,
                 2,
-                true
+                true,
+                0,
             ),
             None
         );
@@ -2216,7 +2286,8 @@ mod tests {
                 failure(FailureKind::Timeout, "c"),
                 StdDuration::ZERO,
                 0,
-                false
+                false,
+                0,
             ),
             change(ItemState::Retrying, ItemState::Failing)
         );
@@ -2236,8 +2307,8 @@ mod tests {
         assert_eq!(stats.record_ingest(2_000, 3), None);
     }
 
-    /// Every event on [`STATE_LOG_TARGET`] emitted while `f` runs, as JSON objects.
-    fn state_events(f: impl FnOnce()) -> Vec<serde_json::Value> {
+    /// Every event on `target` emitted while `f` runs, as JSON objects.
+    fn events_on(target: &'static str, f: impl FnOnce()) -> Vec<serde_json::Value> {
         use std::io;
         use std::sync::Mutex;
         use tracing_subscriber::filter::{LevelFilter, Targets};
@@ -2266,7 +2337,7 @@ mod tests {
             tracing_subscriber::fmt::layer()
                 .json()
                 .with_writer(capture.clone())
-                .with_filter(Targets::default().with_target(STATE_LOG_TARGET, LevelFilter::TRACE)),
+                .with_filter(Targets::default().with_target(target, LevelFilter::TRACE)),
         );
         tracing::subscriber::with_default(subscriber, f);
         let bytes = capture.0.lock().unwrap().clone();
@@ -2281,7 +2352,7 @@ mod tests {
     fn transition_log_is_a_self_describing_event_on_its_own_target() {
         let id = Uuid::now_v7();
         let cause = failure(FailureKind::Auth, "bad community");
-        let events = state_events(|| {
+        let events = events_on(STATE_LOG_TARGET, || {
             Transition {
                 from: ItemState::NeverRan,
                 to: ItemState::Ok,
@@ -2309,5 +2380,100 @@ mod tests {
         assert_eq!(events[1]["fields"]["to"], "failing");
         assert_eq!(events[1]["fields"]["failure_kind"], "auth");
         assert_eq!(events[1]["fields"]["reason"], "bad community");
+    }
+
+    /// A streaming check that fails has still shipped rows. They are counted,
+    /// and an ordinary failure overwrites the previous success's count with 0.
+    #[test]
+    fn a_failure_counts_the_rows_it_had_already_shipped() {
+        let stats = Stats::default();
+        stats.record_success(1_000, StdDuration::ZERO, 7);
+        stats.record_failure(
+            failure_at(2_000, FailureKind::Timeout),
+            StdDuration::ZERO,
+            0,
+            false,
+            40,
+        );
+        let snap = stats.snapshot_at(clock(2_000));
+        assert_eq!(snap.state, ItemState::Failing);
+        assert_eq!(snap.total_records, 47);
+        assert_eq!(snap.last_record_count, Some(40));
+        assert_eq!(snap.last_nonempty, snap.last_success);
+
+        stats.record_failure(
+            failure_at(3_000, FailureKind::Timeout),
+            StdDuration::ZERO,
+            0,
+            false,
+            0,
+        );
+        let snap = stats.snapshot_at(clock(3_000));
+        assert_eq!(snap.total_records, 47);
+        assert_eq!(snap.last_record_count, Some(0));
+    }
+
+    #[test]
+    fn check_log_carries_what_the_check_left_behind() {
+        let item = dummy_item(Schedule::Never);
+        let stats = Stats::default();
+        let events = events_on(CHECK_LOG_TARGET, || {
+            stats.record_attempt(1_000, StdDuration::from_millis(4));
+            stats.record_success(1_000, StdDuration::from_millis(216), 157);
+            stats.add_dropped(2);
+            stats.set_next_check(9_000, 99_000);
+            stats.log_check(&item);
+
+            stats.record_attempt(2_000, StdDuration::from_millis(5));
+            stats.record_failure(
+                failure(FailureKind::Timeout, "check deadline elapsed"),
+                StdDuration::from_millis(30),
+                1,
+                true,
+                12,
+            );
+            stats.set_next_check(0, 0);
+            stats.log_check(&item);
+        });
+        assert_eq!(events.len(), 2);
+        for event in &events {
+            assert_eq!(event["target"], CHECK_LOG_TARGET);
+            assert_eq!(event["level"], "DEBUG");
+            let fields = &event["fields"];
+            assert_eq!(fields["message"], "item checked");
+            assert_eq!(fields["item_id"], item.id.to_string());
+            assert_eq!(fields["item"], "test");
+            assert_eq!(fields["host_id"], item.host_id.to_string());
+            assert_eq!(fields["item_type"], "dummy");
+            assert_eq!(fields["total_dropped"], 2);
+        }
+
+        let ok = &events[0]["fields"];
+        assert_eq!(ok["state"], "ok");
+        assert_eq!(ok["duration_ms"], 216);
+        assert_eq!(ok["lag_ms"], 4);
+        assert_eq!(ok["records"], 157);
+        assert_eq!(ok["retries"], 0);
+        assert_eq!(ok["consecutive_failures"], 0);
+        assert_eq!(ok["total_checks"], 1);
+        assert_eq!(ok["total_failures"], 0);
+        assert_eq!(ok["total_records"], 157);
+        assert_eq!(ok["next_check_unix_ms"], 9_000);
+        assert!(ok.get("failure_kind").is_none());
+        assert!(ok.get("reason").is_none());
+
+        let failed = &events[1]["fields"];
+        assert_eq!(failed["state"], "retrying");
+        assert_eq!(failed["duration_ms"], 30);
+        assert_eq!(failed["lag_ms"], 5);
+        assert_eq!(failed["records"], 12);
+        assert_eq!(failed["retries"], 1);
+        assert_eq!(failed["consecutive_failures"], 1);
+        assert_eq!(failed["failure_kind"], "timeout");
+        assert_eq!(failed["reason"], "check deadline elapsed");
+        assert_eq!(failed["total_checks"], 2);
+        assert_eq!(failed["total_failures"], 1);
+        assert_eq!(failed["total_records"], 169);
+        assert!(failed.get("next_check_unix_ms").is_none());
     }
 }

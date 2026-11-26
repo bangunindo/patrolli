@@ -39,3 +39,4 @@ arc-swap.workspace = true
 async-snmp = { workspace = true, features = ["agent"] }
 bytes.workspace = true
 serde_yaml_ng.workspace = true
+tracing-subscriber.workspace = true
