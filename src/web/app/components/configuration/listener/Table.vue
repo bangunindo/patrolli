@@ -6,9 +6,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 
 import { storeToRefs } from 'pinia'
 
+import appHelper from '@/app/helpers/app.helper'
 import AppTable from '@/components/app/AppTable.vue'
 import AppTableLabels from '@/components/app/AppTableLabels.vue'
 import ModalListenerForm from '@/components/configuration/listener/ModalForm.vue'
@@ -20,7 +22,10 @@ import { FormMode } from '@@/shared/types/app.type'
 import type { IListener } from '@@/shared/types/listener.type'
 import { watchDebounced } from '@vueuse/core'
 
+const route = useRoute()
 const listenersStore = useListenerStore()
+
+const getClusterUrls = () => appHelper.getClusterUrls(route.query.cluster as string)
 
 const { listenerModalShow } = storeToRefs(listenersStore)
 
@@ -61,7 +66,7 @@ function onChangePage(payload: { limit: number; offset: number; page: number }) 
 	) {
 		listenersStore.filter.limit = payload.limit
 		listenersStore.filter.offset = payload.offset
-		listenersStore.fetchListeners()
+		listenersStore.fetchListeners(getClusterUrls())
 	}
 }
 
@@ -82,13 +87,13 @@ async function onDelete() {
 		clusterUrl ? [clusterUrl] : undefined
 	)
 	showModalDelete.value = false
-	listenersStore.fetchListeners()
+	listenersStore.fetchListeners(getClusterUrls())
 }
 
 onMounted(() => {
 	listenersStore.pagination.currentPage = 1
 	listenersStore.filter.offset = 0
-	listenersStore.fetchListeners()
+	listenersStore.fetchListeners(getClusterUrls())
 })
 
 watchDebounced(
@@ -96,7 +101,7 @@ watchDebounced(
 	async () => {
 		listenersStore.pagination.currentPage = 1
 		listenersStore.filter.offset = 0
-		listenersStore.fetchListeners()
+		listenersStore.fetchListeners(getClusterUrls())
 	},
 	{
 		debounce: 500

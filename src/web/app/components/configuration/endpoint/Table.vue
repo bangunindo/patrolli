@@ -5,19 +5,24 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
+import appHelper from '@/app/helpers/app.helper'
 import { useEndpointsStore } from '@/stores/endpoints.store'
 import { FormMode } from '@@/shared/types/app.type'
 import type { IEndpoint } from '@@/shared/types/endpoint.type'
 import { watchDebounced } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 
 import AppTable from '@/components/app/AppTable.vue'
 import ModalDetail from '@/components/configuration/endpoint/ModalDetail.vue'
 import ModalEndpointForm from '@/components/configuration/endpoint/ModalForm.vue'
 import ModalConfirmationDelete from '@/components/modal/ModalConfirmationDelete.vue'
 
+const route = useRoute()
 const endpointsStore = useEndpointsStore()
+
+const getClusterUrls = () => appHelper.getClusterUrls(route.query.cluster as string)
 
 const { endpoints, endpointModalShow } = storeToRefs(endpointsStore)
 
@@ -54,7 +59,7 @@ function onChangePage(payload: { limit: number; offset: number; page: number }) 
 	) {
 		endpointsStore.filter.limit = payload.limit
 		endpointsStore.filter.offset = payload.offset
-		endpointsStore.fetchEndpoints()
+		endpointsStore.fetchEndpoints(getClusterUrls())
 	}
 }
 
@@ -75,13 +80,13 @@ async function onDelete() {
 		clusterUrl ? [clusterUrl] : undefined
 	)
 	showModalDelete.value = false
-	endpointsStore.fetchEndpoints()
+	endpointsStore.fetchEndpoints(getClusterUrls())
 }
 
 onMounted(() => {
 	endpointsStore.pagination.currentPage = 1
 	endpointsStore.filter.offset = 0
-	endpointsStore.fetchEndpoints()
+	endpointsStore.fetchEndpoints(getClusterUrls())
 })
 
 watchDebounced(
@@ -89,7 +94,7 @@ watchDebounced(
 	async () => {
 		endpointsStore.pagination.currentPage = 1
 		endpointsStore.filter.offset = 0
-		endpointsStore.fetchEndpoints()
+		endpointsStore.fetchEndpoints(getClusterUrls())
 	},
 	{
 		debounce: 500

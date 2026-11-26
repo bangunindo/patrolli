@@ -151,6 +151,14 @@ export const usePipelineStore = defineStore(
 			resetSelectorCaches()
 		}
 
+		const resetFilter = () => {
+			filter.name = undefined
+			filter.order_by = undefined
+			filter.order_dir = undefined
+			filter.offset = 0
+			pagination.currentPage = 1
+		}
+
 		const fetchPipelines = async (clusterURLs?: string[]) => {
 			loading.table = true
 			error.value = null
@@ -454,6 +462,7 @@ export const usePipelineStore = defineStore(
 			deleteSelected,
 			togglePipelineStatus,
 			deletePipeline,
+			resetFilter,
 			fetchPipelines,
 			fetchHostsForCluster,
 			loadMoreHosts,

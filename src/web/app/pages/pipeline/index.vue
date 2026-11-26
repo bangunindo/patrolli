@@ -8,6 +8,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import ModalForm from '@/components/pipeline/ModalForm.vue'
 import PipelineTable from '@/components/pipeline/Table.vue'
 import { usePipelineStore } from '@/stores/pipelines.store'
+import { onUnmounted } from 'vue'
 
 definePageMeta({
 	layout: 'default',
@@ -15,6 +16,11 @@ definePageMeta({
 })
 
 const pipelineStore = usePipelineStore()
+
+onUnmounted(() => {
+	pipelineStore.resetFilter()
+	pipelineStore.currentPipeline = null
+})
 </script>
 
 <template>

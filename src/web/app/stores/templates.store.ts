@@ -39,6 +39,14 @@ export const useTemplatesStore = defineStore(
 		})
 		const error = ref<string | null>(null)
 
+		const resetFilter = () => {
+			filter.name = undefined
+			filter.order_by = undefined
+			filter.order_dir = undefined
+			filter.offset = 0
+			pagination.currentPage = 1
+		}
+
 		const fetchTemplates = async (clusterURLs?: string[]) => {
 			loading.table = true
 			error.value = null
@@ -210,6 +218,7 @@ export const useTemplatesStore = defineStore(
 			currentTemplate,
 			loading,
 			error,
+			resetFilter,
 			fetchTemplates,
 			createTemplate,
 			updateTemplateLink,

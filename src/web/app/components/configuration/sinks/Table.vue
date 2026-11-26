@@ -6,9 +6,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 
 import { useSinksStore } from '@/stores/sinks.store'
 
+import appHelper from '@/app/helpers/app.helper'
 import AppTable from '@/components/app/AppTable.vue'
 import AppTableLabels from '@/components/app/AppTableLabels.vue'
 import ModalDetail from '@/components/configuration/sinks/ModalDetail.vue'
@@ -19,7 +21,10 @@ import { FormMode } from '@@/shared/types/app.type'
 import type { ISink } from '@@/shared/types/sink.type'
 import { watchDebounced } from '@vueuse/core'
 
+const route = useRoute()
 const sinksStore = useSinksStore()
+
+const getClusterUrls = () => appHelper.getClusterUrls(route.query.cluster as string)
 
 const showModalDelete = ref<boolean>(false)
 const showModalDetail = ref<boolean>(false)
@@ -67,7 +72,7 @@ function onChangePage(payload: { limit: number; offset: number; page: number }) 
 	if (sinksStore.filter.offset !== payload.offset || sinksStore.filter.limit !== payload.limit) {
 		sinksStore.filter.limit = payload.limit
 		sinksStore.filter.offset = payload.offset
-		sinksStore.fetchSinks()
+		sinksStore.fetchSinks(getClusterUrls())
 	}
 }
 
@@ -88,13 +93,13 @@ async function onDelete() {
 		clusterUrl ? [clusterUrl] : undefined
 	)
 	showModalDelete.value = false
-	sinksStore.fetchSinks()
+	sinksStore.fetchSinks(getClusterUrls())
 }
 
 onMounted(() => {
 	sinksStore.pagination.currentPage = 1
 	sinksStore.filter.offset = 0
-	sinksStore.fetchSinks()
+	sinksStore.fetchSinks(getClusterUrls())
 })
 
 // search
@@ -103,7 +108,7 @@ watchDebounced(
 	async () => {
 		sinksStore.pagination.currentPage = 1
 		sinksStore.filter.offset = 0
-		sinksStore.fetchSinks()
+		sinksStore.fetchSinks(getClusterUrls())
 	},
 	{
 		debounce: 500

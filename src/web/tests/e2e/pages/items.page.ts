@@ -317,19 +317,19 @@ export class ItemsPage extends BasePage {
 		await this.modalDetail.waitFor({ state: 'visible', timeout: 5_000 })
 	}
 
-	async openTrends(itemName: string) {
+	async openStats(itemName: string) {
 		const row = await this.getRowByName(itemName)
 		await row.waitFor({ state: 'visible', timeout: 10_000 })
 		const actionButton = row.locator('button').last()
 		await actionButton.click()
 
-		const trendsOption = this.page.getByRole('menuitem', { name: /view trends/i })
-		await trendsOption.waitFor({ state: 'visible', timeout: 5_000 })
+		const statsOption = this.page.getByRole('menuitem', { name: /view stats/i })
+		await statsOption.waitFor({ state: 'visible', timeout: 5_000 })
 		const itemFetchPromise = this.page.waitForResponse(
 			(res) => res.url().includes('/api/items/') && res.status() === 200,
 			{ timeout: 10_000 }
 		)
-		await trendsOption.click()
+		await statsOption.click()
 		await itemFetchPromise
 		await this.drawer.waitFor({ state: 'visible', timeout: 5_000 })
 	}

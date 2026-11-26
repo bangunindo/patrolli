@@ -31,13 +31,16 @@ export const useEndpointsStore = defineStore(
 			limit: pagination.rows,
 			offset: (pagination.currentPage - 1) * pagination.rows,
 			order_by: undefined,
-			order_dir: undefined
+			order_dir: undefined,
+			types: undefined,
+			host_ids: undefined
 		})
 		const endpoints = ref<IEndpoint[]>([])
 		const currentEndpoint = ref<IEndpoint | null>()
 		const loading = reactive({
 			table: false,
-			form: false
+			form: false,
+			hosts: false
 		})
 		const error = ref<any>({})
 		const selection = reactive<{ hosts: IHostSelect[]; types: any[] }>({
@@ -48,12 +51,30 @@ export const useEndpointsStore = defineStore(
 			}))
 		})
 
-		const fetchEndpoints = async () => {
+		let hostsRequestId = 0
+		let activeClusterURLs: string[] | undefined = undefined
+
+		const resetFilter = () => {
+			hostsRequestId++
+			activeClusterURLs = undefined
+			filter.name = undefined
+			filter.order_by = undefined
+			filter.order_dir = undefined
+			filter.types = undefined
+			filter.host_ids = undefined
+			filter.offset = 0
+			pagination.currentPage = 1
+			selection.hosts = []
+			loading.hosts = false
+		}
+
+		const fetchEndpoints = async (clusterURLs?: string[]) => {
+			activeClusterURLs = clusterURLs ? [...clusterURLs] : undefined
 			loading.table = true
 			error.value = null
 
 			try {
-				const response = await endpointsApi.getEndpoints(filter)
+				const response = await endpointsApi.getEndpoints(filter, clusterURLs)
 				if (response?.success) {
 					endpoints.value = response.data.endpoints
 					pagination.totalRecords = response.data.total ?? 0
@@ -65,12 +86,16 @@ export const useEndpointsStore = defineStore(
 			}
 		}
 
-		const fetchHosts = async (clusterURLs?: string[]) => {
-			loading.form = true
+		const fetchHosts = async (clusterURLs?: string[], search?: string) => {
+			const requestId = ++hostsRequestId
+			loading.hosts = true
 			error.value = null
 
 			try {
-				const response = await hostsApi.getHosts({ limit: 100 }, clusterURLs)
+				const trimmed = search?.trim()
+				const query = { limit: 100, ...(trimmed ? { name: trimmed } : {}) }
+				const response = await hostsApi.getHosts(query, clusterURLs)
+				if (requestId !== hostsRequestId) return
 				if (response?.success) {
 					selection.hosts = response.data.hosts.map((host) => ({
 						...host,
@@ -79,9 +104,12 @@ export const useEndpointsStore = defineStore(
 					}))
 				}
 			} catch (err: any) {
-				error.value = err.message || 'Failed to fetch templates'
+				if (requestId !== hostsRequestId) return
+				error.value = err.message || 'Failed to fetch hosts'
 			} finally {
-				loading.form = false
+				if (requestId === hostsRequestId) {
+					loading.hosts = false
+				}
 			}
 		}
 
@@ -91,7 +119,7 @@ export const useEndpointsStore = defineStore(
 			try {
 				const response = await endpointsApi.createEndpoint(payload, clusterURLs)
 				if (response && response.success) {
-					await fetchEndpoints()
+					await fetchEndpoints(activeClusterURLs)
 					return response
 				}
 			} catch (err: any) {
@@ -112,7 +140,7 @@ export const useEndpointsStore = defineStore(
 			try {
 				const response = await endpointsApi.updateEndpoint(endpointId, payload, clusterURLs)
 				if (response && response.success) {
-					await fetchEndpoints()
+					await fetchEndpoints(activeClusterURLs)
 					return response
 				}
 			} catch (err: any) {
@@ -178,6 +206,7 @@ export const useEndpointsStore = defineStore(
 			loading,
 			error,
 			selection,
+			resetFilter,
 			fetchEndpoints,
 			fetchHosts,
 			createEndpoint,
