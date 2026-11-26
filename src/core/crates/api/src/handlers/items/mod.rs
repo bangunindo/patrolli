@@ -267,13 +267,10 @@ pub(crate) async fn collect_item_stats(
             if out.contains_key(&item_id) {
                 continue;
             }
-            if let Some(node_since) = trusted_since {
+            if trusted_since.is_some() {
                 // The item's own start, which is later than the node's for an
-                // item added or a host moved there after it started. A node
-                // too old to send it leaves its process start.
-                let since = snapshot
-                    .since
-                    .map_or(node_since, |since| since.with_timezone(&Utc));
+                // item added or a host moved there after it started.
+                let since = snapshot.since.with_timezone(&Utc);
                 out.insert(item_id, ItemsStatsResponse { since, snapshot });
             }
         }

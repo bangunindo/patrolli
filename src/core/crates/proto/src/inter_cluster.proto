@@ -188,7 +188,7 @@ message ItemStats {
   // When this item's counters started: it entered the producing node's cache.
   // Later than the response's `stats_since_unix_ms` for an item added, or a
   // host moved here, after the process started. Absent from a node too old to
-  // send it; the caller then falls back to `stats_since_unix_ms`.
+  // send it; the caller then reads `stats_since_unix_ms` in its place.
   optional int64 since_unix_ms = 22;
 }
 

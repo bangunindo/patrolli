@@ -458,13 +458,12 @@ pub struct StatsSnapshot {
     /// When the counters above started: the item entered the answering node's
     /// cache. They restart with the process, when the host moves to another
     /// node and when a node comes back from standby, so a node-wide start time
-    /// would overstate the window for any item loaded later. `None` only from
-    /// a peer too old to send it.
+    /// would overstate the window for any item loaded later.
     ///
     /// Not serialized: the API reports it next to the snapshot, as the `since`
     /// it always had.
     #[serde(skip)]
-    pub since: Option<DateTime<FixedOffset>>,
+    pub since: DateTime<FixedOffset>,
 
     /// `None` where the event hasn't happened yet, so callers can tell "never
     /// succeeded" from "succeeded at the epoch".
@@ -1066,7 +1065,8 @@ impl Stats {
             consecutive_failures: self.consecutive_failures.load(Relaxed),
             retries: self.retries.load(Relaxed),
 
-            since: ts(self.since_ms),
+            // Stamped from the clock at construction, so never the 0 sentinel.
+            since: ts(self.since_ms).unwrap_or(now),
 
             last_attempt: ts(self.last_attempt_ms.load(Relaxed)),
             last_success: ts(self.last_success_ms.load(Relaxed)),
@@ -2751,12 +2751,12 @@ mod tests {
         let item = dummy_item(Schedule::Never);
         cache.insert(item.clone());
         let stats = cache.stats(&item.id).unwrap();
-        let since = stats.snapshot_at(clock(1_000)).since.expect("always set");
+        let since = stats.snapshot_at(clock(1_000)).since;
         assert_eq!(since.timestamp_millis(), stats.since_ms);
 
         cache.insert(item.clone());
         let again = cache.stats(&item.id).unwrap();
-        assert_eq!(again.snapshot_at(clock(2_000)).since, Some(since));
+        assert_eq!(again.snapshot_at(clock(2_000)).since, since);
     }
 
     /// A listener item is never polled, so it has no duration or lag: 0 would
