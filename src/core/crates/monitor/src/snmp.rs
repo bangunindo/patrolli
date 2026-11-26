@@ -7,7 +7,7 @@ use anyhow::Context;
 use async_recursion::async_recursion;
 use async_snmp::{
     Auth, Client, DEFAULT_MAX_OIDS_PER_REQUEST, EngineCache, Error as SnmpError, ErrorStatus, Oid,
-    Retry, UdpHandle, UdpTransport, Value, WalkMethod, WalkOptions, WalkStream,
+    Retry, UdpHandle, UdpTransport, Value, WalkAbortReason, WalkMethod, WalkOptions, WalkStream,
 };
 use chrono::Utc;
 use patrolli::cache;
@@ -57,6 +57,16 @@ fn map_snmp_err(e: &SnmpError) -> super::Error {
             super::Error::unreachable(e.to_string())
         }
         SnmpError::Auth { .. } => super::Error::auth(e.to_string()),
+        // The subtree holds more than the item's `max_results`, and it will on
+        // the next attempt too. A retry only walks it again and, for a table
+        // walk, ships the same rows again. Ahead of the other aborts, which are
+        // the agent's doing.
+        SnmpError::WalkAborted {
+            reason: WalkAbortReason::ResultLimitExceeded { limit },
+            ..
+        } => super::Error::config(format!(
+            "walk returned more than max_results ({limit}); raise it or narrow the oid"
+        )),
         SnmpError::MalformedResponse { .. } | SnmpError::WalkAborted { .. } => {
             super::Error::malformed(e.to_string())
         }
@@ -778,6 +788,30 @@ mod tests {
 
     fn child(strategy: ChainStrategy, last_arc: &str, value: Value) -> Option<Oid> {
         build_child_oid(&oid(BASE), &strategy, &oid(last_arc), &value)
+    }
+
+    fn walk_aborted(reason: WalkAbortReason) -> super::super::Error {
+        map_snmp_err(&SnmpError::WalkAborted {
+            target: "127.0.0.1:161".parse().unwrap(),
+            reason,
+        })
+    }
+
+    #[test]
+    fn a_walk_past_max_results_is_a_config_failure_and_not_retried() {
+        let err = walk_aborted(WalkAbortReason::ResultLimitExceeded { limit: 100 });
+        assert_eq!(err.kind, FailureKind::Config);
+        assert!(!err.retryable());
+        assert!(err.msg.contains("max_results (100)"), "{}", err.msg);
+    }
+
+    #[test]
+    fn a_walk_the_agent_broke_stays_malformed_and_retried() {
+        for reason in [WalkAbortReason::NonIncreasing, WalkAbortReason::Cycle] {
+            let err = walk_aborted(reason);
+            assert_eq!(err.kind, FailureKind::Malformed, "{reason}");
+            assert!(err.retryable(), "{reason}");
+        }
     }
 
     #[test]
