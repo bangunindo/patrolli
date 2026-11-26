@@ -326,6 +326,21 @@ exported on their own: `patrolli::api::audit` (config mutations) and `patrolli::
 `Transition::log` from what the `Stats::record_*` write paths return). `Stale` is derived on read
 and deliberately not logged: detecting it would mean sweeping every item on a timer.
 
+`patrolli::item_check` (`cache::item::CHECK_LOG_TARGET`) is the per-execution stream: one `debug`
+per monitor check, per item (a batched SNMP get logs one per member), emitted by
+`Stats::log_check` from `monitor::Worker::process_item` after the requeue. It carries what the
+stats read after that check: `state`, `duration_ms`, `lag_ms`, `records`, `retries`, the failure,
+the `total_*` counters since process start and `next_check_unix_ms`, so a consumer can rebuild the
+item statistics, derive `Stale` itself and survive a dropped event. `records` counts the rows of
+that attempt, those a failed streaming check (SNMP walk, Prometheus `stream`) had already shipped
+included. A check cancelled by shutdown logs nothing, and listener items have no such event.
+Opt-in per target: its volume is every item times its check rate.
+
+Both item streams are exempt from the log throttle (`with_exempt_targets` in `build_throttle`),
+for the log output and for export alike: every event is a fact of its own, so `item_id` in the
+signature would only evict the signatures being tracked, and out of it every item would share
+one bucket.
+
 ### Export
 
 Logs can also be exported into the pipeline. `common::log_export` is a layer, installed in

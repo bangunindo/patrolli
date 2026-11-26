@@ -313,7 +313,11 @@ struct Worker {
 }
 
 impl Worker {
-    async fn execute(&self, item: &MonitorItem) -> Result<Collected, Error> {
+    /// `shipped` counts the rows a streaming collector has already sent down
+    /// `sender`. It belongs to the caller because a check that hits its deadline
+    /// is dropped mid-flight and returns nothing, yet those rows are on their way
+    /// to the sinks and have to be counted.
+    async fn execute(&self, item: &MonitorItem, shipped: &AtomicU64) -> Result<Collected, Error> {
         let host = self
             .config_cache
             .host
@@ -329,8 +333,15 @@ impl Worker {
             MonitorItem::Single(unit) => match &unit.item.config {
                 item::Config::SnmpWalk(_) => {
                     let endpoint = endpoint.ok_or_else(|| Error::config("endpoint not found"))?;
-                    snmp::process_snmp_walk(&unit.item, &endpoint, &host, &unit.stats, &self.sender)
-                        .await
+                    snmp::process_snmp_walk(
+                        &unit.item,
+                        &endpoint,
+                        &host,
+                        &unit.stats,
+                        &self.sender,
+                        shipped,
+                    )
+                    .await
                 }
                 item::Config::Dummy(_) => dummy::generate_data(&unit.item, &host, &unit.stats),
                 item::Config::PrometheusScrape(_) => {
@@ -341,6 +352,7 @@ impl Worker {
                         &host,
                         &unit.stats,
                         &self.sender,
+                        shipped,
                     )
                     .await
                 }
@@ -405,12 +417,13 @@ impl Worker {
             unit.stats.record_attempt(attempt_ms, lag);
         }
 
+        let shipped = AtomicU64::new(0);
         let attempt = tokio::select! {
             biased;
 
             _ = self.token.cancelled() => Attempt::Cancelled,
             _ = sleep(item.timeout()) => Attempt::Failed(Error::timeout("check deadline elapsed")),
-            result = self.execute(&item) => match result {
+            result = self.execute(&item, &shipped) => match result {
                 Ok(collected) => Attempt::Done(collected),
                 Err(e) => Attempt::Failed(e),
             },
@@ -420,6 +433,9 @@ impl Worker {
         // Monitors are updated and stats recorded first, then requeued in one
         // pass, so the cache write lock is held only for the requeues.
         let mut pending = Vec::with_capacity(item.units().len());
+        // Whether this check wrote an outcome to its items' stats. Shutdown
+        // records nothing, so it has nothing to log either.
+        let mut recorded = false;
 
         match attempt {
             Attempt::Done(Collected {
@@ -454,6 +470,7 @@ impl Worker {
                     debug!("monitor record dropped during shutdown");
                     pending.extend(item.units().iter().map(|unit| unit.monitor));
                 }
+                recorded = handed_over;
 
                 let now_ms = common::now().timestamp_millis();
                 for unit in item.units().iter().filter(|_| handed_over) {
@@ -461,7 +478,9 @@ impl Worker {
                         self.internal_metrics
                             .total_items_errored
                             .fetch_add(1, Ordering::Relaxed);
-                        pending.push(self.fail_unit(unit, e, &e.to_failure(), elapsed));
+                        // A batch check hands its rows over in one piece, and a
+                        // failed member has none in it.
+                        pending.push(self.fail_unit(unit, e, &e.to_failure(), elapsed, 0));
                         continue;
                     }
                     let rows = match &per_item {
@@ -481,9 +500,12 @@ impl Worker {
                     .total_items_errored
                     .fetch_add(count, Ordering::Relaxed);
 
+                recorded = true;
                 let failure = e.to_failure();
+                // Only a single item streams, so the rows are all its own.
+                let shipped = shipped.load(Ordering::Relaxed);
                 for unit in item.units() {
-                    pending.push(self.fail_unit(unit, &e, &failure, elapsed));
+                    pending.push(self.fail_unit(unit, &e, &failure, elapsed, shipped));
                 }
             }
             Attempt::Cancelled => {
@@ -496,21 +518,31 @@ impl Worker {
             }
         }
 
-        let mut item_cache = self.config_cache.item.write();
-        for monitor in pending {
-            item_cache.requeue(monitor);
+        {
+            let mut item_cache = self.config_cache.item.write();
+            for monitor in pending {
+                item_cache.requeue(monitor);
+            }
+        }
+        // After the requeue, which is what publishes the next check.
+        if recorded {
+            for unit in item.units() {
+                unit.stats.log_check(&unit.item);
+            }
         }
     }
 
     /// Record `e` against one unit of a check and decide when it runs next: in
     /// `RETRY_INTERVAL` while retries remain and the kind is worth retrying,
-    /// otherwise on its own schedule.
+    /// otherwise on its own schedule. `shipped` is the rows the check had sent
+    /// downstream before it failed.
     fn fail_unit(
         &self,
         unit: &cache::item::Entry,
         e: &Error,
         failure: &Failure,
         elapsed: Duration,
+        shipped: u64,
     ) -> item::ItemMonitor {
         let retryable = e.retryable();
         if retryable {
@@ -549,6 +581,7 @@ impl Worker {
             elapsed,
             monitor.retries.min(u8::MAX as u32) as u8,
             retrying,
+            shipped,
         ) {
             t.log(unit.item.id, &unit.item.name, Some(failure));
         }
@@ -1303,6 +1336,7 @@ mod tests {
     }
 
     fn harness() -> Harness {
+        std::sync::LazyLock::force(&CHECK_EVENTS);
         let cache = cache::Cache::new();
         let (record_tx, records) = bounded(16);
         let (_item_tx, monitor_channel) = bounded(1);
@@ -1450,6 +1484,109 @@ mod tests {
         let cached = h.cache.item.read().stats(&id).unwrap();
         assert!(Arc::ptr_eq(&cached, &stats));
         assert!(cached.snapshot().next_check.is_some());
+    }
+
+    /// The fields of every event on the item check stream in this test binary.
+    ///
+    /// One subscriber for the whole process, installed by `harness` before any
+    /// check can run, and read per item: a subscriber scoped to one test would
+    /// race the other tests' threads for the callsite's cached interest, which
+    /// is global.
+    #[derive(Clone, Default)]
+    struct CheckEvents(Arc<parking_lot::Mutex<Vec<FxHashMap<&'static str, String>>>>);
+
+    static CHECK_EVENTS: std::sync::LazyLock<CheckEvents> = std::sync::LazyLock::new(|| {
+        use tracing_subscriber::prelude::*;
+        let events = CheckEvents::default();
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(events.clone()),
+        )
+        .expect("the only global subscriber of this test binary");
+        events
+    });
+
+    /// The check events logged for `item_id` so far, oldest first.
+    fn check_events(item_id: Uuid) -> Vec<FxHashMap<&'static str, String>> {
+        let id = item_id.to_string();
+        let events = CHECK_EVENTS.0.lock();
+        events
+            .iter()
+            .filter(|e| e["item_id"] == id)
+            .cloned()
+            .collect()
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CheckEvents {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Fields(FxHashMap<&'static str, String>);
+            impl tracing::field::Visit for Fields {
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    self.0.insert(field.name(), value.to_string());
+                }
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0.insert(field.name(), format!("{value:?}"));
+                }
+            }
+            if event.metadata().target() != cache::item::CHECK_LOG_TARGET {
+                return;
+            }
+            let mut fields = Fields(FxHashMap::default());
+            event.record(&mut fields);
+            self.0.lock().push(fields.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_recorded_check_logs_one_event_and_a_cancelled_one_none() {
+        let mut h = harness();
+
+        let unit = schedule(&h.cache, dummy(3));
+        let id = unit.item.id;
+        h.worker.process_item(MonitorItem::Single(unit)).await;
+        let logged = check_events(id);
+        assert_eq!(logged.len(), 1);
+        assert_eq!(logged[0]["item_type"], "dummy");
+        assert_eq!(logged[0]["state"], "ok");
+        assert_eq!(logged[0]["records"], "3");
+        assert_eq!(logged[0]["total_checks"], "1");
+        // Logged after the requeue, so the next check is the new one.
+        let next_check = h
+            .cache
+            .item
+            .read()
+            .stats(&id)
+            .unwrap()
+            .snapshot()
+            .next_check;
+        assert_eq!(
+            logged[0]["next_check_unix_ms"],
+            next_check.unwrap().timestamp_millis().to_string()
+        );
+
+        // No endpoint: a config failure.
+        let unit = schedule(&h.cache, ItemConfig::PrometheusScrape(Default::default()));
+        let id = unit.item.id;
+        h.worker.process_item(MonitorItem::Single(unit)).await;
+        let logged = check_events(id);
+        assert_eq!(logged.len(), 1);
+        assert_eq!(logged[0]["state"], "failing");
+        assert_eq!(logged[0]["failure_kind"], "config");
+        assert_eq!(logged[0]["reason"], "endpoint not found");
+        assert_eq!(logged[0]["records"], "0");
+
+        let unit = schedule(&h.cache, dummy(1));
+        let id = unit.item.id;
+        h.worker.token.cancel();
+        h.worker.process_item(MonitorItem::Single(unit)).await;
+        assert!(check_events(id).is_empty(), "shutdown records nothing");
     }
 
     /// Shutdown fires for every in-flight item on every deploy. It must leave no
@@ -1649,6 +1786,40 @@ mod tests {
             }
         }
 
+        /// Answers a walk with `STALL_ROWS` oids, then never answers again.
+        struct Stalls;
+
+        const STALL_ROWS: u32 = 2;
+
+        impl MibHandler for Stalls {
+            fn get<'a>(
+                &'a self,
+                _ctx: &'a RequestContext,
+                _req: &'a Oid,
+            ) -> BoxFuture<'a, HandlerResult<GetResult>> {
+                Box::pin(async { Ok(GetResult::NoSuchObject) })
+            }
+
+            fn get_next<'a>(
+                &'a self,
+                _ctx: &'a RequestContext,
+                req: &'a Oid,
+            ) -> BoxFuture<'a, HandlerResult<GetNextResult>> {
+                Box::pin(async move {
+                    let next = (1..=STALL_ROWS)
+                        .map(|i| oid(&format!("{PREFIX}.{i}")))
+                        .find(|next| next > req);
+                    match next {
+                        Some(next) => Ok(GetNextResult::Value(async_snmp::VarBind::new(
+                            next,
+                            Value::Integer(1),
+                        ))),
+                        None => std::future::pending().await,
+                    }
+                })
+            }
+        }
+
         struct RunningAgent {
             agent: Arc<Agent>,
             handle: JoinHandle<async_snmp::Result<()>>,
@@ -1656,10 +1827,14 @@ mod tests {
 
         impl RunningAgent {
             async fn start() -> Self {
+                Self::start_with(Arc::new(OneOid)).await
+            }
+
+            async fn start_with(handler: Arc<dyn MibHandler>) -> Self {
                 let agent = Agent::builder()
                     .bind("127.0.0.1:0")
                     .community(b"public")
-                    .handler(oid(PREFIX), Arc::new(OneOid))
+                    .handler(oid(PREFIX), handler)
                     .allow_all_access()
                     .build()
                     .await
@@ -1740,6 +1915,15 @@ mod tests {
 
             h.worker.process_item(MonitorItem::Batch(units)).await;
 
+            // One check event per member, each with its own outcome.
+            let state_of = |id: Uuid| {
+                let logged = check_events(id);
+                assert_eq!(logged.len(), 1);
+                logged[0]["state"].clone()
+            };
+            assert_eq!(state_of(known.item.id), "ok");
+            assert_eq!(state_of(unknown.item.id), "failing");
+
             let snap = known.stats.snapshot();
             assert_eq!(snap.state, cache::item::ItemState::Ok);
             assert_eq!(snap.last_record_count, Some(1));
@@ -1811,6 +1995,78 @@ mod tests {
                     Ok(MonitorRecord::BatchLog(rows)) if rows.len() == 2
                 ));
                 agent.stop().await;
+            });
+        }
+
+        /// A walk sends its rows on as it reads them, so one that runs into the
+        /// item's deadline has still collected the rows it sent. The deadline
+        /// drops the walk mid-flight: nothing it returns can carry the count.
+        #[test]
+        fn a_walk_that_times_out_counts_the_rows_it_shipped() {
+            RUNTIME.block_on(async {
+                let agent = RunningAgent::start_with(Arc::new(Stalls)).await;
+                let mut h = harness();
+                let host_id = add_host(&h.cache);
+                let endpoint_id = Uuid::now_v7();
+                h.cache.endpoint.write().insert(Endpoint::new(
+                    endpoint_id,
+                    "agent".into(),
+                    host_id,
+                    // v1 walks by GETNEXT: one oid per request, so the rows
+                    // before the stall are answered.
+                    v1(&agent.address()),
+                ));
+                let unit = schedule_on(
+                    &h.cache,
+                    host_id,
+                    Some(endpoint_id),
+                    StdDuration::from_millis(500),
+                    ItemConfig::SnmpWalk(patrolli::config::item::SnmpWalk {
+                        oids: vec![patrolli::config::snmp::OidChain {
+                            oid: oid(PREFIX),
+                            chain_strategy: Default::default(),
+                            chain: vec![],
+                        }],
+                        table_format: false,
+                        use_mib: false,
+                        disable_bulk: None,
+                        poll_worker_count: 1,
+                        max_results: 0,
+                        // One row per chunk, each sent on as soon as it is read.
+                        chunk_size: 1,
+                        request_timeout: StdDuration::from_secs(5),
+                        request_retries: 0,
+                        max_unknown_oids_per_row: None,
+                    }),
+                );
+                let (id, stats) = (unit.item.id, unit.stats.clone());
+
+                h.worker.process_item(MonitorItem::Single(unit)).await;
+
+                let rows = STALL_ROWS as u64;
+                let snap = stats.snapshot();
+                assert_eq!(snap.state, cache::item::ItemState::Retrying);
+                let kind = snap.last_failure.expect("a failure is recorded").kind;
+                assert_eq!(kind, FailureKind::Timeout);
+                assert_eq!(snap.total_records, rows);
+                assert_eq!(snap.last_record_count, Some(STALL_ROWS));
+                assert!(snap.last_success.is_none());
+
+                let logged = check_events(id);
+                assert_eq!(logged.len(), 1);
+                assert_eq!(logged[0]["state"], "retrying");
+                assert_eq!(logged[0]["failure_kind"], "timeout");
+                assert_eq!(logged[0]["records"], rows.to_string());
+                assert_eq!(logged[0]["total_records"], rows.to_string());
+
+                for _ in 0..rows {
+                    assert!(matches!(
+                        h.records.try_recv(),
+                        Ok(MonitorRecord::SingleLog(_))
+                    ));
+                }
+                // The agent is stuck in its handler and would not see a cancel.
+                agent.handle.abort();
             });
         }
 

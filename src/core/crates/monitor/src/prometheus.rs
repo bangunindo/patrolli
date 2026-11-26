@@ -23,6 +23,7 @@ use prometheus_scraper::client::{Certificate, Identity};
 use prometheus_scraper::{Client, ClientBuilder, ScrapeError, owned};
 use std::mem::discriminant;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::debug;
 
 pub async fn process_prometheus_scrape(
@@ -31,6 +32,7 @@ pub async fn process_prometheus_scrape(
     host: &Host,
     stats: &Arc<Stats>,
     sender: &flume::Sender<MonitorRecord>,
+    shipped: &AtomicU64,
 ) -> Result<super::Collected, super::Error> {
     let EndpointConfig::Http(ep_conf) = &endpoint.config else {
         return Err(super::Error::config(format!(
@@ -114,6 +116,7 @@ pub async fn process_prometheus_scrape(
                 .send_async(MonitorRecord::SingleMetric(Box::new(record)))
                 .await
                 .map_err(|e| super::Error::dropped(e.to_string()))?;
+            shipped.fetch_add(1, Ordering::Relaxed);
         } else {
             batch.push(record);
         }

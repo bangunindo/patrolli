@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use common::mib;
+use patrolli::cache::item::{CHECK_LOG_TARGET, STATE_LOG_TARGET};
 use patrolli::chan::new as new_channel;
 use patrolli::common::internal_metrics::INTERNAL_METRICS;
 use patrolli::common::log_export::{self, LOG_EXPORT};
@@ -549,6 +550,14 @@ fn build_throttle(active_emission: bool) -> TracingRateLimitLayer {
             "rows".to_string(),
             "reason".to_string(),
             "row_id".to_string(),
+        ])
+        // The item streams carry `item_id` and per-check values: each event is
+        // a fact of its own, never a repeat, so in the signature they would
+        // only evict the ones being tracked, and out of it every item would
+        // share one bucket.
+        .with_exempt_targets(vec![
+            STATE_LOG_TARGET.to_string(),
+            CHECK_LOG_TARGET.to_string(),
         ])
         .with_max_signatures(MAX_LOG_SIGNATURES)
         .with_summary_interval(Duration::from_secs(60))
@@ -1094,26 +1103,7 @@ mod logging_tests {
     fn capturing_subscriber() -> (impl subscriber::Subscriber, Capture) {
         let capture = Capture::default();
         let targets = Targets::default().with_target("patrolli", LevelFilter::TRACE);
-        let throttle = TracingRateLimitLayer::builder()
-            .with_policy(Policy::token_bucket(50.0, 1.0).unwrap())
-            .with_excluded_fields(vec![
-                "error".to_string(),
-                "request_id".to_string(),
-                "stats".to_string(),
-                "latency_ms".to_string(),
-                "user".to_string(),
-                "peer".to_string(),
-                "batch_id".to_string(),
-                "records".to_string(),
-                "rows".to_string(),
-                "reason".to_string(),
-                "row_id".to_string(),
-            ])
-            .with_max_signatures(MAX_LOG_SIGNATURES)
-            .with_summary_interval(Duration::from_secs(60))
-            .with_active_emission(true)
-            .build()
-            .unwrap();
+        let throttle = build_throttle(true);
         let layer = tracing_subscriber::fmt::layer()
             .with_writer(capture.clone())
             .with_ansi(false)
@@ -1184,5 +1174,26 @@ mod logging_tests {
             "an interpolated message defeats the throttle entirely -- this is why the convention \
              requires a constant message literal"
         );
+    }
+
+    /// The item streams repeat nothing: with every field but the identity
+    /// excluded from the signature, as here, a throttled stream would lose all
+    /// but the first burst.
+    #[tokio::test]
+    async fn the_item_streams_are_never_throttled() {
+        for target in [STATE_LOG_TARGET, CHECK_LOG_TARGET] {
+            let (sub, capture) = capturing_subscriber();
+            let lines = subscriber::with_default(sub, || {
+                for _ in 0..BURST {
+                    if target == STATE_LOG_TARGET {
+                        tracing::info!(target: STATE_LOG_TARGET, "item state changed");
+                    } else {
+                        tracing::debug!(target: CHECK_LOG_TARGET, "item checked");
+                    }
+                }
+                capture.lines()
+            });
+            assert_eq!(lines, BURST, "{target} was throttled");
+        }
     }
 }

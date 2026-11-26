@@ -26,6 +26,7 @@ use std::hash::{Hash, Hasher};
 use std::mem::discriminant;
 use std::net::SocketAddr;
 use std::ops::Bound::{Excluded, Unbounded};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::net::lookup_host;
@@ -461,6 +462,7 @@ fn row_is_incomplete(oid_count: usize, max_unknown: Option<usize>, values: usize
 }
 
 // Runs inside the monitor worker's `process_item` span, which carries the item identity.
+#[allow(clippy::too_many_arguments)]
 async fn snmp_walk(
     client: Client,
     item_conf: &Item,
@@ -469,6 +471,7 @@ async fn snmp_walk(
     snmp_conf: &SnmpWalk,
     stats: &Arc<Stats>,
     sender: &flume::Sender<MonitorRecord>,
+    shipped: &AtomicU64,
 ) -> Result<super::Collected, super::Error> {
     debug!("processing snmp walk item");
     let n_start = Instant::now();
@@ -477,8 +480,9 @@ async fn snmp_walk(
     // returned record — which is why it has to be reported back explicitly.
     let mut total_rows = 0u64;
     // Rows discarded for answering too few of the configured oids. Charged to the item
-    // as dropped at the end, so a table that mostly went missing doesn't read as a
-    // device that simply returned nothing.
+    // as dropped, so a table that mostly went missing doesn't read as a device that
+    // simply returned nothing. Charged at each discard, not at the end: a walk that
+    // fails or times out later never gets there.
     let mut total_dropped = 0u64;
     let oid_count = snmp_conf.oid_count();
     let max_unknown_oid = snmp_conf.max_unknown_oids_per_row;
@@ -558,6 +562,7 @@ async fn snmp_walk(
                     for (last_arc, values) in batch {
                         if row_is_incomplete(oid_count, max_unknown_oid, values.len()) {
                             total_dropped += 1;
+                            stats.add_dropped(1);
                             continue;
                         }
                         total_rows += 1;
@@ -580,11 +585,13 @@ async fn snmp_walk(
                     // The whole batch can be discarded by the filter above, and an
                     // empty BatchLog is work for the batcher with nothing in it.
                     if !output.is_empty() {
+                        let rows = output.len() as u64;
                         trace!(length = output.len(), "sending batch");
                         sender
                             .send_async(MonitorRecord::BatchLog(output))
                             .await
                             .map_err(|e| super::Error::dropped(e.to_string()))?;
+                        shipped.fetch_add(rows, Ordering::Relaxed);
                         trace!("batch sent");
                     }
                 }
@@ -617,6 +624,7 @@ async fn snmp_walk(
                 })))
                 .await
                 .map_err(|e| super::Error::dropped(e.to_string()))?;
+            shipped.fetch_add(1, Ordering::Relaxed);
         }
 
         if !chunk.finished {
@@ -627,6 +635,7 @@ async fn snmp_walk(
     for (idx, values) in result {
         if row_is_incomplete(oid_count, max_unknown_oid, values.len()) {
             total_dropped += 1;
+            stats.add_dropped(1);
             continue;
         }
         total_rows += 1;
@@ -647,9 +656,6 @@ async fn snmp_walk(
             processors: item_conf.processors.clone(),
             stats: stats.clone(),
         });
-    }
-    if total_dropped > 0 {
-        stats.add_dropped(total_dropped);
     }
     debug!(elapsed = ?n_start.elapsed(), total_rows, total_dropped, "walk finished");
     let record = if output.is_empty() {
@@ -732,6 +738,7 @@ pub async fn process_snmp_walk(
     host: &Host,
     stats: &Arc<Stats>,
     sender: &flume::Sender<MonitorRecord>,
+    shipped: &AtomicU64,
 ) -> Result<super::Collected, super::Error> {
     let ItemConfig::SnmpWalk(item_conf) = &item.config else {
         return Err(super::Error::config(format!(
@@ -746,7 +753,10 @@ pub async fn process_snmp_walk(
         Some(item_conf),
     )
     .await?;
-    snmp_walk(client, item, endpoint, host, item_conf, stats, sender).await
+    snmp_walk(
+        client, item, endpoint, host, item_conf, stats, sender, shipped,
+    )
+    .await
 }
 
 #[cfg(test)]

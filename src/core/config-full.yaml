@@ -762,6 +762,13 @@ listeners:
           level: info
         - name: patrolli_cluster
           level: debug
+        # One event per monitor check, per item, with the item's statistics
+        # after it (state, duration, records, failure, counters, next check):
+        # what an external consumer needs to follow every item. Its volume is
+        # every item times its check rate, so size buffer_size for it. Never
+        # throttled, like patrolli::item_state (one info per state change).
+        - name: patrolli::item_check
+          level: debug
       # Modules never exported. The longest matching prefix wins, so an
       # exclusion can carve a submodule out of an include.
       exclude:
