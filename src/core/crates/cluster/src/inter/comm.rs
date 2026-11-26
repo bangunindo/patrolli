@@ -197,9 +197,10 @@ pub struct ItemStats {
     /// Keyed by item id.
     pub stats: FxHashMap<Uuid, StatsSnapshot>,
     pub node_id: Uuid,
-    /// When this node's counters started. `None` only when it never answered:
-    /// without it every counter in the answer would be misdated, so it is not
-    /// invented.
+    /// When this node's process started: the earliest its counters go back to,
+    /// and the fallback for an item whose snapshot carries no `since` of its
+    /// own. `None` only when the node never answered: without it every counter
+    /// in the answer would be misdated, so it is not invented.
     pub since: Option<DateTime<FixedOffset>>,
     pub error: Option<String>,
 }

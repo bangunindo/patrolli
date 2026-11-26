@@ -8337,7 +8337,8 @@
         "properties": {
           "since": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "When this item's counters started on the node that holds it."
           },
           "snapshot": {
             "$ref": "#/components/schemas/StatsSnapshot"

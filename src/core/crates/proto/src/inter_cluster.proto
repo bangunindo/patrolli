@@ -128,7 +128,7 @@ message ItemStats {
 
   ItemState state = 3;
 
-  // Counters since the response's `stats_since_unix_ms`. Zero is meaningful.
+  // Counters since `since_unix_ms`. Zero is meaningful.
   uint64 total_checks = 4;
   uint64 total_failures = 5;
   uint64 total_records = 6;
@@ -184,6 +184,12 @@ message ItemStats {
   // buckets ending here, so bucket i is the most recent tick t <= this with
   // t % 288 == i.
   int64 activity_window_end_unix_ms = 21;
+
+  // When this item's counters started: it entered the producing node's cache.
+  // Later than the response's `stats_since_unix_ms` for an item added, or a
+  // host moved here, after the process started. Absent from a node too old to
+  // send it; the caller then falls back to `stats_since_unix_ms`.
+  optional int64 since_unix_ms = 22;
 }
 
 message ItemStatsRequest {
@@ -205,9 +211,9 @@ message ItemStatsRequest {
 message ItemStatsResponse {
   repeated ItemStats stats = 1;
   bytes node_id = 2;
-  // When this node's counters started — process start, or the point a
-  // persisted snapshot was restored from. Everything before it is unknowable,
-  // so the UI must say "since 09:14" rather than implying all-time history.
+  // When this node's process started: the earliest any of its counters can
+  // go back to. Each item says when its own started (`ItemStats.since_unix_ms`);
+  // this is the fallback for a node that does not send that.
   int64 stats_since_unix_ms = 3;
   // Requested ids this node holds no stats for. Set on the final chunk only,
   // so the caller can distinguish "not owned here" from "owned but silent".

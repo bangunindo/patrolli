@@ -211,6 +211,7 @@ pub(crate) fn validate_item_kind_association(
 
 #[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub(crate) struct ItemsStatsResponse {
+    /// When this item's counters started on the node that holds it.
     #[serde(serialize_with = "serialize_utc_as_local")]
     pub since: DateTime<Utc>,
     pub snapshot: StatsSnapshot,
@@ -266,7 +267,13 @@ pub(crate) async fn collect_item_stats(
             if out.contains_key(&item_id) {
                 continue;
             }
-            if let Some(since) = trusted_since {
+            if let Some(node_since) = trusted_since {
+                // The item's own start, which is later than the node's for an
+                // item added or a host moved there after it started. A node
+                // too old to send it leaves its process start.
+                let since = snapshot
+                    .since
+                    .map_or(node_since, |since| since.with_timezone(&Utc));
                 out.insert(item_id, ItemsStatsResponse { since, snapshot });
             }
         }

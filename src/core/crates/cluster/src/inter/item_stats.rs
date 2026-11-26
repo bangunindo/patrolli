@@ -140,6 +140,7 @@ pub fn to_proto(
         activity_ok: snap.activity_ok.clone(),
         activity_fail: snap.activity_fail.clone(),
         activity_window_end_unix_ms: snap.activity_window_end.timestamp_millis(),
+        since_unix_ms: snap.since.map(|t| t.timestamp_millis()),
 
         last_failure: snap.last_failure.as_deref().map(failure_to_proto),
         recent_failures: match (include_recent_failures, &snap.recent_failures) {
@@ -361,6 +362,8 @@ impl TryFrom<v1::ItemStats> for RemoteStats {
                 total_dropped: msg.total_dropped,
                 consecutive_failures: msg.consecutive_failures,
                 retries: msg.retries.min(u32::from(u8::MAX)) as u8,
+
+                since: msg.since_unix_ms.and_then(to_local),
 
                 last_attempt: msg.last_attempt_unix_ms.and_then(to_local),
                 last_success: msg.last_success_unix_ms.and_then(to_local),
@@ -978,6 +981,13 @@ mod tests {
         // Timestamps compare by instant, which is the right notion: the wire carries
         // no offset, so the zone each side renders in is not part of the value.
         assert_eq!(back.stats, snap);
+        assert!(snap.since.is_some(), "the item's own start crosses too");
+
+        // A peer too old to send it: absent, for the caller to fall back on
+        // the node's start, never an invented epoch.
+        let mut old_peer = to_proto(item_id, node_id, &snap, true);
+        old_peer.since_unix_ms = None;
+        assert_eq!(RemoteStats::try_from(old_peer).unwrap().stats.since, None);
     }
 
     /// Identity is the one thing that can't degrade: stats filed against the wrong

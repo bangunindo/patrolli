@@ -99,7 +99,8 @@ pub struct Stats {
 
     /// When these counters started, unix millis: the item entered this node's
     /// cache. They restart with the process and when a host moves to another
-    /// node, and on the logs this is the only thing that says so.
+    /// node. The one "since" of an item's statistics, on the logs
+    /// (`since_unix_ms`) and through the API ([`StatsSnapshot::since`]).
     since_ms: i64,
 
     activity_window: ActivityWindow,
@@ -453,6 +454,17 @@ pub struct StatsSnapshot {
     pub total_dropped: u64,
     pub consecutive_failures: u32,
     pub retries: u8,
+
+    /// When the counters above started: the item entered the answering node's
+    /// cache. They restart with the process, when the host moves to another
+    /// node and when a node comes back from standby, so a node-wide start time
+    /// would overstate the window for any item loaded later. `None` only from
+    /// a peer too old to send it.
+    ///
+    /// Not serialized: the API reports it next to the snapshot, as the `since`
+    /// it always had.
+    #[serde(skip)]
+    pub since: Option<DateTime<FixedOffset>>,
 
     /// `None` where the event hasn't happened yet, so callers can tell "never
     /// succeeded" from "succeeded at the epoch".
@@ -1053,6 +1065,8 @@ impl Stats {
             total_dropped: self.total_dropped.load(Relaxed),
             consecutive_failures: self.consecutive_failures.load(Relaxed),
             retries: self.retries.load(Relaxed),
+
+            since: ts(self.since_ms),
 
             last_attempt: ts(self.last_attempt_ms.load(Relaxed)),
             last_success: ts(self.last_success_ms.load(Relaxed)),
@@ -2727,6 +2741,22 @@ mod tests {
         for absent in ["duration_ms", "lag_ms", "retries", "next_check_unix_ms"] {
             assert!(f.get(absent).is_none(), "{absent} means nothing here");
         }
+    }
+
+    /// The counters are dated per item, from when it entered the cache, and an
+    /// edit that keeps the stats keeps the date.
+    #[test]
+    fn a_snapshot_says_when_its_item_started_counting() {
+        let mut cache = Item::new();
+        let item = dummy_item(Schedule::Never);
+        cache.insert(item.clone());
+        let stats = cache.stats(&item.id).unwrap();
+        let since = stats.snapshot_at(clock(1_000)).since.expect("always set");
+        assert_eq!(since.timestamp_millis(), stats.since_ms);
+
+        cache.insert(item.clone());
+        let again = cache.stats(&item.id).unwrap();
+        assert_eq!(again.snapshot_at(clock(2_000)).since, Some(since));
     }
 
     /// A listener item is never polled, so it has no duration or lag: 0 would
