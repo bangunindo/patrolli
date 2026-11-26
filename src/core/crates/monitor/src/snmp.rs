@@ -4,10 +4,11 @@
 
 use super::MonitorRecord;
 use anyhow::Context;
+use arc_swap::ArcSwapOption;
 use async_recursion::async_recursion;
 use async_snmp::{
-    Auth, Client, DEFAULT_MAX_OIDS_PER_REQUEST, EngineCache, Error as SnmpError, ErrorStatus, Oid,
-    Retry, RunningUdpEndpoint, UdpEndpoint, UdpHandle, Value, WalkAbortReason, WalkMethod,
+    Auth, Client, DEFAULT_MAX_OIDS_PER_REQUEST, EndpointId, EngineCache, Error as SnmpError,
+    ErrorStatus, Oid, Retry, UdpEndpoint, UdpHandle, UdpRunner, Value, WalkAbortReason, WalkMethod,
     WalkOptions, WalkStream,
 };
 use chrono::Utc;
@@ -28,12 +29,13 @@ use std::mem::discriminant;
 use std::net::SocketAddr;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use tokio::net::lookup_host;
 use tokio::sync::{Mutex as TokioMutex, RwLock as TokioRwLock};
 use tokio::task::JoinSet;
-use tracing::{Instrument, Span, debug, error, trace};
+use tokio::time::Instant as TokioInstant;
+use tracing::{Instrument, Span, debug, trace};
 use uuid::Uuid;
 
 /// Translate `disable_bulk` into the walk operation it selects. `false` forces
@@ -90,15 +92,21 @@ fn map_snmp_err(e: &SnmpError) -> super::Error {
     }
 }
 
-/// The running owners: dropping one shuts its endpoint down, and these never drop.
-static UDP_TRANSPORT: OnceLock<Vec<RunningUdpEndpoint>> = OnceLock::new();
+/// How long a shard keeps its socket after the last check that used it.
+const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+static UDP_SHARDS: LazyLock<Arc<UdpShards>> = LazyLock::new(|| {
+    let shards = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8);
+    UdpShards::new(shards, UDP_IDLE_TIMEOUT)
+});
 static ENGINE_CACHE: LazyLock<Arc<EngineCache>> = LazyLock::new(|| Arc::new(EngineCache::new()));
 
-/// `get_udp_transport` binds its sockets once per process, on whichever
-/// runtime asks first, and they close when that runtime does. A
-/// `#[tokio::test]` runtime per test would leave every test after the first
-/// one with a dead transport, so every test that builds a client runs on this
-/// one.
+/// A transport closes with the runtime that bound it. The next check binds a
+/// fresh one, but a `#[tokio::test]` runtime per test would do that for every
+/// test (and the ICMP sockets do not come back at all), so every test that
+/// builds a client runs on this one.
 #[cfg(test)]
 pub(super) static TEST_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
@@ -107,36 +115,114 @@ pub(super) static TEST_RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::ne
         .unwrap()
 });
 
-fn udp_select_shard(
-    shards: &'static [RunningUdpEndpoint],
-    dest: SocketAddr,
-) -> &'static UdpEndpoint {
-    let mut hasher = FxHasher::default();
-    dest.hash(&mut hasher);
-    let shard_idx = hasher.finish() as usize % shards.len();
-    &shards[shard_idx]
+struct UdpShard {
+    endpoint: UdpEndpoint,
+    /// Milliseconds after `UdpShards::epoch`.
+    last_used: AtomicU64,
 }
 
-async fn get_udp_transport(dest: SocketAddr) -> &'static UdpEndpoint {
-    match UDP_TRANSPORT.get() {
-        Some(transport) => udp_select_shard(transport, dest),
-        None => {
-            // some race condition is expected here, set might fail if another thread already set it
-            let default_shards = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(8);
-            let mut transports = Vec::with_capacity(default_shards);
-            for _ in 0..default_shards {
-                let udp_transport = UdpEndpoint::builder().bind("0.0.0.0:0").spawn().await;
-                if let Err(e) = &udp_transport {
-                    error!(error = %e, "failed to bind snmp udp transport");
-                }
-                let udp_transport = udp_transport.unwrap();
-                transports.push(udp_transport);
-            }
-            let _ = UDP_TRANSPORT.set(transports);
-            udp_select_shard(UDP_TRANSPORT.get().unwrap(), dest)
+/// The sockets every SNMP client shares: a destination always hashes to the
+/// same slot, so an agent keeps seeing one source port.
+///
+/// A slot binds on first use and lets go of its endpoint once nothing asked
+/// for it for `idle`. Letting go is only dropping this table's clone: the
+/// endpoint is reference counted, so a check still running on it keeps the
+/// socket until its client drops. An endpoint whose receiver died is replaced
+/// by the next check.
+struct UdpShards {
+    slots: Box<[ArcSwapOption<UdpShard>]>,
+    /// Taken to write a slot (bind, release), never to read one.
+    write: TokioMutex<()>,
+    idle: Duration,
+    epoch: TokioInstant,
+}
+
+impl UdpShards {
+    fn new(shards: usize, idle: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            slots: (0..shards.max(1)).map(|_| ArcSwapOption::empty()).collect(),
+            write: TokioMutex::new(()),
+            idle,
+            epoch: TokioInstant::now(),
+        })
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.epoch.elapsed().as_millis() as u64
+    }
+
+    /// The slot's endpoint if it is alive, marked as used.
+    fn live(&self, idx: usize) -> Option<UdpEndpoint> {
+        let slot = self.slots[idx].load();
+        let shard = slot.as_ref()?;
+        if shard.endpoint.control().is_shutdown() {
+            return None;
         }
+        shard.last_used.store(self.now_ms(), Ordering::Relaxed);
+        Some(shard.endpoint.clone())
+    }
+
+    async fn get(self: &Arc<Self>, dest: SocketAddr) -> Result<UdpEndpoint, Box<SnmpError>> {
+        let mut hasher = FxHasher::default();
+        dest.hash(&mut hasher);
+        let idx = hasher.finish() as usize % self.slots.len();
+        if let Some(endpoint) = self.live(idx) {
+            return Ok(endpoint);
+        }
+        // Held across the bind, so two first checks cannot both bind.
+        let _write = self.write.lock().await;
+        if let Some(endpoint) = self.live(idx) {
+            return Ok(endpoint);
+        }
+        // Not `spawn()`: dropping a `RunningUdpEndpoint` shuts the endpoint
+        // down under the checks still using it.
+        let (endpoint, runner) = UdpEndpoint::builder()
+            .bind("0.0.0.0:0")
+            .prepare()
+            .await?
+            .into_parts();
+        debug!(shard = idx, local_addr = %endpoint.local_addr(), "snmp udp transport bound");
+        tokio::spawn(self.clone().drive(idx, endpoint.endpoint_id(), runner));
+        self.slots[idx].store(Some(Arc::new(UdpShard {
+            endpoint: endpoint.clone(),
+            last_used: AtomicU64::new(self.now_ms()),
+        })));
+        Ok(endpoint)
+    }
+
+    /// Run one endpoint's receiver, and empty its slot once it has been idle.
+    /// Holds no clone of the endpoint, or the socket would never close.
+    async fn drive(self: Arc<Self>, idx: usize, id: EndpointId, runner: UdpRunner) {
+        let run = runner.run();
+        tokio::pin!(run);
+        let mut deadline = TokioInstant::now() + self.idle;
+        loop {
+            tokio::select! {
+                // async-snmp logs what ended it; `get` replaces the endpoint.
+                _ = &mut run => return,
+                () = tokio::time::sleep_until(deadline) => {
+                    let _write = self.write.lock().await;
+                    // Another endpoint's by now if this one died and was replaced.
+                    if let Some(shard) = self.slots[idx].load().as_ref()
+                        && shard.endpoint.endpoint_id() == id
+                    {
+                        let last_used = Duration::from_millis(shard.last_used.load(Ordering::Relaxed));
+                        let idle_at = self.epoch + last_used + self.idle;
+                        if idle_at > TokioInstant::now() {
+                            deadline = idle_at;
+                            continue;
+                        }
+                        // A check that read the slot just before this keeps its
+                        // clone, and the next one binds again.
+                        self.slots[idx].store(None);
+                        debug!(shard = idx, "idle snmp udp transport released");
+                    }
+                    break;
+                }
+            }
+        }
+        // The receiver ends when the last client using the endpoint drops.
+        let _ = run.await;
     }
 }
 
@@ -738,11 +824,16 @@ async fn snmp_client(
     }
     let retry =
         Retry::fixed(retries, Duration::ZERO).map_err(|e| super::Error::config(e.to_string()))?;
+    // A failed bind is ours, not the agent's, and the next check binds again.
+    let transport = UDP_SHARDS
+        .get(ip_dest)
+        .await
+        .map_err(|e| map_snmp_err(&e))?;
     client
         .walk_options(walk_options)
         .retry(retry)
         .request_timeout(request_timeout)
-        .build_with(get_udp_transport(ip_dest).await)
+        .build_with(&transport)
         .await
         .map_err(|e| map_snmp_err(&e))
 }
@@ -1023,6 +1114,54 @@ config:
                     .await
                     .unwrap_or_else(|e| panic!("{privacy}: {e}"));
             }
+        });
+    }
+
+    const DEST: &str = "127.0.0.1:161";
+
+    #[test]
+    fn an_idle_udp_shard_lets_go_of_its_socket() {
+        TEST_RUNTIME.block_on(async {
+            let shards = UdpShards::new(1, Duration::from_millis(50));
+            let first = shards.get(DEST.parse().unwrap()).await.unwrap();
+            let again = shards.get(DEST.parse().unwrap()).await.unwrap();
+            assert_eq!(first.endpoint_id(), again.endpoint_id());
+            drop(again);
+
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while shards.slots[0].load().is_some() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the idle shard is released");
+            // A check still holding the endpoint keeps its socket.
+            assert!(!first.control().is_shutdown());
+            let (id, addr) = (first.endpoint_id(), first.local_addr());
+            drop(first);
+            // The last clone gone, the receiver stops and the port is free.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while std::net::UdpSocket::bind(addr).is_err() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the socket is closed");
+
+            let second = shards.get(DEST.parse().unwrap()).await.unwrap();
+            assert_ne!(second.endpoint_id(), id);
+        });
+    }
+
+    #[test]
+    fn a_dead_udp_shard_is_replaced() {
+        TEST_RUNTIME.block_on(async {
+            let shards = UdpShards::new(1, Duration::from_secs(60));
+            let first = shards.get(DEST.parse().unwrap()).await.unwrap();
+            first.control().shutdown().await;
+            let second = shards.get(DEST.parse().unwrap()).await.unwrap();
+            assert_ne!(first.endpoint_id(), second.endpoint_id());
+            assert!(!second.control().is_shutdown());
         });
     }
 }
