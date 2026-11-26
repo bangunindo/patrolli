@@ -62,6 +62,7 @@ pub(super) fn item_for(listener_id: Uuid) -> cache::Cache {
         vec![Uuid::now_v7()],
         config::item::Config::Listener(config::item::Listener {
             match_strategy: config::item::ListenerItemMatchStrategy::None,
+            expect_every: None,
         }),
     );
     cache.item.write().insert(item.clone());

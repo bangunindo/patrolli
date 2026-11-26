@@ -62,6 +62,8 @@ struct Complete {
     /// has no `monitored_by` yet, which the leader's rebalance fixes on its next
     /// pass. Ingest for those rows goes unrecorded rather than to the wrong item.
     stats: Option<Arc<cache::item::Stats>>,
+    /// The item itself, for the events its stats cause.
+    item: Arc<config::item::Item>,
 }
 
 pub fn item_listener_annotate(
@@ -163,6 +165,7 @@ pub fn item_listener_annotate(
                     Some(Annotate::Complete(Box::new(Complete {
                         processors: item.processors.clone(),
                         stats: item_read.stats(id),
+                        item: item.clone(),
                         resource: payload::Resource {
                             host_id: host.map(|host| host.id).unwrap_or(Uuid::nil()),
                             host_name: host.map(|host| host.name.clone()).unwrap_or_default(),
@@ -185,6 +188,7 @@ pub fn item_listener_annotate(
                     Some(Annotate::Complete(Box::new(Complete {
                         processors: data.item.processors.clone(),
                         stats: item_read.stats(&data.item.id),
+                        item: data.item.clone(),
                         resource: payload::Resource {
                             host_id: host.map(|host| host.id).unwrap_or(Uuid::nil()),
                             host_name: host.map(|host| host.name.clone()).unwrap_or_default(),
@@ -245,8 +249,9 @@ pub fn item_listener_annotate(
     // get an entry: a row bound for another node is that node's to count, once it
     // annotates the forwarded copy. That keeps every item's counters on exactly one
     // node, so the stats API concatenates instead of merging.
-    // The name rides along for the state-transition log.
-    let mut ingest: FxHashMap<Uuid, (Arc<cache::item::Stats>, SmolStr, u64)> = FxHashMap::default();
+    // The item rides along for the events its stats cause.
+    type Tally = (Arc<cache::item::Stats>, Arc<config::item::Item>, u64);
+    let mut ingest: FxHashMap<Uuid, Tally> = FxHashMap::default();
     for (i, annotate) in item_annotates.into_iter().enumerate() {
         match annotate {
             Some(Annotate::Complete(res)) => {
@@ -260,7 +265,7 @@ pub fn item_listener_annotate(
                 if let Some(stats) = &res.stats {
                     let tally = ingest
                         .entry(res.resource.item_id)
-                        .or_insert_with(|| (stats.clone(), res.resource.item_name.clone(), 0));
+                        .or_insert_with(|| (stats.clone(), res.item.clone(), 0));
                     tally.2 += 1;
                 }
                 // Fill this resource's attributes the first time we see its
@@ -316,9 +321,13 @@ pub fn item_listener_annotate(
     // `record_success` and the batcher's `add_dropped`.
     if !ingest.is_empty() {
         let now_ms = patrolli::common::now().timestamp_millis();
-        for (item_id, (stats, name, rows)) in &ingest {
-            if let Some(t) = stats.record_ingest(now_ms, *rows) {
-                t.log(*item_id, name, None);
+        for (stats, item, rows) in ingest.values() {
+            let ingest = stats.record_ingest(now_ms, *rows);
+            if let Some(t) = ingest.transition {
+                t.log(item, None);
+            }
+            if ingest.new_bucket {
+                stats.log_ingest(item);
             }
         }
     }
@@ -670,6 +679,65 @@ fn item_id_resource_build_map(pl: &payload::Payload) -> Result<ItemIdResourceMap
     Ok(item_resource_map)
 }
 
+/// Charge the rows of every payload a failed send handed back to the items they
+/// were matched to, as [`cache::item::Stats::add_dropped`].
+///
+/// The rows were counted as received at the match (`record_ingest`), so without
+/// this an item whose rows the processors never took reads as healthy. Run on the
+/// failure path alone: the items are read back from the payload's own
+/// `patrolli.item.id` resources, so a send that succeeds pays nothing.
+///
+/// Counts row copies, like the monitor batcher: one per topic that refused the
+/// payload. An error that kept the payload (`Internal`) cannot be attributed, and
+/// rows of an item this node does not hold stats for are skipped: they are the
+/// owning node's to count.
+pub fn charge_dropped(
+    e: &patrolli::chan::Error<payload::ProcessorPayload>,
+    conf_cache: &cache::Cache,
+) {
+    use patrolli::chan::Error;
+    match e {
+        Error::BufferFull(pl) | Error::Closed(pl) | Error::TopicNotFound(Some(pl)) => {
+            charge_dropped_rows(&pl.payload, conf_cache)
+        }
+        Error::Multiple(errors) => {
+            for e in errors {
+                charge_dropped(e, conf_cache);
+            }
+        }
+        Error::TopicAlreadyExists | Error::TopicNotFound(None) | Error::Internal(_) => {}
+    }
+}
+
+/// [`charge_dropped`] for one payload. A payload this cannot read charges
+/// nothing: it is a diagnostics path, and the send has already failed.
+fn charge_dropped_rows(pl: &payload::Payload, conf_cache: &cache::Cache) {
+    let Ok(map) = item_id_resource_build_map(pl) else {
+        return;
+    };
+    if map.parent_id_to_item.is_empty() {
+        return;
+    }
+    let Some(res_id_col) = get_record(pl)
+        .and_then(|record| struct_id_column(record, consts::RESOURCE))
+        .and_then(|col| col.as_primitive_opt::<UInt16Type>().cloned())
+    else {
+        return;
+    };
+    let mut rows: FxHashMap<Uuid, u64> = FxHashMap::default();
+    for res_id in res_id_col.iter().flatten() {
+        if let Some(item_id) = map.parent_id_to_item.get(&res_id) {
+            *rows.entry(*item_id).or_default() += 1;
+        }
+    }
+    let item_read = conf_cache.item.read();
+    for (item_id, rows) in rows {
+        if let Some(stats) = item_read.stats(&item_id) {
+            stats.add_dropped(rows);
+        }
+    }
+}
+
 /// Pre-fill `item_ids` for records that already reference a resource carrying an
 /// item_id. Each record points at a `resource.id`; `existing` maps that id back
 /// to the item it was assigned to (built by [`item_id_resource_build_map`]).
@@ -861,7 +929,10 @@ mod tests {
             Some(listener_id),
             Duration::from_secs(1),
             vec![processor_id],
-            config::item::Config::Listener(config::item::Listener { match_strategy }),
+            config::item::Config::Listener(config::item::Listener {
+                match_strategy,
+                expect_every: None,
+            }),
         );
         cache.item.write().insert(item.clone());
         {
@@ -1361,7 +1432,8 @@ mod tests {
         assert!(s.last_success.is_some());
         assert!(s.last_failure.is_none());
         // no poll cycle: nothing to be late for, nothing to retry
-        assert_eq!(s.last_lag_ms, Some(0));
+        assert_eq!(s.last_lag_ms, None);
+        assert_eq!(s.last_duration_ms, None);
         assert_eq!(s.retries, 0);
         assert_eq!(s.next_check, None);
         // but the arrival does light its bucket in the windowed ring
@@ -1467,5 +1539,50 @@ mod tests {
         // still routed to the item's processor — the listener cache resolved it
         assert_eq!(process_len(&res, Some(env.processor_id)), 1);
         assert!(env.cache.item.read().stats(&env.item_id).is_none());
+    }
+
+    /// The rows a failed send hands back are charged to the items they were
+    /// matched to, once per refused copy, and to nobody when the item is not ours.
+    #[test]
+    fn rows_a_failed_send_hands_back_are_charged_to_their_item() {
+        use patrolli::chan::Error;
+
+        let env = build_env(ListenerItemMatchStrategy::None, None, None, false);
+        let pl = logs_payload(vec![record(vec![]), record(vec![]), record(vec![])]);
+        let res =
+            item_listener_annotate(&pl, Some(&env.listener_conf), &env.cache, None, false).unwrap();
+        let annotated = res
+            .for_process
+            .into_iter()
+            .find(|p| p.processor_id == Some(env.processor_id))
+            .expect("routed to the item's processor");
+
+        super::charge_dropped(&Error::BufferFull(annotated.clone()), &env.cache);
+        let s = snapshot(&env);
+        assert_eq!(s.total_records, 3, "received stays as counted");
+        assert_eq!(s.total_dropped, 3);
+        assert_eq!(
+            s.state,
+            cache::item::ItemState::Ok,
+            "a drop is not a failure"
+        );
+
+        super::charge_dropped(
+            &Error::Multiple(vec![
+                Error::Closed(annotated.clone()),
+                Error::Internal(anyhow::anyhow!("kept the payload")),
+            ]),
+            &env.cache,
+        );
+        assert_eq!(snapshot(&env).total_dropped, 6);
+
+        // An unmatched payload carries no item, and one for an item this node
+        // holds no stats for is the owner's to count.
+        super::charge_dropped(
+            &Error::BufferFull(payload::ProcessorPayload::new(None, pl)),
+            &env.cache,
+        );
+        env.cache.item.write().remove(env.item_id);
+        super::charge_dropped(&Error::BufferFull(annotated), &env.cache);
     }
 }

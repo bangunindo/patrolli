@@ -414,7 +414,9 @@ impl Worker {
         let attempt_ms = common::now().timestamp_millis();
         for unit in item.units() {
             let lag = started.saturating_duration_since(unit.monitor.next_check);
-            unit.stats.record_attempt(attempt_ms, lag);
+            if let Some(t) = unit.stats.record_attempt(attempt_ms, lag) {
+                t.log(&unit.item, None);
+            }
         }
 
         let shipped = AtomicU64::new(0);
@@ -488,7 +490,7 @@ impl Worker {
                         Some(counts) => counts.get(&unit.item.id).copied().unwrap_or(0),
                     };
                     if let Some(t) = unit.stats.record_success(now_ms, elapsed, rows) {
-                        t.log(unit.item.id, &unit.item.name, None);
+                        t.log(&unit.item, None);
                     }
                     let mut monitor = unit.monitor;
                     monitor.retries = 0;
@@ -583,7 +585,7 @@ impl Worker {
             retrying,
             shipped,
         ) {
-            t.log(unit.item.id, &unit.item.name, Some(failure));
+            t.log(&unit.item, Some(failure));
         }
         monitor
     }

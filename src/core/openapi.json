@@ -9394,6 +9394,15 @@
       "Listener": {
         "type": "object",
         "properties": {
+          "expect_every": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The longest this item's source may stay quiet, in seconds, like an\ninterval `schedule`. Past it the item reads as `stale`, and the rows\nthat end the silence log how long it lasted. Unset (the default): the\nitem is never stale, however long it hears nothing.",
+            "minimum": 0
+          },
           "match_strategy": {
             "$ref": "#/components/schemas/ListenerItemMatchStrategy"
           }

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::cmp::Reverse;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
-use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::time::Instant;
@@ -30,8 +30,10 @@ use uuid::Uuid;
 /// the cache module must not catch it and a filter on it must not catch the cache.
 ///
 /// Only transitions a writer makes are logged. [`ItemState::Stale`] is derived on
-/// read and never written, so it never appears here — detecting it would mean
-/// sweeping every item on a timer, which does not scale to a million items.
+/// read: detecting it as it happens would mean sweeping every item on a timer,
+/// which does not scale to a million items. It reaches this stream late, when
+/// the overdue check finally starts ([`Stats::record_attempt`]), and never for
+/// an item nobody picks up.
 pub const STATE_LOG_TARGET: &str = "patrolli::item_state";
 
 /// Target of the per-check stream emitted by [`Stats::log_check`]: one `debug`
@@ -66,6 +68,9 @@ pub struct Stats {
     consecutive_failures: AtomicU32,
     retries: AtomicU8,
     state: AtomicU8,
+    /// Set by the first [`Stats::record_attempt`]: the item is polled, so its
+    /// duration and lag mean something. A listener item never sets it.
+    polled: AtomicBool,
 
     // unix millis, 0 = never (can't put DateTime in an atomic)
     last_attempt_ms: AtomicI64,
@@ -81,10 +86,21 @@ pub struct Stats {
     /// and the item's timeout, and evaluated on read by
     /// [`Stats::snapshot_at`].
     stale_after_ms: AtomicI64,
+    /// The longest a listener item may hear nothing before it reads as
+    /// [`ItemState::Stale`], millis; 0 = never. The item's `expect_every`,
+    /// stamped by [`Item::insert`]. The listener counterpart of
+    /// `stale_after_ms`, kept as a span because every batch moves the deadline:
+    /// it is measured from `last_success_ms` on read.
+    expect_every_ms: AtomicI64,
 
     last_duration_ms: AtomicU32,
     last_lag_ms: AtomicU32,
     last_record_count: AtomicU32,
+
+    /// When these counters started, unix millis: the item entered this node's
+    /// cache. They restart with the process and when a host moves to another
+    /// node, and on the logs this is the only thing that says so.
+    since_ms: i64,
 
     activity_window: ActivityWindow,
 
@@ -106,16 +122,20 @@ impl Default for Stats {
             consecutive_failures: AtomicU32::new(0),
             retries: AtomicU8::new(0),
             state: AtomicU8::new(ItemState::NeverRan as u8),
+            polled: AtomicBool::new(false),
 
             last_attempt_ms: AtomicI64::new(0),
             last_success_ms: AtomicI64::new(0),
             last_nonempty_ms: AtomicI64::new(0),
             next_check_ms: AtomicI64::new(0),
             stale_after_ms: AtomicI64::new(0),
+            expect_every_ms: AtomicI64::new(0),
 
             last_duration_ms: AtomicU32::new(0),
             last_lag_ms: AtomicU32::new(0),
             last_record_count: AtomicU32::new(0),
+
+            since_ms: common::now().timestamp_millis(),
 
             activity_window: ActivityWindow::default(),
 
@@ -361,7 +381,8 @@ pub enum ItemState {
     Retrying = 4,
     Failing = 5,
     /// Past due by more than its schedule allows — the scheduler or the node is
-    /// wedged, which is not the same as the target failing.
+    /// wedged, which is not the same as the target failing. For a listener item:
+    /// nothing received for longer than its `expect_every`.
     Stale = 6,
 }
 
@@ -520,6 +541,25 @@ impl Failure {
 pub struct Transition {
     pub from: ItemState,
     pub to: ItemState,
+    /// How long a listener item had heard nothing, on the transition out of
+    /// [`ItemState::Stale`] that ends its silence. `None` on every other one.
+    pub silent_ms: Option<i64>,
+}
+
+/// A unix-millis field for an event: absent while it reads 0, the "never
+/// happened" sentinel of every timestamp in [`Stats`].
+fn happened(ms: i64) -> Option<i64> {
+    (ms != 0).then_some(ms)
+}
+
+/// What one [`Stats::record_ingest`] did, for the caller to log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ingest {
+    pub transition: Option<Transition>,
+    /// These are the first rows of a 5-minute activity bucket for this item:
+    /// the moment to emit [`Stats::log_ingest`]. True for exactly one of the
+    /// writers racing into a bucket.
+    pub new_bucket: bool,
 }
 
 impl Transition {
@@ -529,15 +569,18 @@ impl Transition {
     /// span (batch checks, listener annotate), and the exported stream has to be
     /// self-describing. `failure` is the one that caused a move into
     /// [`ItemState::Retrying`] or [`ItemState::Failing`].
-    pub fn log(self, item_id: Uuid, item: &str, failure: Option<&Failure>) {
+    pub fn log(self, item: &item::Item, failure: Option<&Failure>) {
         info!(
             target: STATE_LOG_TARGET,
-            item_id = %item_id,
-            item = %item,
+            item_id = %item.id,
+            item = %item.name,
+            host_id = %item.host_id,
+            item_type = <&'static str>::from(item::ItemKind::from(&item.config)),
             from = %self.from,
             to = %self.to,
             failure_kind = failure.map(|f| <&'static str>::from(f.kind)),
             reason = failure.map(|f| f.reason.as_str()),
+            silent_ms = self.silent_ms,
             "item state changed"
         );
     }
@@ -550,10 +593,28 @@ impl Stats {
     /// Counted at the start rather than on completion, so that `total_failures`
     /// and `total_checks` share a denominator and an item wedged mid-check still
     /// shows a rising attempt count.
-    pub fn record_attempt(&self, now_ms: i64, lag: Duration) {
+    ///
+    /// Returns a transition into [`ItemState::Stale`] when the check starts past
+    /// the item's stale deadline. This is the one place a writer learns the item
+    /// was stale, and it learns it late, as the wait ends: the event says the
+    /// item *was* overdue (`last_lag_ms` says by how much), and the outcome that
+    /// follows moves it on. An item nobody picks up still logs nothing, and
+    /// reads as stale through [`Stats::snapshot_at`] alone. `Failing` and
+    /// `Unknown` are left as they are, as on read.
+    pub fn record_attempt(&self, now_ms: i64, lag: Duration) -> Option<Transition> {
         self.total_checks.fetch_add(1, Relaxed);
         self.last_attempt_ms.store(now_ms, Relaxed);
         self.last_lag_ms.store(as_millis_u32(lag), Relaxed);
+        self.polled.store(true, Relaxed);
+
+        let stale_after = self.stale_after_ms.load(Relaxed);
+        if stale_after == 0 || now_ms <= stale_after {
+            return None;
+        }
+        match ItemState::from(self.state.load(Acquire)) {
+            ItemState::Failing | ItemState::Unknown => None,
+            _ => self.publish_state(ItemState::Stale),
+        }
     }
 
     /// Record a completed check. `records` is a **row** count — one per
@@ -596,7 +657,12 @@ impl Stats {
     /// They count, and nothing else about the failure changes: the state, the
     /// activity map and `last_nonempty` say the check failed.
     ///
-    /// Returns the state change this caused, if any; see [`Transition`].
+    /// Returns the state change this caused, if any; see [`Transition`]. A
+    /// failure of another [`FailureKind`] than the one before it is reported
+    /// too, as a transition from the state to itself: an item that stays
+    /// `failing` while a timeout turns into a rejected credential has changed
+    /// in the one way its reader acts on. The reason text is not compared, it
+    /// is unbounded.
     pub fn record_failure(
         &self,
         failure: Failure,
@@ -626,14 +692,26 @@ impl Stats {
         ring.insert(0, failure.clone());
         ring.truncate(MAX_RECENT_FAILURES);
         self.recent_failures.store(Some(Arc::new(ring)));
-        self.last_failure.store(Some(Arc::new(failure)));
+        let kind = failure.kind;
+        let previous = self.last_failure.swap(Some(Arc::new(failure)));
 
         self.mark_activity(at_ms, false);
 
-        self.publish_state(if retrying {
+        let to = if retrying {
             ItemState::Retrying
         } else {
             ItemState::Failing
+        };
+        self.publish_state(to).or_else(|| {
+            // Same state, so the failure before this one belongs to the same
+            // run of failures.
+            previous
+                .is_some_and(|p| p.kind != kind)
+                .then_some(Transition {
+                    from: to,
+                    to,
+                    silent_ms: None,
+                })
         })
     }
 
@@ -651,26 +729,44 @@ impl Stats {
     /// It does mark the [`ActivityWindow`], which is the one activity signal a
     /// listener item can meaningfully feed: a thousand batches inside one
     /// five-minute bucket set the same bit a thousand times, so a busy item can't
-    /// flood it.
-    pub fn record_ingest(&self, now_ms: i64, rows: u64) -> Option<Transition> {
+    /// flood it. The first batch of a bucket is also the one that gets to log
+    /// the item's summary ([`Ingest::new_bucket`], [`Stats::log_ingest`]).
+    pub fn record_ingest(&self, now_ms: i64, rows: u64) -> Ingest {
         self.total_checks.fetch_add(1, Relaxed);
         self.total_records.fetch_add(rows, Relaxed);
         self.last_record_count
             .store(rows.min(u32::MAX as u64) as u32, Relaxed);
         self.last_attempt_ms.store(now_ms, Relaxed);
-        self.last_success_ms.store(now_ms, Relaxed);
+        // A swap: of the writers racing to end a silence, one gets the
+        // timestamp from before it, and so reports it once.
+        let previous_ms = self.last_success_ms.swap(now_ms, Relaxed);
         if rows > 0 {
             self.last_nonempty_ms.store(now_ms, Relaxed);
         }
         self.consecutive_failures.store(0, Relaxed);
-        self.mark_activity(now_ms, true);
+        let new_bucket = self.mark_activity(now_ms, true);
 
-        // Released last: see the ordering contract on `snapshot_at`.
-        self.publish_state(if rows > 0 {
+        let to = if rows > 0 {
             ItemState::Ok
         } else {
             ItemState::OkEmpty
-        })
+        };
+        // The item read as stale until these rows (`snapshot_at`), and nothing
+        // could log that while it lasted. They end it, so they say so.
+        let expect_every = self.expect_every_ms.load(Relaxed);
+        let silent_ms = (previous_ms != 0 && expect_every != 0)
+            .then(|| now_ms - previous_ms)
+            .filter(|gap| *gap > expect_every);
+        // Released last: see the ordering contract on `snapshot_at`.
+        let transition = self.publish_state(to).or(silent_ms.map(|gap| Transition {
+            from: ItemState::Stale,
+            to,
+            silent_ms: Some(gap),
+        }));
+        Ingest {
+            transition,
+            new_bucket,
+        }
     }
 
     /// Rows this item produced that never reached a sink.
@@ -680,6 +776,12 @@ impl Stats {
     /// walk row whose device answered too few of the configured oids to clear
     /// `max_unknown_oids_per_row`. Both are data the item gathered and the reader
     /// never got; the counter answers "how much went missing", not "why".
+    ///
+    /// A listener item is charged the same way, for the rows its listener (or the
+    /// forwarder, on the owning node) could not hand to the processors. Rows a
+    /// node processes itself because forwarding them to their owner failed are in
+    /// no item's counters: the owner never saw them, and this node holds no stats
+    /// for an item it does not own.
     ///
     /// Called from the batcher task while the worker that owns the item may
     /// still be running, which is why every counter here is read-modify-write.
@@ -706,9 +808,12 @@ impl Stats {
     /// Read back from the stats instead of passed in: a monitor item is
     /// single-writer (see [`Stats`]), so what is stored is this check. `records`
     /// is the rows this attempt collected, shipped ones of a failed check
-    /// included; the `total_*` counters run since process start, so a consumer
-    /// that lost events can still take differences. Identity is on the event
-    /// for the reasons [`Transition::log`] gives.
+    /// included; the `total_*` counters run since `since_unix_ms`, so a consumer
+    /// that lost events can still take differences, and one that sees a new
+    /// `since_unix_ms` knows they restarted. With the `last_*_unix_ms`
+    /// timestamps one event is the whole of the item's statistics bar the
+    /// activity map and the failure ring. Identity is on the event for the
+    /// reasons [`Transition::log`] gives.
     ///
     /// Only the state is read when the target is disabled.
     pub fn log_check(&self, item: &item::Item) {
@@ -736,8 +841,41 @@ impl Stats {
             total_failures = self.total_failures.load(Relaxed),
             total_records = self.total_records.load(Relaxed),
             total_dropped = self.total_dropped.load(Relaxed),
-            next_check_unix_ms = Some(self.next_check_ms.load(Relaxed)).filter(|ms| *ms != 0),
+            next_check_unix_ms = happened(self.next_check_ms.load(Relaxed)),
+            started_unix_ms = happened(self.last_attempt_ms.load(Relaxed)),
+            last_success_unix_ms = happened(self.last_success_ms.load(Relaxed)),
+            last_nonempty_unix_ms = happened(self.last_nonempty_ms.load(Relaxed)),
+            since_unix_ms = self.since_ms,
             "item checked"
+        );
+    }
+
+    /// The listener item's counterpart of [`Stats::log_check`], on the same
+    /// [`CHECK_LOG_TARGET`]: what the stats read as the item's first rows of a
+    /// 5-minute bucket arrive ([`Ingest::new_bucket`]).
+    ///
+    /// Not one per batch, which would scale with traffic on the listeners' hot
+    /// path. Once per bucket is at most 288 events a day per item, only while
+    /// rows arrive, and enough to rebuild the statistics: the `total_*`
+    /// counters are cumulative, so the difference between two events is what
+    /// arrived between them, and an item that stops sending stops logging.
+    /// `total_checks` counts matched batches here, as everywhere for a listener
+    /// item, and there is no duration, lag, retry or next check to report.
+    pub fn log_ingest(&self, item: &item::Item) {
+        debug!(
+            target: CHECK_LOG_TARGET,
+            item_id = %item.id,
+            item = %item.name,
+            host_id = %item.host_id,
+            item_type = <&'static str>::from(item::ItemKind::from(&item.config)),
+            state = %ItemState::from(self.state.load(Acquire)),
+            total_checks = self.total_checks.load(Relaxed),
+            total_records = self.total_records.load(Relaxed),
+            total_dropped = self.total_dropped.load(Relaxed),
+            last_success_unix_ms = happened(self.last_success_ms.load(Relaxed)),
+            last_nonempty_unix_ms = happened(self.last_nonempty_ms.load(Relaxed)),
+            since_unix_ms = self.since_ms,
+            "item received"
         );
     }
 
@@ -750,7 +888,18 @@ impl Stats {
     /// the value read back.
     fn publish_state(&self, to: ItemState) -> Option<Transition> {
         let from = ItemState::from(self.state.swap(to as u8, Release));
-        (from != to).then_some(Transition { from, to })
+        (from != to).then_some(Transition {
+            from,
+            to,
+            silent_ms: None,
+        })
+    }
+
+    /// Set how long a listener item may hear nothing before it reads as
+    /// [`ItemState::Stale`]. `None` turns that off.
+    pub fn set_expect_every(&self, expect_every: Option<Duration>) {
+        let ms = expect_every.map_or(0, |d| d.as_millis().min(i64::MAX as u128) as i64);
+        self.expect_every_ms.store(ms, Relaxed);
     }
 
     /// Publish the next scheduled check, and the deadline past which the item
@@ -782,16 +931,20 @@ impl Stats {
     /// mark `ok`, so the worst case there is one lost bit on a bucket that the next
     /// batch sets again. Locking a diagnostics sparkline would cost more than it
     /// protects.
-    fn mark_activity(&self, now_ms: i64, ok: bool) {
+    ///
+    /// Returns whether this call moved the ring into a new bucket. Exactly one
+    /// writer does per bucket, which is what [`Stats::record_ingest`] hangs its
+    /// once-per-bucket event on.
+    fn mark_activity(&self, now_ms: i64, ok: bool) -> bool {
         let tick = activity_tick(now_ms);
         let w = &self.activity_window;
         let last = w.last_tick.load(Acquire);
         let gap = tick - last;
-        if gap > 0
+        let advanced = gap > 0
             && w.last_tick
                 .compare_exchange(last, tick, AcqRel, Acquire)
-                .is_ok()
-        {
+                .is_ok();
+        if advanced {
             // Not just a shortcut for the loop below — it is what keeps the *first*
             // write cheap. `last_tick` starts at 0 while a real timestamp is some
             // six million ticks, so without this every item's first write would
@@ -816,6 +969,7 @@ impl Stats {
         let bucket = activity_bucket(tick);
         let plane = if ok { &w.ok } else { &w.fail };
         plane[bucket / 64].fetch_or(1u64 << (bucket % 64), Relaxed);
+        advanced
     }
 
     /// Read every field into a [`StatsSnapshot`], deriving staleness against
@@ -852,22 +1006,37 @@ impl Stats {
                 .map(|t| t.with_timezone(&now.timezone()))
         };
 
-        // Staleness is the one state no writer can set — an item is stale
+        // No writer can set staleness while it lasts — an item is stale
         // precisely because nothing is executing it — so it is derived here.
+        // (`record_attempt` stores it once the wait is over, for the log.)
         // `Failing` wins over `Stale`: a target that is actively erroring is the
         // more actionable fact, and `severity()` ranks it higher for the same
         // reason. `Unknown` is left alone; it means we couldn't read the byte.
+        //
+        // A listener item has no deadline to miss, it has a source that may go
+        // quiet: past its `expect_every` since the last rows, it is stale too.
+        // One that never heard anything stays `NeverRan`, which already says so.
         let stale_after = self.stale_after_ms.load(Relaxed);
+        let expect_every = self.expect_every_ms.load(Relaxed);
+        let last_success = self.last_success_ms.load(Relaxed);
         let state = match stored {
             ItemState::Failing | ItemState::Unknown => stored,
             _ if stale_after != 0 && now_ms > stale_after => ItemState::Stale,
+            ItemState::Ok | ItemState::OkEmpty
+                if expect_every != 0 && now_ms - last_success > expect_every =>
+            {
+                ItemState::Stale
+            }
             _ => stored,
         };
 
         // Gate on the *stored* state, not the derived one: an item that has
         // never run has no duration, lag or count to report even once it goes
         // stale, and a literal 0 would read as "instant, on time, empty".
-        let ran = stored != ItemState::NeverRan;
+        // Not `stored != NeverRan`: a first check picked up late stores `Stale`
+        // before it has an outcome (see `record_attempt`).
+        let ran = self.last_success_ms.load(Relaxed) != 0 || self.last_failure.load().is_some();
+        let polled = self.polled.load(Relaxed);
 
         // Buckets after `last_tick` were never reached by a writer, so nothing
         // cleared them and they still hold results from a day ago. Mask them here:
@@ -890,8 +1059,10 @@ impl Stats {
             last_nonempty: ts(self.last_nonempty_ms.load(Relaxed)),
             next_check: ts(self.next_check_ms.load(Relaxed)),
 
-            last_duration_ms: ran.then(|| self.last_duration_ms.load(Relaxed)),
-            last_lag_ms: ran.then(|| self.last_lag_ms.load(Relaxed)),
+            // A listener item has no poll to time and no due time to be late
+            // against; a literal 0 would read as "instant and on time".
+            last_duration_ms: (ran && polled).then(|| self.last_duration_ms.load(Relaxed)),
+            last_lag_ms: (ran && polled).then(|| self.last_lag_ms.load(Relaxed)),
             last_record_count: ran.then(|| self.last_record_count.load(Relaxed)),
 
             activity_ok,
@@ -942,12 +1113,23 @@ impl Entry {
     pub fn new(item: item::Item) -> Self {
         let monitor = item::ItemMonitor::new(item.id, &item.schedule);
         let stats = Arc::new(Stats::default());
+        stats.set_expect_every(expect_every(&item));
         Self {
             item: Arc::new(item),
             monitor,
             stats,
             generation: 0,
         }
+    }
+}
+
+/// A listener item's `expect_every`, the silence it tolerates. `None` for an
+/// item that sets none and for every polled item, whose staleness is a missed
+/// deadline ([`publish_next_check`]).
+fn expect_every(item: &item::Item) -> Option<Duration> {
+    match &item.config {
+        item::Config::Listener(listener) => listener.expect_every.map(Duration::from_secs),
+        _ => None,
     }
 }
 
@@ -970,6 +1152,27 @@ fn publish_next_check(entry: &Entry) {
     entry
         .stats
         .set_next_check(next_check_ms, next_check_ms + grace.as_millis() as i64);
+}
+
+/// Tell the [`STATE_LOG_TARGET`] stream that `entry` left this node's cache: the
+/// item was deleted, or its host moved to another node. Without it a consumer
+/// keeps the last state it saw for good.
+///
+/// Same event as [`Transition::log`], with `removed` where the new state goes.
+/// It is a word of the log only, not an [`ItemState`]: nothing can read a removed
+/// item's state.
+fn log_removed(entry: &Entry) {
+    let item = &entry.item;
+    info!(
+        target: STATE_LOG_TARGET,
+        item_id = %item.id,
+        item = %item.name,
+        host_id = %item.host_id,
+        item_type = <&'static str>::from(item::ItemKind::from(&item.config)),
+        from = %ItemState::from(entry.stats.state.load(Acquire)),
+        to = "removed",
+        "item state changed"
+    );
 }
 
 /// Whether a freshly queued item has a next check worth publishing.
@@ -1043,7 +1246,9 @@ impl Item {
             .collect();
         let removed = stale.len();
         for id in stale {
-            self.data.remove(&id);
+            if let Some(entry) = self.data.remove(&id) {
+                log_removed(&entry);
+            }
             self.queue.remove(&id);
         }
         self.compact();
@@ -1054,7 +1259,19 @@ impl Item {
         );
     }
 
+    /// Drop every item, as a node does when it stops being a main.
+    ///
+    /// One event for the lot on [`STATE_LOG_TARGET`], not one per item: a node
+    /// can hold a million of them, and its consumer needs a single fact, that
+    /// nothing this node said about its items holds any more.
     pub fn clear(&mut self) {
+        if !self.data.is_empty() {
+            info!(
+                target: STATE_LOG_TARGET,
+                items = self.data.len(),
+                "item cache cleared"
+            );
+        }
         *self = Self::new();
     }
 
@@ -1104,6 +1321,7 @@ impl Item {
 
         let was_schedulable = entry.item.schedulable();
         let rescheduled = entry.item.schedule != item.schedule;
+        entry.stats.set_expect_every(expect_every(&item));
         entry.item = Arc::new(item);
         entry.generation = generation;
 
@@ -1156,6 +1374,7 @@ impl Item {
         if let Some(entry) = self.data.remove(&id) {
             self.queue.remove(&id);
             self.compact();
+            log_removed(&entry);
             return Some(entry.item);
         }
         None
@@ -1681,6 +1900,7 @@ mod tests {
         let mut item = dummy_item(Schedule::Never);
         item.config = Config::Listener(item::Listener {
             match_strategy: item::ListenerItemMatchStrategy::None,
+            expect_every: None,
         });
         let id = item.id;
         cache.insert(item);
@@ -2177,7 +2397,11 @@ mod tests {
     }
 
     fn change(from: ItemState, to: ItemState) -> Option<Transition> {
-        Some(Transition { from, to })
+        Some(Transition {
+            from,
+            to,
+            silent_ms: None,
+        })
     }
 
     #[test]
@@ -2228,14 +2452,300 @@ mod tests {
         );
     }
 
+    /// A check that starts past the stale deadline is the only moment a writer
+    /// knows the item was stale, so that is when the stream hears of it.
+    #[test]
+    fn a_check_picked_up_late_reports_that_the_item_was_stale() {
+        let stats = Stats::default();
+        stats.set_next_check(10_000, 70_000);
+        assert_eq!(stats.record_attempt(10_100, StdDuration::ZERO), None);
+        stats.record_success(10_200, StdDuration::ZERO, 1);
+
+        assert_eq!(
+            stats.record_attempt(80_000, StdDuration::from_secs(70)),
+            change(ItemState::Ok, ItemState::Stale)
+        );
+        assert_eq!(
+            stats.record_success(80_100, StdDuration::ZERO, 1),
+            change(ItemState::Stale, ItemState::Ok)
+        );
+
+        // A failing item stays failing, as it does on read.
+        stats.record_failure(
+            failure_at(80_200, FailureKind::Timeout),
+            StdDuration::ZERO,
+            0,
+            false,
+            0,
+        );
+        assert_eq!(
+            stats.record_attempt(90_000, StdDuration::from_secs(20)),
+            None
+        );
+
+        // No deadline, no staleness.
+        let unscheduled = Stats::default();
+        assert_eq!(unscheduled.record_attempt(90_000, StdDuration::ZERO), None);
+    }
+
+    /// A first check that starts late stores `Stale` before any outcome exists,
+    /// and must not read as having taken 0 ms and returned nothing.
+    #[test]
+    fn a_late_first_check_has_no_outcome_to_report_yet() {
+        let stats = Stats::default();
+        stats.set_next_check(10_000, 70_000);
+        assert_eq!(
+            stats.record_attempt(80_000, StdDuration::from_secs(70)),
+            change(ItemState::NeverRan, ItemState::Stale)
+        );
+        let snap = stats.snapshot_at(clock(80_000));
+        assert_eq!(snap.state, ItemState::Stale);
+        assert_eq!(snap.last_duration_ms, None);
+        assert_eq!(snap.last_record_count, None);
+    }
+
+    #[test]
+    fn an_item_leaving_the_cache_says_so_once() {
+        let mut cache = Item::new();
+        let deleted = dummy_item(Schedule::Never);
+        let swept = dummy_item(Schedule::Never);
+        let kept = dummy_item(Schedule::Never);
+        for item in [&deleted, &swept, &kept] {
+            cache.insert(item.clone());
+        }
+        cache
+            .stats(&deleted.id)
+            .unwrap()
+            .record_success(1_000, StdDuration::ZERO, 1);
+
+        let events = events_on(STATE_LOG_TARGET, || {
+            cache.remove(deleted.id);
+            cache.remove(deleted.id);
+            cache.begin_reload();
+            cache.insert(kept.clone());
+            cache.end_reload();
+        });
+        assert_eq!(events.len(), 2, "{events:?}");
+        for (event, item, from) in [
+            (&events[0], &deleted, "ok"),
+            (&events[1], &swept, "never_ran"),
+        ] {
+            assert_eq!(event["level"], "INFO");
+            assert_eq!(event["fields"]["message"], "item state changed");
+            assert_eq!(event["fields"]["item_id"], item.id.to_string());
+            assert_eq!(event["fields"]["host_id"], item.host_id.to_string());
+            assert_eq!(event["fields"]["item_type"], "dummy");
+            assert_eq!(event["fields"]["from"], from);
+            assert_eq!(event["fields"]["to"], "removed");
+        }
+
+        // A whole cache going away is one event, however many items it held.
+        cache.insert(swept.clone());
+        let events = events_on(STATE_LOG_TARGET, || {
+            cache.clear();
+            cache.clear();
+        });
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0]["fields"]["message"], "item cache cleared");
+        assert_eq!(events[0]["fields"]["items"], 2);
+    }
+
+    /// A change of failure kind inside one state is the one repeat worth an
+    /// event; a new reason of the same kind is not.
+    #[test]
+    fn a_failure_of_another_kind_is_reported_without_a_state_change() {
+        let stats = Stats::default();
+        let fail = |kind, reason| {
+            stats.record_failure(failure(kind, reason), StdDuration::ZERO, 0, false, 0)
+        };
+        assert_eq!(
+            fail(FailureKind::Timeout, "a"),
+            change(ItemState::NeverRan, ItemState::Failing)
+        );
+        assert_eq!(fail(FailureKind::Timeout, "b"), None);
+        assert_eq!(
+            fail(FailureKind::Auth, "c"),
+            change(ItemState::Failing, ItemState::Failing)
+        );
+        assert_eq!(fail(FailureKind::Auth, "d"), None);
+
+        // A recovery in between is a state change of its own, reported once.
+        stats.record_success(1_000, StdDuration::ZERO, 1);
+        assert_eq!(
+            fail(FailureKind::Timeout, "e"),
+            change(ItemState::Ok, ItemState::Failing)
+        );
+    }
+
     #[test]
     fn record_ingest_reports_the_first_match() {
         let stats = Stats::default();
         assert_eq!(
-            stats.record_ingest(1_000, 3),
+            stats.record_ingest(1_000, 3).transition,
             change(ItemState::NeverRan, ItemState::Ok)
         );
-        assert_eq!(stats.record_ingest(2_000, 3), None);
+        assert_eq!(stats.record_ingest(2_000, 3).transition, None);
+    }
+
+    fn listener_item(expect_every: Option<u64>) -> ItemConfig {
+        let mut item = dummy_item(Schedule::Never);
+        item.config = Config::Listener(item::Listener {
+            match_strategy: item::ListenerItemMatchStrategy::None,
+            expect_every,
+        });
+        item
+    }
+
+    /// A listener item that set `expect_every` reads as stale once its source
+    /// has been quiet for longer, and the rows that end the silence report it.
+    #[test]
+    fn a_quiet_listener_item_is_stale_on_read_and_says_so_on_return() {
+        let mut cache = Item::new();
+        let item = listener_item(Some(60));
+        cache.insert(item.clone());
+        let stats = cache.stats(&item.id).unwrap();
+
+        // Never heard anything: that is `NeverRan`, however long ago.
+        assert_eq!(
+            stats.snapshot_at(clock(10_000_000)).state,
+            ItemState::NeverRan
+        );
+
+        assert_eq!(
+            stats.record_ingest(1_000, 3).transition,
+            change(ItemState::NeverRan, ItemState::Ok)
+        );
+        assert_eq!(stats.snapshot_at(clock(61_000)).state, ItemState::Ok);
+        assert_eq!(stats.snapshot_at(clock(61_001)).state, ItemState::Stale);
+
+        // Inside the window: nothing to report.
+        assert_eq!(stats.record_ingest(50_000, 1).transition, None);
+        // Past it: the silence is over, and it lasted this long.
+        assert_eq!(
+            stats.record_ingest(200_000, 1).transition,
+            Some(Transition {
+                from: ItemState::Stale,
+                to: ItemState::Ok,
+                silent_ms: Some(150_000),
+            })
+        );
+        assert_eq!(stats.record_ingest(200_500, 1).transition, None);
+        assert_eq!(stats.snapshot_at(clock(200_500)).state, ItemState::Ok);
+    }
+
+    #[test]
+    fn a_listener_item_without_expect_every_is_never_stale() {
+        let mut cache = Item::new();
+        let item = listener_item(None);
+        cache.insert(item.clone());
+        let stats = cache.stats(&item.id).unwrap();
+        stats.record_ingest(1_000, 3);
+        assert_eq!(
+            stats.snapshot_at(clock(4_000_000_000_000)).state,
+            ItemState::Ok
+        );
+        assert_eq!(stats.record_ingest(900_000_000, 3).transition, None);
+    }
+
+    /// The setting follows a config edit, on the stats the item already has.
+    #[test]
+    fn an_edited_expect_every_applies_to_the_same_stats() {
+        let mut cache = Item::new();
+        let mut item = listener_item(None);
+        cache.insert(item.clone());
+        let stats = cache.stats(&item.id).unwrap();
+        stats.record_ingest(1_000, 3);
+        assert_eq!(stats.snapshot_at(clock(500_000)).state, ItemState::Ok);
+
+        item.config = listener_item(Some(60)).config;
+        cache.insert(item.clone());
+        assert_eq!(stats.snapshot_at(clock(500_000)).state, ItemState::Stale);
+
+        item.config = listener_item(None).config;
+        cache.insert(item);
+        assert_eq!(stats.snapshot_at(clock(500_000)).state, ItemState::Ok);
+    }
+
+    #[test]
+    fn the_end_of_a_silence_is_logged_with_its_length() {
+        let item = listener_item(Some(60));
+        let events = events_on(STATE_LOG_TARGET, || {
+            Transition {
+                from: ItemState::Stale,
+                to: ItemState::Ok,
+                silent_ms: Some(150_000),
+            }
+            .log(&item, None);
+            Transition {
+                from: ItemState::NeverRan,
+                to: ItemState::Ok,
+                silent_ms: None,
+            }
+            .log(&item, None);
+        });
+        assert_eq!(events[0]["fields"]["from"], "stale");
+        assert_eq!(events[0]["fields"]["silent_ms"], 150_000);
+        assert_eq!(events[0]["fields"]["item_type"], "listener");
+        assert!(events[1]["fields"].get("silent_ms").is_none());
+    }
+
+    /// One summary per 5-minute bucket, on the first rows to land in it.
+    #[test]
+    fn record_ingest_flags_the_first_rows_of_each_bucket() {
+        let stats = Stats::default();
+        assert!(stats.record_ingest(at_bucket(72), 3).new_bucket);
+        assert!(!stats.record_ingest(at_bucket(72) + 1_000, 3).new_bucket);
+        assert!(!stats.record_ingest(at_bucket(72) + 2_000, 3).new_bucket);
+        assert!(stats.record_ingest(at_bucket(73), 3).new_bucket);
+        // A writer behind the newest bucket does not open one.
+        assert!(!stats.record_ingest(at_bucket(72), 3).new_bucket);
+    }
+
+    #[test]
+    fn ingest_log_carries_the_running_totals_and_nothing_a_poll_would() {
+        let mut item = dummy_item(Schedule::Never);
+        item.config = Config::Listener(Default::default());
+        let stats = Stats::default();
+        let events = events_on(CHECK_LOG_TARGET, || {
+            stats.record_ingest(1_000, 3);
+            stats.record_ingest(2_000, 4);
+            stats.add_dropped(2);
+            stats.log_ingest(&item);
+        });
+        assert_eq!(events.len(), 1, "{events:?}");
+        let event = &events[0];
+        assert_eq!(event["level"], "DEBUG");
+        let f = &event["fields"];
+        assert_eq!(f["message"], "item received");
+        assert_eq!(f["item_id"], item.id.to_string());
+        assert_eq!(f["host_id"], item.host_id.to_string());
+        assert_eq!(f["item_type"], "listener");
+        assert_eq!(f["state"], "ok");
+        assert_eq!(f["total_checks"], 2);
+        assert_eq!(f["total_records"], 7);
+        assert_eq!(f["total_dropped"], 2);
+        for absent in ["duration_ms", "lag_ms", "retries", "next_check_unix_ms"] {
+            assert!(f.get(absent).is_none(), "{absent} means nothing here");
+        }
+    }
+
+    /// A listener item is never polled, so it has no duration or lag: 0 would
+    /// read as "instant and on time".
+    #[test]
+    fn a_listener_item_reports_no_duration_or_lag() {
+        let stats = Stats::default();
+        stats.record_ingest(1_000, 3);
+        let snap = stats.snapshot_at(clock(1_000));
+        assert_eq!(snap.last_duration_ms, None);
+        assert_eq!(snap.last_lag_ms, None);
+        assert_eq!(snap.last_record_count, Some(3));
+
+        let polled = Stats::default();
+        polled.record_attempt(1_000, StdDuration::from_millis(4));
+        polled.record_success(1_000, StdDuration::from_millis(9), 3);
+        let snap = polled.snapshot_at(clock(1_000));
+        assert_eq!(snap.last_duration_ms, Some(9));
+        assert_eq!(snap.last_lag_ms, Some(4));
     }
 
     /// Every event on `target` emitted while `f` runs, as JSON objects.
@@ -2281,27 +2791,31 @@ mod tests {
 
     #[test]
     fn transition_log_is_a_self_describing_event_on_its_own_target() {
-        let id = Uuid::now_v7();
+        let item = dummy_item(Schedule::Never);
         let cause = failure(FailureKind::Auth, "bad community");
         let events = events_on(STATE_LOG_TARGET, || {
             Transition {
                 from: ItemState::NeverRan,
                 to: ItemState::Ok,
+                silent_ms: None,
             }
-            .log(id, "cpu", None);
+            .log(&item, None);
             Transition {
                 from: ItemState::Ok,
                 to: ItemState::Failing,
+                silent_ms: None,
             }
-            .log(id, "cpu", Some(&cause));
+            .log(&item, Some(&cause));
         });
         assert_eq!(events.len(), 2);
         for event in &events {
             assert_eq!(event["target"], STATE_LOG_TARGET);
             assert_eq!(event["level"], "INFO");
             assert_eq!(event["fields"]["message"], "item state changed");
-            assert_eq!(event["fields"]["item_id"], id.to_string());
-            assert_eq!(event["fields"]["item"], "cpu");
+            assert_eq!(event["fields"]["item_id"], item.id.to_string());
+            assert_eq!(event["fields"]["item"], "test");
+            assert_eq!(event["fields"]["host_id"], item.host_id.to_string());
+            assert_eq!(event["fields"]["item_type"], "dummy");
         }
         assert_eq!(events[0]["fields"]["from"], "never_ran");
         assert_eq!(events[0]["fields"]["to"], "ok");
@@ -2377,9 +2891,39 @@ mod tests {
             assert_eq!(fields["host_id"], item.host_id.to_string());
             assert_eq!(fields["item_type"], "dummy");
             assert_eq!(fields["total_dropped"], 2);
+            assert_eq!(fields["since_unix_ms"], stats.since_ms);
+            assert_eq!(fields["last_success_unix_ms"], 1_000);
+            assert_eq!(fields["last_nonempty_unix_ms"], 1_000);
         }
+        assert_eq!(events[0]["fields"]["started_unix_ms"], 1_000);
+        assert_eq!(events[1]["fields"]["started_unix_ms"], 2_000);
 
-        let ok = &events[0]["fields"];
+        let checked = events;
+
+        // What has not happened yet is absent, not 0.
+        let never = Stats::default();
+        let events = events_on(CHECK_LOG_TARGET, || {
+            never.record_attempt(3_000, StdDuration::ZERO);
+            never.record_success(3_000, StdDuration::ZERO, 0);
+            never.log_check(&item);
+        });
+        let fields = &events[0]["fields"];
+        assert_eq!(fields["last_success_unix_ms"], 3_000);
+        assert!(fields.get("last_nonempty_unix_ms").is_none());
+        let events = events_on(CHECK_LOG_TARGET, || {
+            let mut listener_item = item.clone();
+            listener_item.config = Config::Listener(Default::default());
+            let listened = Stats::default();
+            listened.record_ingest(4_000, 2);
+            listened.log_ingest(&listener_item);
+            assert!(listened.since_ms > 4_000, "stamped from the wall clock");
+        });
+        let fields = &events[0]["fields"];
+        assert_eq!(fields["last_success_unix_ms"], 4_000);
+        assert_eq!(fields["last_nonempty_unix_ms"], 4_000);
+        assert!(fields["since_unix_ms"].as_i64().unwrap() > 4_000);
+
+        let ok = &checked[0]["fields"];
         assert_eq!(ok["state"], "ok");
         assert_eq!(ok["duration_ms"], 216);
         assert_eq!(ok["lag_ms"], 4);
@@ -2393,7 +2937,7 @@ mod tests {
         assert!(ok.get("failure_kind").is_none());
         assert!(ok.get("reason").is_none());
 
-        let failed = &events[1]["fields"];
+        let failed = &checked[1]["fields"];
         assert_eq!(failed["state"], "retrying");
         assert_eq!(failed["duration_ms"], 30);
         assert_eq!(failed["lag_ms"], 5);

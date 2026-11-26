@@ -78,7 +78,8 @@ enum ItemState {
   ITEM_STATE_RETRYING = 4;
   ITEM_STATE_FAILING = 5;
   // Past due by more than its schedule allows: the scheduler or the whole node
-  // is wedged, which is not the same thing as the target failing.
+  // is wedged, which is not the same thing as the target failing. For a
+  // listener item: nothing received for longer than its `expect_every`.
   ITEM_STATE_STALE = 6;
 }
 

@@ -441,12 +441,23 @@ pub enum ListenerItemMatchStrategy {
 pub struct Listener {
     #[serde(default)]
     pub match_strategy: ListenerItemMatchStrategy,
+    /// The longest this item's source may stay quiet, in seconds, like an
+    /// interval `schedule`. Past it the item reads as `stale`, and the rows
+    /// that end the silence log how long it lasted. Unset (the default): the
+    /// item is never stale, however long it hears nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_every: Option<u64>,
 }
 
 impl Listener {
     fn validate(&mut self) -> Result<()> {
         if let ListenerItemMatchStrategy::SourceIps(ips) = &mut self.match_strategy {
             ips.sort_unstable();
+        }
+        if self.expect_every == Some(0) {
+            return Err(anyhow!(
+                "expect_every must be at least 1 second, leave it out to disable"
+            ));
         }
         Ok(())
     }
@@ -587,6 +598,25 @@ mod tests {
             ],
         }));
         assert_eq!(conf.oid_count(), 3);
+    }
+
+    #[test]
+    fn expect_every_is_optional_and_never_zero() {
+        let parse = |value| serde_json::from_value::<Listener>(value).unwrap();
+        let mut unset = parse(serde_json::json!({}));
+        assert_eq!(unset.expect_every, None);
+        unset.validate().unwrap();
+        assert_eq!(
+            serde_json::to_value(&unset).unwrap().get("expect_every"),
+            None
+        );
+
+        let mut set = parse(serde_json::json!({ "expect_every": 300 }));
+        assert_eq!(set.expect_every, Some(300));
+        set.validate().unwrap();
+
+        let mut zero = parse(serde_json::json!({ "expect_every": 0 }));
+        assert!(zero.validate().is_err());
     }
 
     #[test]

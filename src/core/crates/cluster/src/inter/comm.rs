@@ -18,7 +18,7 @@ use patrolli::common::internal_metrics::{
     NodeMetrics,
 };
 use patrolli::{cache, common, config, payload};
-use patrolli_listener::item_listener_annotate;
+use patrolli_listener::{charge_dropped, item_listener_annotate};
 use patrolli_proto::v1::inter_cluster_service_client::InterClusterServiceClient;
 use patrolli_proto::v1::inter_cluster_service_server::{
     InterClusterService, InterClusterServiceServer,
@@ -870,7 +870,11 @@ impl InterClusterService for InterCommServer {
                     let items = pl.payload.num_items() as u64;
                     match processor_sender.broadcast(pl).await {
                         Ok(()) => metrics.total_records_sent.fetch_add(items, Ordering::Relaxed),
-                        Err(_) => metrics.total_records_errored.fetch_add(items, Ordering::Relaxed),
+                        Err(e) => {
+                            // Counted as received by the annotate above.
+                            charge_dropped(&e, &conf_cache);
+                            metrics.total_records_errored.fetch_add(items, Ordering::Relaxed)
+                        }
                     };
                 };
                 metrics

@@ -35,7 +35,7 @@ mod snmp_trap;
 mod test_util;
 mod udp_listener;
 
-pub use annotate::{ListenerAnnotate, item_listener_annotate};
+pub use annotate::{ListenerAnnotate, charge_dropped, item_listener_annotate};
 pub use udp_listener::{ByteCounters, ByteCounts, UdpListenerWorker};
 
 /// How often the supervisor looks for workers that exited on their own.
@@ -575,9 +575,11 @@ fn is_buffer_full<M>(e: &ChanError<M>) -> bool {
 
 /// Hands one payload to the local processor channel and books the outcome:
 /// `total_records_sent` once it is accepted, `total_records_dropped` when the
-/// channel had no room, `total_records_errored` for any other failure.
+/// channel had no room, `total_records_errored` for any other failure. Rows that
+/// were not taken are also charged to their items (`annotate::charge_dropped`).
 async fn send_to_processor(
     internal_metrics: &InternalMetrics,
+    conf_cache: &cache::Cache,
     channel: &SenderChannel<&'static str, payload::ProcessorPayload>,
     pl: payload::ProcessorPayload,
 ) {
@@ -589,12 +591,14 @@ async fn send_to_processor(
                 .fetch_add(pl_len, Ordering::Relaxed);
         }
         Err(e) if is_buffer_full(&e) => {
+            annotate::charge_dropped(&e, conf_cache);
             internal_metrics
                 .total_records_dropped
                 .fetch_add(pl_len, Ordering::Relaxed);
         }
         Err(e) => {
             warn!(error = %e, "processor channel send failed");
+            annotate::charge_dropped(&e, conf_cache);
             internal_metrics
                 .total_records_errored
                 .fetch_add(pl_len, Ordering::Relaxed);
@@ -623,6 +627,7 @@ async fn send_batch<'a>(args: SendBatch<'a>) {
                 .fetch_add(args.batch.num_items() as u64, Ordering::Relaxed);
             send_to_processor(
                 args.internal_metrics,
+                args.conf_cache,
                 args.channel,
                 payload::ProcessorPayload::new(None, args.batch),
             )
@@ -648,6 +653,7 @@ async fn send_batch<'a>(args: SendBatch<'a>) {
                                 .fetch_add(pl_len, Ordering::Relaxed);
                             send_to_processor(
                                 args.internal_metrics,
+                                args.conf_cache,
                                 args.channel,
                                 payload::ProcessorPayload::new(None, contents.payload),
                             )
@@ -672,6 +678,7 @@ async fn send_batch<'a>(args: SendBatch<'a>) {
                         .fetch_add(pl.len() as u64, Ordering::Relaxed);
                     send_to_processor(
                         args.internal_metrics,
+                        args.conf_cache,
                         args.channel,
                         payload::ProcessorPayload::new(None, pl.payload),
                     )
@@ -679,7 +686,7 @@ async fn send_batch<'a>(args: SendBatch<'a>) {
                 }
             };
             for pl in res.for_process {
-                send_to_processor(args.internal_metrics, args.channel, pl).await;
+                send_to_processor(args.internal_metrics, args.conf_cache, args.channel, pl).await;
             }
         }
     }
