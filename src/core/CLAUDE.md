@@ -157,10 +157,9 @@ monitor::WorkerGroup   (snmp, snmp_walk, prometheus_scrape,         │
   (`ClusterPolicy`, re-read every tick, last good value kept on a bad edit) caps how many live
   nodes carry hosts with `max_active_nodes` (`0` = all); the other live nodes stay empty as spares.
   A node stale past `heartbeat_stale_after` (or `heartbeat_timeout`, if shorter) hands its hosts
-  as one block to a spare. Stale and expired are judged against the heartbeat the leader
-  committed two ticks ago, never the clock, so a database stall that holds every heartbeat up
-  marks nobody (its previous one may have started while a peer's was still waiting to commit).
-  A leader without one yet (a process that just started) skips the leader tasks for those ticks.
+  as one block to a spare. Stale and expired are judged against the leader's own previous
+  heartbeat, never the clock, so a database stall that holds every heartbeat up marks nobody.
+  A process that just started judges against the heartbeat it found on its `cluster_nodes` row.
   A returning node becomes the spare (nothing moves back), and lowering the cap evacuates one
   node per tick. Hosts always move straight to their new owner, never via
   `monitored_by = NULL` (each change makes the hosts trigger log to every node), and an expired
