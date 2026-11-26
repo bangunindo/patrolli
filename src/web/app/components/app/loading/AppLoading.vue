@@ -18,7 +18,10 @@ const props = withDefaults(
 </script>
 
 <template>
-	<div :style="{ height: containerHeight }" class="w-full flex justify-center items-center">
+	<div
+		:style="{ height: containerHeight }"
+		class="w-full flex justify-center items-center overflow-hidden"
+	>
 		<div
 			:style="{ height: size, width: size }"
 			class="animate-spin rounded-full border-4 border-slate-200 border-t-blue-600"

@@ -8,7 +8,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import appHelper from '@/app/helpers/app.helper'
 import { formatUtcDateTimeWithRelative } from '@/app/helpers/date.helper'
 import AppFilterDropdown from '@/components/app/AppFilterDropdown.vue'
-import AppInputSelect from '@/components/app/input/AppInputSelect.vue'
+import AppInputAutocomplete from '@/components/app/input/AppInputAutocomplete.vue'
 import AppLoading from '@/components/app/loading/AppLoading.vue'
 import ConfigDrawer from '@/components/app/navigation/ConfigDrawer.vue'
 import Stats from '@/components/configuration/items/stats/Stats.vue'
@@ -17,7 +17,7 @@ import { useConfigurationStore } from '@/stores/configuration.store'
 import { useItemsStore } from '@/stores/items.store'
 import type { ItemType } from '@@/shared/types/item.type'
 import { storeToRefs } from 'pinia'
-import { onMounted, onUnmounted, reactive, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 definePageMeta({
@@ -35,35 +35,108 @@ const getClusterUrls = (): string[] | undefined => {
 }
 
 const localFilter = reactive<{
-	type: ItemType | '' | null
-	endpoint_id: string | null
-	listener_id: string | null
+	types: ItemType[]
+	host_ids: string[]
+	endpoint_ids: string[]
+	listener_ids: string[]
 }>({
-	type: null,
-	endpoint_id: null,
-	listener_id: null
+	types: itemsStore.filter.types ? [...itemsStore.filter.types] : [],
+	host_ids: itemsStore.filter.host_ids ? [...itemsStore.filter.host_ids] : [],
+	endpoint_ids: itemsStore.filter.endpoint_ids ? [...itemsStore.filter.endpoint_ids] : [],
+	listener_ids: itemsStore.filter.listener_ids ? [...itemsStore.filter.listener_ids] : []
 })
+
+// Tracks endpoint_id -> host_id across remote searches so host changes can prune invalid endpoints
+const endpointHostMap = new Map<string, string>()
+
+watch(
+	() => itemsStore.selection.endpoints,
+	(endpoints) => {
+		for (const endpoint of endpoints ?? []) {
+			if (endpoint.endpoint_id && endpoint.host_id) {
+				endpointHostMap.set(endpoint.endpoint_id, endpoint.host_id)
+			}
+		}
+	},
+	{ immediate: true }
+)
+
+const getSelectedHostIds = (): string[] | undefined =>
+	localFilter.host_ids.length > 0 ? [...localFilter.host_ids] : undefined
 
 onMounted(() => {
 	const urls = getClusterUrls()
 	itemsStore.fetchHosts(urls)
-	itemsStore.fetchEndpoints(urls)
+	itemsStore.fetchEndpoints(urls, undefined, getSelectedHostIds())
 	itemsStore.fetchListeners(urls)
-
-	localFilter.type = (itemsStore.filter.types?.[0] as any) || null
-	localFilter.endpoint_id = itemsStore.filter.endpoint_ids?.[0] || null
-	localFilter.listener_id = itemsStore.filter.listener_ids?.[0] || null
 })
 
+function onSearchHosts(query: string) {
+	itemsStore.fetchHosts(getClusterUrls(), query)
+}
+
+function onSearchEndpoints(query: string) {
+	itemsStore.fetchEndpoints(getClusterUrls(), query, getSelectedHostIds())
+}
+
+function onSearchListeners(query: string) {
+	itemsStore.fetchListeners(getClusterUrls(), query)
+}
+
+const hasActiveFilter = computed(
+	() =>
+		localFilter.types.length > 0 ||
+		localFilter.host_ids.length > 0 ||
+		localFilter.endpoint_ids.length > 0 ||
+		localFilter.listener_ids.length > 0
+)
+
+function resetFilter() {
+	localFilter.types = []
+	localFilter.host_ids = []
+	localFilter.endpoint_ids = []
+	localFilter.listener_ids = []
+}
+
 function applyFilter() {
-	itemsStore.filter.types = localFilter.type ? [localFilter.type as ItemType] : undefined
-	itemsStore.filter.endpoint_ids = localFilter.endpoint_id ? [localFilter.endpoint_id] : undefined
-	itemsStore.filter.listener_ids = localFilter.listener_id ? [localFilter.listener_id] : undefined
+	itemsStore.filter.types = localFilter.types.length > 0 ? [...localFilter.types] : undefined
+	itemsStore.filter.host_ids =
+		localFilter.host_ids.length > 0 ? [...localFilter.host_ids] : undefined
+	itemsStore.filter.endpoint_ids =
+		localFilter.endpoint_ids.length > 0 ? [...localFilter.endpoint_ids] : undefined
+	itemsStore.filter.listener_ids =
+		localFilter.listener_ids.length > 0 ? [...localFilter.listener_ids] : undefined
+	itemsStore.pagination.currentPage = 1
 	itemsStore.filter.offset = 0
 	itemsStore.fetchItems(getClusterUrls())
 }
 
 const { drawerShow } = storeToRefs(configurationStore)
+
+// Registered before localFilter watcher so endpoint pruning happens before a single applyFilter() call
+watch(
+	() => [...localFilter.host_ids],
+	(newHostIds, oldHostIds) => {
+		const prev = oldHostIds ?? []
+		if (newHostIds.length === prev.length && newHostIds.every((id, idx) => id === prev[idx])) {
+			return
+		}
+
+		if (newHostIds.length > 0 && localFilter.endpoint_ids.length > 0) {
+			const selectedHostSet = new Set(newHostIds)
+			localFilter.endpoint_ids = localFilter.endpoint_ids.filter((endpointId) => {
+				const hostId = endpointHostMap.get(endpointId)
+				return hostId !== undefined && selectedHostSet.has(hostId)
+			})
+		}
+
+		itemsStore.fetchEndpoints(
+			getClusterUrls(),
+			undefined,
+			newHostIds.length > 0 ? newHostIds : undefined
+		)
+	}
+)
 
 watch(
 	localFilter,
@@ -74,6 +147,7 @@ watch(
 )
 
 onUnmounted(() => {
+	itemsStore.resetFilter()
 	itemsStore.currentItem = null
 	configurationStore.drawerShow = false
 })
@@ -84,33 +158,54 @@ onUnmounted(() => {
 		<AppLayoutPageContainer class="flex-1 min-w-0">
 			<AppLayoutPageHeader title="Items">
 				<template #actions>
-					<AppFilterDropdown>
-						<AppInputSelect
-							v-model="localFilter.type"
+					<AppFilterDropdown :active="hasActiveFilter" @reset="resetFilter">
+						<AppInputAutocomplete
+							v-model="localFilter.types"
 							label="Type"
 							placeholder="All Types"
 							:options="itemsStore.selection.types"
-							label-key="label"
-							value-key="value"
+							multiple
+							:portal="false"
 							clearable
 						/>
-						<AppInputSelect
-							v-model="localFilter.endpoint_id"
+						<AppInputAutocomplete
+							v-model="localFilter.host_ids"
+							label="Host"
+							placeholder="All Hosts"
+							:options="itemsStore.selection.hosts"
+							sub-label-key="cluster_name"
+							multiple
+							remote
+							:loading="itemsStore.loading.hosts"
+							:portal="false"
+							clearable
+							@search="onSearchHosts"
+						/>
+						<AppInputAutocomplete
+							v-model="localFilter.endpoint_ids"
 							label="Endpoint"
 							placeholder="All Endpoints"
 							:options="itemsStore.selection.endpoints"
-							label-key="label"
-							value-key="value"
+							sub-label-key="cluster_name"
+							multiple
+							remote
+							:loading="itemsStore.loading.endpoints"
+							:portal="false"
 							clearable
+							@search="onSearchEndpoints"
 						/>
-						<AppInputSelect
-							v-model="localFilter.listener_id"
+						<AppInputAutocomplete
+							v-model="localFilter.listener_ids"
 							label="Listener"
 							placeholder="All Listeners"
 							:options="itemsStore.selection.listeners"
-							label-key="label"
-							value-key="value"
+							sub-label-key="cluster_name"
+							multiple
+							remote
+							:loading="itemsStore.loading.listeners"
+							:portal="false"
 							clearable
+							@search="onSearchListeners"
 						/>
 					</AppFilterDropdown>
 

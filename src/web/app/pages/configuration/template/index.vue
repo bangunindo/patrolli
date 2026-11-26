@@ -7,6 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <script setup lang="ts">
 import TemplateTable from '@/components/configuration/templates/Table.vue'
 import { useTemplatesStore } from '@/stores/templates.store'
+import { onUnmounted } from 'vue'
 
 definePageMeta({
 	layout: 'configuration',
@@ -14,6 +15,11 @@ definePageMeta({
 })
 
 const templatesStore = useTemplatesStore()
+
+onUnmounted(() => {
+	templatesStore.resetFilter()
+	templatesStore.currentTemplate = null
+})
 </script>
 
 <template>

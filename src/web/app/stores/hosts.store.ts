@@ -45,13 +45,28 @@ export const useHostsStore = defineStore(
 		const currentHost = ref<IHost | null>(null)
 		const loading = reactive({
 			table: false,
-			form: false
+			form: false,
+			nodes: false
 		})
 		const error = ref<string | null>(null)
 		const selection = reactive<{ templates: ITemplateSelect[]; nodes: IClusterNodeSelect[] }>({
 			templates: [],
 			nodes: []
 		})
+
+		let nodesRequestId = 0
+
+		const resetFilter = () => {
+			nodesRequestId++
+			filter.name = undefined
+			filter.monitored_by = undefined
+			filter.order_by = undefined
+			filter.order_dir = undefined
+			filter.offset = 0
+			pagination.currentPage = 1
+			selection.nodes = []
+			loading.nodes = false
+		}
 
 		const fetchHosts = async () => {
 			loading.table = true
@@ -89,10 +104,12 @@ export const useHostsStore = defineStore(
 		}
 
 		const fetchNodes = async () => {
-			loading.form = true
+			const requestId = ++nodesRequestId
+			loading.nodes = true
 			error.value = null
 			try {
 				const response = await nodesApi.getNodes()
+				if (requestId !== nodesRequestId) return
 				if (response?.success) {
 					selection.nodes = response.data.nodes.map((node) => ({
 						...node,
@@ -101,9 +118,12 @@ export const useHostsStore = defineStore(
 					}))
 				}
 			} catch (err: any) {
-				error.value = err.message || 'Failed to fetch hosts'
+				if (requestId !== nodesRequestId) return
+				error.value = err.message || 'Failed to fetch nodes'
 			} finally {
-				loading.form = false
+				if (requestId === nodesRequestId) {
+					loading.nodes = false
+				}
 			}
 		}
 
@@ -287,6 +307,7 @@ export const useHostsStore = defineStore(
 			currentHost,
 			loading,
 			error,
+			resetFilter,
 			fetchHosts,
 			createHost,
 			updateHost,

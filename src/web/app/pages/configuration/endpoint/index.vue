@@ -5,39 +5,57 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <script setup lang="ts">
+import appHelper from '@/app/helpers/app.helper'
 import AppFilterDropdown from '@/components/app/AppFilterDropdown.vue'
-import AppInputSelect from '@/components/app/input/AppInputSelect.vue'
+import AppInputAutocomplete from '@/components/app/input/AppInputAutocomplete.vue'
 import EndpointTable from '@/components/configuration/endpoint/Table.vue'
 import { useEndpointsStore } from '@/stores/endpoints.store'
 import type { EndpointType } from '@@/shared/types/endpoint.type'
-import { onMounted, reactive, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, watch } from 'vue'
+import { useRoute } from 'vue-router'
 
 definePageMeta({
 	layout: 'configuration',
 	requiresAuth: true
 })
 
+const route = useRoute()
 const endpointsStore = useEndpointsStore()
 
+const getClusterUrls = () => appHelper.getClusterUrls(route.query.cluster as string)
+
 const localFilter = reactive<{
-	type: EndpointType | null
-	host_id: string | null
+	types: EndpointType[]
+	host_ids: string[]
 }>({
-	type: null,
-	host_id: null
+	types: endpointsStore.filter.types ? [...endpointsStore.filter.types] : [],
+	host_ids: endpointsStore.filter.host_ids ? [...endpointsStore.filter.host_ids] : []
 })
 
 onMounted(() => {
-	endpointsStore.fetchHosts()
-	localFilter.type = (endpointsStore.filter.types?.[0] as any) || null
-	localFilter.host_id = endpointsStore.filter.host_ids?.[0] || null
+	endpointsStore.fetchHosts(getClusterUrls())
 })
 
+function onSearchHosts(query: string) {
+	endpointsStore.fetchHosts(getClusterUrls(), query)
+}
+
+const hasActiveFilter = computed(
+	() => localFilter.types.length > 0 || localFilter.host_ids.length > 0
+)
+
+function resetFilter() {
+	localFilter.types = []
+	localFilter.host_ids = []
+}
+
 function applyFilter() {
-	endpointsStore.filter.types = localFilter.type ? [localFilter.type] : undefined
-	endpointsStore.filter.host_ids = localFilter.host_id ? [localFilter.host_id] : undefined
+	endpointsStore.filter.types = localFilter.types.length > 0 ? [...localFilter.types] : undefined
+	endpointsStore.filter.host_ids =
+		localFilter.host_ids.length > 0 ? [...localFilter.host_ids] : undefined
+	endpointsStore.pagination.currentPage = 1
 	endpointsStore.filter.offset = 0
-	endpointsStore.fetchEndpoints()
+	endpointsStore.fetchEndpoints(getClusterUrls())
 }
 
 watch(
@@ -47,30 +65,39 @@ watch(
 	},
 	{ deep: true }
 )
+
+onUnmounted(() => {
+	endpointsStore.resetFilter()
+	endpointsStore.currentEndpoint = null
+})
 </script>
 
 <template>
 	<AppLayoutPageContainer>
 		<AppLayoutPageHeader title="Endpoints">
 			<template #actions>
-				<AppFilterDropdown>
-					<AppInputSelect
-						v-model="localFilter.type"
+				<AppFilterDropdown :active="hasActiveFilter" @reset="resetFilter">
+					<AppInputAutocomplete
+						v-model="localFilter.types"
 						label="Type"
 						placeholder="All Types"
 						:options="endpointsStore.selection.types"
-						label-key="label"
-						value-key="value"
+						multiple
+						:portal="false"
 						clearable
 					/>
-					<AppInputSelect
-						v-model="localFilter.host_id"
+					<AppInputAutocomplete
+						v-model="localFilter.host_ids"
 						label="Host"
 						placeholder="All Hosts"
 						:options="endpointsStore.selection.hosts"
-						label-key="label"
-						value-key="value"
+						sub-label-key="cluster_name"
+						multiple
+						remote
+						:loading="endpointsStore.loading.hosts"
+						:portal="false"
 						clearable
+						@search="onSearchHosts"
 					/>
 				</AppFilterDropdown>
 
