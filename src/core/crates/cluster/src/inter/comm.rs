@@ -2,9 +2,11 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use super::execute_now::{self, ExecuteNowError};
 use super::item_stats;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use bytes::Bytes;
 use chrono::{DateTime, FixedOffset};
 use flume::{Receiver, Sender};
 use futures::{Stream, StreamExt};
@@ -24,8 +26,8 @@ use patrolli_proto::v1::inter_cluster_service_server::{
     InterClusterService, InterClusterServiceServer,
 };
 use patrolli_proto::v1::{
-    CaptureMessage, CaptureRequest, ForwardAck, ForwardStatus, ItemStatsRequest, ItemStatsResponse,
-    NodeIdentity, PayloadBatch, SignalType,
+    CaptureMessage, CaptureRequest, ExecuteNowRequest, ExecuteNowResponse, ForwardAck,
+    ForwardStatus, ItemStatsRequest, ItemStatsResponse, NodeIdentity, PayloadBatch, SignalType,
 };
 use prost::Message;
 use rustc_hash::{FxBuildHasher, FxHashMap};
@@ -415,6 +417,77 @@ impl InterComm {
         Ok(out)
     }
 
+    /// Run a monitor item at once, on whichever node monitors it, and return
+    /// that node's id.
+    ///
+    /// This node answers first. If it does not hold the item, every peer is
+    /// asked at once and the first that does hold it decides the call, for
+    /// better or worse; an item has one owner, so no second node can run it.
+    /// `timeout` bounds each peer.
+    ///
+    /// [`ExecuteNowError::NotFound`] means every node answered and none has the
+    /// item. With a peer that did not answer it is
+    /// [`ExecuteNowError::Unreachable`] instead, since that peer may be the owner.
+    pub async fn execute_now(
+        &self,
+        item_id: Uuid,
+        timeout: Duration,
+    ) -> Result<Uuid, ExecuteNowError> {
+        let outcome = execute_now::local(&self.conf_cache.item, &item_id);
+        if let Some(settled) = execute_now::settle(outcome, self.node_id) {
+            return settled;
+        }
+
+        let req = ExecuteNowRequest {
+            item_id: Bytes::copy_from_slice(item_id.as_bytes()),
+        };
+        let mut joins = JoinSet::new();
+        {
+            // Scoped to the spawn loop, as in `item_stats`.
+            let clients = self.clients.read().await;
+            for client in clients.values() {
+                let (node_id, transport, bearer) = (
+                    client.node_id,
+                    client.transport.clone(),
+                    client.bearer.clone(),
+                );
+                let req = req.clone();
+                joins.spawn(async move {
+                    (
+                        node_id,
+                        execute_now::peer(transport, bearer, req, timeout).await,
+                    )
+                });
+            }
+        }
+
+        // Returning early drops the `JoinSet`, which aborts the calls still out.
+        let mut failed_nodes = 0;
+        while let Some(joined) = joins.join_next().await {
+            match joined {
+                Ok((node_id, Ok(outcome))) => {
+                    if let Some(settled) = execute_now::settle(outcome, node_id) {
+                        return settled;
+                    }
+                }
+                // Logged here because the caller only gets the count.
+                Ok((node_id, Err(e))) => {
+                    failed_nodes += 1;
+                    warn!(peer_node_id = %node_id, error = %e, "execute now failed on peer");
+                }
+                Err(e) => {
+                    failed_nodes += 1;
+                    warn!(error = %e, "execute now task failed");
+                }
+            }
+        }
+        if failed_nodes > 0 {
+            Err(ExecuteNowError::Unreachable { failed_nodes })
+        } else {
+            Err(ExecuteNowError::NotFound)
+        }
+    }
+
     pub async fn capture(&self, req: CaptureRequest) -> Result<CaptureStream> {
         let processor_id =
             Uuid::from_slice(req.processor_id.as_ref()).context("failed to parse processor_id")?;
@@ -713,7 +786,7 @@ pub struct InterCommServer {
 
 impl InterCommServer {
     /// Build the inter-node gRPC service (`Hello`, `ForwardPayloads`,
-    /// `ProcessorCapture`), enforcing bearer auth when `conf.bearer` is set and
+    /// `ProcessorCapture`, `GetItemStats`, `ExecuteNow`), enforcing bearer auth when `conf.bearer` is set and
     /// accepting messages up to [`MAX_GRPC_MESSAGE_SIZE`]. The caller serves it
     /// via `tonic::transport::Server::builder().add_service(...)`. Also spawns
     /// the metrics reporter, which runs until `shutdown` (the same token that
@@ -946,6 +1019,21 @@ impl InterClusterService for InterCommServer {
             unknown_item_ids,
         };
         Ok(Response::new(Box::pin(sweep.into_stream().map(Ok))))
+    }
+
+    async fn execute_now(
+        &self,
+        request: Request<ExecuteNowRequest>,
+    ) -> Result<Response<ExecuteNowResponse>, Status> {
+        let req = request.into_inner();
+        // `invalid_argument`, for the reason `item_stats::parse_ids` gives.
+        let item_id = Uuid::from_slice(&req.item_id)
+            .map_err(|e| Status::invalid_argument(format!("item_id: {e}")))?;
+        let outcome = execute_now::local(&self.conf_cache.item, &item_id);
+        Ok(Response::new(ExecuteNowResponse {
+            outcome: outcome.into(),
+            node_id: Bytes::copy_from_slice(self.node_id.as_bytes()),
+        }))
     }
 }
 
