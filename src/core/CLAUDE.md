@@ -322,19 +322,40 @@ invariants are `error`.
 
 Some events use an explicit `target:` outside their module path so they can be filtered and
 exported on their own: `patrolli::api::audit` (config mutations) and `patrolli::item_state`
-(`cache::item::STATE_LOG_TARGET` — one `info` per item state change, emitted only through
-`Transition::log` from what the `Stats::record_*` write paths return). `Stale` is derived on read
-and deliberately not logged: detecting it would mean sweeping every item on a timer.
+(`cache::item::STATE_LOG_TARGET` — one `info` per item state change, `item state changed`, emitted
+only through `Transition::log` from what the `Stats::record_*` write paths return). Besides a
+change of state it reports:
+- a failure of another `FailureKind` than the one before it, as a transition from the state to
+  itself (the reason text is not compared);
+- `to = removed` when an item leaves the node's cache (`Item::remove`, the reload sweep). A word
+  of the log only, not an `ItemState`. A whole cache going away (a node entering standby) is one
+  `item cache cleared` with `items`, not an event per item;
+- `Stale`, late. Nothing here runs on a timer: detecting staleness as it happens would mean
+  sweeping every item, so it stays derived on read (`Stats::snapshot_at`), and a writer logs it
+  only once the wait is over. An overdue check logs `→ stale` as it starts (`record_attempt`), then
+  its outcome. A listener item with `expect_every` (seconds, on the item's `config`, unset = never
+  stale) logs `stale → ok` with `silent_ms` on the rows that end the silence (`record_ingest`).
+  An item nobody picks up, or a source still quiet, logs nothing.
 
 `patrolli::item_check` (`cache::item::CHECK_LOG_TARGET`) is the per-execution stream: one `debug`
-per monitor check, per item (a batched SNMP get logs one per member), emitted by
+per monitor check, per item (a batched SNMP get logs one per member), `item checked`, emitted by
 `Stats::log_check` from `monitor::Worker::process_item` after the requeue. It carries what the
 stats read after that check: `state`, `duration_ms`, `lag_ms`, `records`, `retries`, the failure,
-the `total_*` counters since process start and `next_check_unix_ms`, so a consumer can rebuild the
-item statistics, derive `Stale` itself and survive a dropped event. `records` counts the rows of
-that attempt, those a failed streaming check (SNMP walk, Prometheus `stream`) had already shipped
-included. A check cancelled by shutdown logs nothing, and listener items have no such event.
-Opt-in per target: its volume is every item times its check rate.
+the `total_*` counters, `next_check_unix_ms`, `started_unix_ms`, `last_success_unix_ms` and
+`last_nonempty_unix_ms`, so a consumer can rebuild the item statistics, derive `Stale` itself and
+survive a dropped event. The totals run since `since_unix_ms` (the item entered this node's cache:
+they restart with the process and when a host moves), so a new value means a reset. `records`
+counts the rows of that attempt, those a failed streaming check (SNMP walk, Prometheus `stream`)
+had already shipped included. `total_dropped` trails by one event: the batcher charges a check's
+drops after its event is out. A check cancelled by shutdown logs nothing. Opt-in per target: its
+volume is every item times its check rate.
+
+A listener item logs `item received` on the same target (`Stats::log_ingest`), not per batch but
+on its first rows of each 5-minute activity bucket (`Ingest::new_bucket`, the writer that wins
+`mark_activity`'s compare-and-swap): the totals and timestamps above, no duration, lag, retries or
+next check. A quiet item logs none, which is how a consumer sees silence while it lasts. Rows a
+listener could not hand to the processors are charged to their item on the failed send
+(`annotate::charge_dropped`), never on the hot path.
 
 Both item streams are exempt from the log throttle (`with_exempt_targets` in `build_throttle`),
 for the log output and for export alike: every event is a fact of its own, so `item_id` in the

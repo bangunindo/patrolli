@@ -136,6 +136,7 @@ mod tests {
         let mut item = monitor_item();
         item.config = Config::Listener(Listener {
             match_strategy: ListenerItemMatchStrategy::None,
+            expect_every: None,
         });
         item
     }

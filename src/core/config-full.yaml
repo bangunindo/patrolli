@@ -765,8 +765,10 @@ listeners:
         # One event per monitor check, per item, with the item's statistics
         # after it (state, duration, records, failure, counters, next check):
         # what an external consumer needs to follow every item. Its volume is
-        # every item times its check rate, so size buffer_size for it. Never
-        # throttled, like patrolli::item_state (one info per state change).
+        # every item times its check rate, so size buffer_size for it. A
+        # listener item logs its totals here too, once per 5 minutes while
+        # rows arrive. Never throttled, like patrolli::item_state (one info
+        # per state change, and one when an item is removed).
         - name: patrolli::item_check
           level: debug
       # Modules never exported. The longest matching prefix wins, so an
@@ -1239,6 +1241,12 @@ items:
       #   none               — accept all
       match_strategy:
         method: none
+      # The longest this item's source may stay quiet, in seconds. Past it the
+      # item reads as stale, and the rows that end the silence log how long it
+      # lasted (`silent_ms` on patrolli::item_state). Nothing is logged while
+      # the silence lasts. Leave it out (the default) and the item is never
+      # stale, however long it hears nothing.
+      expect_every: 300
 
   # ── Listener item for internal logs: every record of the internal_logs
   #    listener above goes to this item's processors.
