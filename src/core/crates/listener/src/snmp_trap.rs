@@ -4,7 +4,9 @@
 
 use crate::InternalMetrics;
 use anyhow::Result;
-use async_snmp::{Notification, NotificationReceiver, Oid, TrapV1Pdu, VarBind};
+use async_snmp::{
+    Notification, NotificationReceiver, Oid, RunningNotificationReceiver, TrapV1Pdu, VarBind,
+};
 use async_trait::async_trait;
 use bytes::Bytes;
 use patrolli::chan::SenderChannel;
@@ -16,12 +18,24 @@ use patrolli::{cache, config, payload};
 use smol_str::{SmolStr, ToSmolStr};
 use std::borrow::Cow;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::time::{Instant, interval};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+/// The listener's one receiver. async-snmp hands notifications to a single
+/// consumer, so the workers take turns on `receiver`: one waits in `recv`,
+/// and lets go of the lock before it handles what it got.
+#[derive(Clone)]
+struct Shared {
+    receiver: Arc<TokioMutex<RunningNotificationReceiver>>,
+    /// Where it is bound; `receiver` is locked for as long as a worker waits.
+    #[cfg(test)]
+    addr: SocketAddr,
+}
 
 pub struct SnmpTrap {
     conf: config::listener::Listener,
@@ -31,7 +45,7 @@ pub struct SnmpTrap {
     node_id: Option<Uuid>,
 
     internal_metrics: InternalMetrics,
-    receiver: TokioMutex<Option<NotificationReceiver>>,
+    receiver: TokioMutex<Option<Shared>>,
 }
 
 impl SnmpTrap {
@@ -201,47 +215,52 @@ impl SnmpTrap {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Counts a notification this listener does not take, `len` bytes on the wire.
+    fn dropped(&self, len: u64) {
+        self.internal_metrics
+            .total_items_dropped
+            .fetch_add(1, Ordering::Relaxed);
+        self.internal_metrics
+            .total_bytes_dropped
+            .fetch_add(len, Ordering::Relaxed);
+    }
+
+    /// `len` is the size of the SNMP message as received. Only what the
+    /// receiver delivers is counted: a datagram it could not decode or
+    /// authenticate never gets here.
     fn handle_notification(
         &self,
         notif: Notification,
         addr: SocketAddr,
+        len: u64,
         batcher: &mut payload::LogsBuilder,
     ) {
         self.internal_metrics
             .total_items
             .fetch_add(1, Ordering::Relaxed);
+        self.internal_metrics
+            .total_bytes
+            .fetch_add(len, Ordering::Relaxed);
         if !self.conf().listener.ip_whitelist.is_empty()
             && let Err(_) = self.conf().listener.ip_whitelist.binary_search(&addr.ip())
         {
-            self.internal_metrics
-                .total_items_dropped
-                .fetch_add(1, Ordering::Relaxed);
-            return;
+            return self.dropped(len);
         }
         if !self.conf().listener.ip_blacklist.is_empty()
             && let Ok(_) = self.conf().listener.ip_blacklist.binary_search(&addr.ip())
         {
-            self.internal_metrics
-                .total_items_dropped
-                .fetch_add(1, Ordering::Relaxed);
-            return;
+            return self.dropped(len);
         }
         match notif {
             Notification::TrapV1 {
                 community, trap, ..
             } => {
                 let Some(v1) = &self.conf().v1 else {
-                    self.internal_metrics
-                        .total_items_dropped
-                        .fetch_add(1, Ordering::Relaxed);
-                    return;
+                    return self.dropped(len);
                 };
                 let community = String::from_utf8_lossy(community.as_bytes()).to_string();
                 if v1.communities.binary_search(&community).is_err() {
-                    self.internal_metrics
-                        .total_items_dropped
-                        .fetch_add(1, Ordering::Relaxed);
-                    return;
+                    return self.dropped(len);
                 }
                 self.handle_v1(batcher, addr, community, trap);
             }
@@ -254,17 +273,11 @@ impl SnmpTrap {
                 ..
             } => {
                 let Some(v2c) = &self.conf().v2c else {
-                    self.internal_metrics
-                        .total_items_dropped
-                        .fetch_add(1, Ordering::Relaxed);
-                    return;
+                    return self.dropped(len);
                 };
                 let community = String::from_utf8_lossy(community.as_bytes()).to_string();
                 if v2c.communities.binary_search(&community).is_err() {
-                    self.internal_metrics
-                        .total_items_dropped
-                        .fetch_add(1, Ordering::Relaxed);
-                    return;
+                    return self.dropped(len);
                 }
                 self.handle_v2cv3(
                     batcher, "v2c", addr, community, uptime, trap_oid, request_id, varbinds, None,
@@ -283,10 +296,7 @@ impl SnmpTrap {
                 ..
             } => {
                 let Some(v3) = &self.conf().v3 else {
-                    self.internal_metrics
-                        .total_items_dropped
-                        .fetch_add(1, Ordering::Relaxed);
-                    return;
+                    return self.dropped(len);
                 };
                 let username = String::from_utf8_lossy(&username).to_string();
                 if v3
@@ -296,10 +306,7 @@ impl SnmpTrap {
                     })
                     .is_err()
                 {
-                    self.internal_metrics
-                        .total_items_dropped
-                        .fetch_add(1, Ordering::Relaxed);
-                    return;
+                    return self.dropped(len);
                 }
                 self.handle_v2cv3(
                     batcher,
@@ -323,17 +330,11 @@ impl SnmpTrap {
                 ..
             } => {
                 let Some(v2c) = &self.conf().v2c else {
-                    self.internal_metrics
-                        .total_items_dropped
-                        .fetch_add(1, Ordering::Relaxed);
-                    return;
+                    return self.dropped(len);
                 };
                 let community = String::from_utf8_lossy(community.as_bytes()).to_string();
                 if v2c.communities.binary_search(&community).is_err() {
-                    self.internal_metrics
-                        .total_items_dropped
-                        .fetch_add(1, Ordering::Relaxed);
-                    return;
+                    return self.dropped(len);
                 }
                 self.handle_v2cv3(
                     batcher, "v2c", addr, community, uptime, trap_oid, request_id, varbinds, None,
@@ -352,10 +353,7 @@ impl SnmpTrap {
                 ..
             } => {
                 let Some(v3) = &self.conf().v3 else {
-                    self.internal_metrics
-                        .total_items_dropped
-                        .fetch_add(1, Ordering::Relaxed);
-                    return;
+                    return self.dropped(len);
                 };
                 let username = String::from_utf8_lossy(&username).to_string();
                 if v3
@@ -365,10 +363,7 @@ impl SnmpTrap {
                     })
                     .is_err()
                 {
-                    self.internal_metrics
-                        .total_items_dropped
-                        .fetch_add(1, Ordering::Relaxed);
-                    return;
+                    return self.dropped(len);
                 }
                 self.handle_v2cv3(
                     batcher,
@@ -384,22 +379,22 @@ impl SnmpTrap {
                 );
             }
         }
+        self.internal_metrics
+            .total_bytes_succeeded
+            .fetch_add(len, Ordering::Relaxed);
     }
 
-    async fn init_receiver(
-        &self,
-        receiver: &mut Option<NotificationReceiver>,
-    ) -> Result<NotificationReceiver> {
+    async fn init_receiver(&self, slot: &mut Option<Shared>) -> Result<Shared> {
         let mut builder =
             NotificationReceiver::builder().bind(self.conf().listener.address.to_string());
         if let Some(v3) = &self.conf().v3 {
-            // A receiver with USM users must now name an acceptance policy; accepting
+            // A receiver with USM users must name an admission policy; admitting
             // everything here keeps the pre-0.18 behaviour, and the per-notification
             // username/community allowlists below are unchanged. It is also an
             // authoritative engine (for informs), and answers DES informs with
             // its own salts, which async-snmp refuses to build without.
             builder = builder
-                .accept_all_notifications()
+                .admit_all_notifications()
                 .authoritative_engine(snmp_common::authoritative_engine())
                 .des_salt_state(snmp_common::des_salt_state());
             for security_model in &v3.security_models {
@@ -420,9 +415,14 @@ impl SnmpTrap {
                 })?;
             }
         }
-        let trap_receiver = builder.build().await?;
-        receiver.replace(trap_receiver.clone());
-        Ok(trap_receiver)
+        let receiver = builder.spawn().await?;
+        let shared = Shared {
+            #[cfg(test)]
+            addr: receiver.bound_addresses()[0].local_addr,
+            receiver: Arc::new(TokioMutex::new(receiver)),
+        };
+        slot.replace(shared.clone());
+        Ok(shared)
     }
 
     fn set_scope(&self, batch: &mut payload::LogsBuilder) {
@@ -467,7 +467,7 @@ impl super::Listener for SnmpTrap {
             .total_workers
             .fetch_add(1, Ordering::Relaxed);
         info!("starting listener");
-        let receiver = {
+        let shared = {
             let mut receiver_lock = self.receiver.lock().await;
             match receiver_lock.as_ref() {
                 Some(r) => r.clone(),
@@ -501,14 +501,21 @@ impl super::Listener for SnmpTrap {
                         .fetch_add(n.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     self.send_batch(&mut batch).await;
                 },
-                res = receiver.recv() => {
+                // `recv` is cancellation safe, and so is the wait for the lock.
+                res = async { shared.receiver.lock().await.recv().await } => {
                     self.internal_metrics
                         .receive_wait_time
                         .fetch_add(n.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     match res {
-                        Ok(received) => {
+                        Some(received) => {
                             let n = Instant::now();
-                            self.handle_notification(received.notification, received.source, &mut batch);
+                            let info = received.receive_info;
+                            self.handle_notification(
+                                received.notification,
+                                info.peer_addr(),
+                                info.received_len() as u64,
+                                &mut batch,
+                            );
                             self.internal_metrics
                                 .engine_time_spent
                                 .fetch_add(n.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -517,8 +524,20 @@ impl super::Listener for SnmpTrap {
                                 batch_tick.reset();
                             }
                         }
-                        Err(e) => {
-                            error!(error = %e, "trap receiver failed");
+                        // The receiver's runner ended under us: return, for
+                        // the supervisor's restart to bind a new one.
+                        None => {
+                            match shared.receiver.lock().await.join().await {
+                                Ok(()) => error!("trap receiver stopped"),
+                                Err(e) => error!(error = %e, "trap receiver failed"),
+                            }
+                            let mut receiver_lock = self.receiver.lock().await;
+                            if receiver_lock
+                                .as_ref()
+                                .is_some_and(|s| Arc::ptr_eq(&s.receiver, &shared.receiver))
+                            {
+                                receiver_lock.take();
+                            }
                             break;
                         }
                     }
@@ -529,7 +548,6 @@ impl super::Listener for SnmpTrap {
                 .fetch_add(n.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
         self.send_batch(&mut batch).await;
-        drop(receiver);
         info!("listener stopped");
         // Under the lock a starting worker takes, so it cannot clone the
         // receiver the last worker is releasing (and then bind a second
@@ -539,8 +557,14 @@ impl super::Listener for SnmpTrap {
             .internal_metrics
             .total_workers
             .fetch_sub(1, Ordering::Relaxed);
-        if prev_worker_count == 1 {
-            receiver_lock.take();
+        if prev_worker_count == 1
+            && let Some(shared) = receiver_lock.take()
+        {
+            // Dropping it would only ask for the shutdown; waiting here has
+            // the socket closed before the next worker may bind it again.
+            if let Err(e) = shared.receiver.lock().await.shutdown().await {
+                warn!(error = %e, "trap receiver stopped with an error");
+            }
         }
     }
 
@@ -556,12 +580,11 @@ mod tests {
     use crate::test_util::{self, CLOSE_LIMIT, item_for};
     use crate::{Listener as _, Worker};
     use async_snmp::{
-        Auth, AuthProtocol, AuthoritativeEngine, Client, DesSaltState, GenericTrap, PrivProtocol,
-        TrapV1Notification, UsmConfig, Value, oid,
+        Auth, AuthProtocol, AuthoritativeEngine, Client, DesSaltState, GenericTrap, LocalEngine,
+        PrivProtocol, TrapV1Notification, UsmConfig, Value, oid,
     };
     use std::collections::HashMap;
     use std::convert::Infallible;
-    use std::sync::Arc;
     use std::time::Duration;
     use tokio::time::sleep;
 
@@ -636,8 +659,8 @@ mod tests {
         async fn addr(&self) -> String {
             let deadline = Instant::now() + CLOSE_LIMIT;
             loop {
-                if let Some(receiver) = &*self.listener.receiver.lock().await {
-                    return receiver.local_addr().to_string();
+                if let Some(shared) = &*self.listener.receiver.lock().await {
+                    return shared.addr.to_string();
                 }
                 assert!(Instant::now() < deadline, "receiver never bound");
                 sleep(Duration::from_millis(10)).await;
@@ -676,6 +699,9 @@ mod tests {
                 if m.total_items_dropped >= n {
                     assert_eq!(m.total_items, n);
                     assert_eq!(m.total_items_succeeded, 0);
+                    assert!(m.total_bytes > 0);
+                    assert_eq!(m.total_bytes_dropped, m.total_bytes);
+                    assert_eq!(m.total_bytes_succeeded, 0);
                     return;
                 }
                 assert!(Instant::now() < deadline, "nothing dropped");
@@ -726,11 +752,17 @@ mod tests {
     }
 
     async fn v3_client(addr: &str, usm: UsmConfig, engine: Option<&[u8]>) -> Client {
-        let mut builder = Client::builder(addr, usm)
-            .des_salt_state(DesSaltState::install(|_| Ok::<(), Infallible>(())).unwrap());
-        if let Some(id) = engine {
-            builder = builder.local_authoritative_engine(sender_engine(id));
-        }
+        let salts = DesSaltState::install(|_| Ok::<(), Infallible>(())).unwrap();
+        let builder = Client::builder(addr, usm);
+        let builder = match engine {
+            // A sender with its own engine keeps its DES salts on it.
+            Some(id) => {
+                let engine = LocalEngine::new(sender_engine(id)).unwrap();
+                engine.set_des_salt_state(Some(salts)).unwrap();
+                builder.local_engine(engine)
+            }
+            None => builder.des_salt_state(salts),
+        };
         builder.connect().await.unwrap()
     }
 
@@ -856,6 +888,10 @@ v3:
         }
         let m = t.metrics().await;
         assert_eq!((m.total_items, m.total_items_succeeded), (5, 5));
+        // Every datagram's length, the smallest of them well past 40 bytes.
+        assert!(m.total_bytes > 5 * 40, "{} bytes", m.total_bytes);
+        assert_eq!(m.total_bytes_succeeded, m.total_bytes);
+        assert_eq!(m.total_bytes_dropped, 0);
         t.close().await;
     }
 
