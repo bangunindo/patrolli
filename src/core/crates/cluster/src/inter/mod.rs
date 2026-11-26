@@ -4,9 +4,11 @@
 
 mod capture;
 mod comm;
+mod execute_now;
 mod forwarder;
 mod item_stats;
 
+pub use execute_now::ExecuteNowError;
 pub use item_stats::to_proto as item_stats_to_proto;
 
 pub use comm::{
