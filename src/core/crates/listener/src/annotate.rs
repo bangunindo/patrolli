@@ -149,6 +149,11 @@ pub fn item_listener_annotate(
             ],
         });
     };
+    // With forwarding off (the listener's `disable_cluster_forwarding`, or no
+    // forwarder to hand over to), nothing leaves this node: a row whose host
+    // another node monitors is completed here like one of ours, so it runs the
+    // item's processors.
+    let local_only = conf.is_some_and(|conf| conf.disable_cluster_forwarding) || disable_forwarding;
     // completing the annotation
     {
         let item_read = conf_cache.item.read();
@@ -182,7 +187,13 @@ pub fn item_listener_annotate(
                         },
                     })))
                 }
-                Some(Annotate::ItemData(data)) if monitored_by_us(data.monitored_by, node_id) => {
+                Some(Annotate::ItemData(data))
+                    if local_only || monitored_by_us(data.monitored_by, node_id) =>
+                {
+                    // The host, endpoint and item caches hold what this node
+                    // monitors, so for another node's host they miss: the row
+                    // keeps the ids the item carries, without the names, and
+                    // its ingest is counted nowhere (`stats` is `None`).
                     let ep = data.item.endpoint_id.and_then(|id| ep_read.get(&id));
                     let host = host_cache.get(&data.item.host_id);
                     Some(Annotate::Complete(Box::new(Complete {
@@ -190,7 +201,7 @@ pub fn item_listener_annotate(
                         stats: item_read.stats(&data.item.id),
                         item: data.item.clone(),
                         resource: payload::Resource {
-                            host_id: host.map(|host| host.id).unwrap_or(Uuid::nil()),
+                            host_id: data.item.host_id,
                             host_name: host.map(|host| host.name.clone()).unwrap_or_default(),
                             host_timezone: host.and_then(|host| host.timezone.clone()),
                             endpoint_id: ep.map(|ep| ep.id),
@@ -406,8 +417,9 @@ pub fn item_listener_annotate(
     // Split the annotated batch into the locally-processed payloads (one per
     // processor id, plus a `None` bucket) and one payload per remote owner node.
     let mut pool = IdBitmapPool::new();
-    if conf.is_some_and(|conf| conf.disable_cluster_forwarding) || disable_forwarding {
-        // Forwarding is off: would-be-forwarded records are processed locally too.
+    if local_only {
+        // Forwarding is off: every matched row was completed above, so none is
+        // bound for another node.
         return Ok(ListenerAnnotate {
             for_forward: vec![],
             for_process: split_for_process(&data, &row_dest, true, &mut pool)?,
@@ -444,10 +456,10 @@ pub fn item_listener_annotate(
 
 /// Split the annotated `data` into one payload per processor id. Each `Process` row
 /// is emitted under every processor id it carries, or under `None` when it carries
-/// none. With `include_forward` true (forwarding disabled) `Forward` rows are
-/// processed locally under `None` too (they only carry patrolli.item.id, so the
-/// processor resolves their item + processors by id); otherwise they are dropped
-/// here because they are shipped out via `for_forward`.
+/// none. `Forward` rows are dropped here, because they are shipped out via
+/// `for_forward`, unless `include_forward` keeps them under `None`. With
+/// forwarding disabled the annotation leaves no `Forward` row, so that is a
+/// safety net only: a `None` payload reaches the input-less sinks, no processor.
 fn split_for_process(
     data: &OtapArrowRecords,
     row_dest: &[Destination],
@@ -1357,6 +1369,56 @@ mod tests {
         assert!(res.for_forward.is_empty());
         let local: usize = res.for_process.iter().map(|p| p.payload.num_items()).sum();
         assert_eq!(local, 1);
+    }
+
+    /// A row for a host another node monitors, with forwarding off: it must
+    /// run the item's processors here, not fall to the input-less sinks, even
+    /// though this node caches neither the host, the endpoint nor the item.
+    #[test]
+    fn annotate_disable_cluster_forwarding_runs_the_items_processors() {
+        let other_node = Uuid::now_v7();
+        let our_node = Uuid::now_v7();
+        for (flag, no_forwarder) in [(true, false), (false, true)] {
+            let env = build_env(
+                ListenerItemMatchStrategy::None,
+                Some(other_node),
+                None,
+                flag,
+            );
+            // what a node that does not monitor the host holds: the listener
+            // cache alone knows the item
+            let host_id = env.cache.item.read().get(&env.item_id).unwrap().host_id;
+            *env.cache.item.write() = Default::default();
+            *env.cache.host.write() = Default::default();
+            *env.cache.endpoint.write() = Default::default();
+
+            let pl = logs_payload(vec![record(vec![kv("k", sval("v"))])]);
+            let res = item_listener_annotate(
+                &pl,
+                Some(&env.listener_conf),
+                &env.cache,
+                Some(our_node),
+                no_forwarder,
+            )
+            .unwrap();
+            assert!(res.for_forward.is_empty());
+            assert_eq!(process_len(&res, Some(env.processor_id)), 1);
+            assert_eq!(process_len(&res, None), 0);
+
+            let out = &res.for_process[0].payload;
+            let ra = out.data.get(ArrowPayloadType::ResourceAttrs).unwrap();
+            // the host id is the value of host.id and service.instance.id
+            for (key, val, rows) in [
+                (payload::ResourceAttrKey::ItemId, env.item_id, 1),
+                (payload::ResourceAttrKey::HostId, host_id, 2),
+            ] {
+                assert_eq!(count_attr_key_rows(ra, key.as_str()), 1, "{}", key.as_str());
+                let has = attr_has_val(ra, consts::ATTRIBUTE_STR, &val.as_hyphenated().to_string())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(has.true_count(), rows, "{}", key.as_str());
+            }
+        }
     }
 
     #[test]

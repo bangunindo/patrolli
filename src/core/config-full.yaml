@@ -469,8 +469,11 @@ monitor:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # listeners — passive receivers. Each runs its own worker pool and feeds the
-# processor. `disable_cluster_forwarding: true` keeps locally-received
-# metrics local even if the destination host is owned by another cluster node.
+# processor. `disable_cluster_forwarding: true` keeps what a node receives on
+# that node even when another cluster node monitors the host it belongs to: it
+# runs the item's processors there instead of being forwarded to the owner.
+# Such a row carries the host and endpoint ids without their names (only the
+# owner holds them), and the item's ingest statistics do not count it.
 #
 # These sit next to `type`, on the listener itself, never under `config:`:
 #   worker_count   default available_parallelism(); 0 means the same

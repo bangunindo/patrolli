@@ -109,8 +109,11 @@ pub struct Listener {
     #[serde(flatten)]
     pub config: Config,
     #[serde(default)]
-    // if set to true, still honors processor defined for the listener
-    // even if the instance does not monitor the item's host
+    // If true, a row received here for a host another node monitors is not
+    // forwarded to that node: it runs the item's processors on this one. The
+    // receiving node holds neither the host nor its endpoints, so the row
+    // carries their ids without the names, and the item's ingest statistics
+    // do not count it.
     pub disable_cluster_forwarding: bool,
 }
 
