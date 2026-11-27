@@ -371,6 +371,7 @@ impl Cluster {
             cluster_config.node_id,
             cluster_config.node_name.clone(),
             config_cache.clone(),
+            processor_send.clone(),
         )?;
         let grpc_token = CancellationToken::new();
         let grpc_service = inter::InterCommServer::new_service(

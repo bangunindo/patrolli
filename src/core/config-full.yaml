@@ -472,7 +472,8 @@ monitor:
 # processor. `disable_cluster_forwarding: true` keeps what a node receives on
 # that node even when another cluster node monitors the host it belongs to,
 # instead of forwarding it to the owner. What becomes of such a row, and of one
-# that could not be forwarded (the owner unreachable, its queue full), is up to
+# that could not be forwarded (the owner is unreachable, or this node's
+# forwarder queue took no more), is up to
 # its listener item: see `unforwarded` under items.
 #
 # These sit next to `type`, on the listener itself, never under `config:`:
@@ -1252,7 +1253,10 @@ items:
       expect_every: 300
       # What a node does with a row of this item when another cluster node
       # monitors the item's host and the row is not forwarded there: the
-      # listener has disable_cluster_forwarding, or the hand-over failed.
+      # listener has disable_cluster_forwarding, or the row could not be
+      # handed over (the owner is unreachable, or this node's forwarder queue
+      # took no more). A row already on its way when the connection to the
+      # owner breaks is lost.
       #   process (default) — it runs this item's processors on the node that
       #     received it. It carries the host and endpoint ids without their
       #     names (only the owner holds them), and the item's ingest

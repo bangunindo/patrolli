@@ -14,9 +14,10 @@
 // so the owner is restarted to be the last to bind, leaving the packets to the
 // other two nodes either way.
 //
-// The `unforwarded_*` tests cover the rows a node keeps instead: a listener
-// with `disable_cluster_forwarding`, and what the item's `unforwarded` makes
-// of a row received by a node that does not monitor the item's host.
+// The `unforwarded_*` tests cover the rows a node keeps instead, because the
+// listener has `disable_cluster_forwarding` or the owner is down, and what the
+// item's `unforwarded` makes of a row received by a node that does not monitor
+// the item's host.
 
 mod setup;
 
@@ -359,8 +360,17 @@ async fn test_forwarder_e2e_three_node_cluster() -> Result<()> {
     Ok(())
 }
 
+/// Why node-2 keeps the rows of a host node-1 monitors.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Why {
+    /// The listener has `disable_cluster_forwarding`.
+    ForwardingDisabled,
+    /// Forwarding is on, and node-1 is stopped.
+    OwnerDown,
+}
+
 /// What node-2, which does not monitor the host, did with the rows of the
-/// host's item it received, on a listener with `disable_cluster_forwarding`.
+/// host's item it received and kept.
 struct Kept {
     /// The lines its sinks wrote that name the item (`patrolli.item.id`).
     lines: Vec<String>,
@@ -368,10 +378,14 @@ struct Kept {
     dropped: f64,
 }
 
-/// Two nodes, the host pinned to node-1, forwarding disabled on the listener
-/// and `unforwarded` on its item. Sends syslog until node-2 has received some
-/// of it and `done` accepts what it did with it.
-async fn node_2_keeps(unforwarded: &'static str, done: impl Fn(&Kept) -> bool) -> Result<Kept> {
+/// Two nodes, the host pinned to node-1 and `unforwarded` on its item. Sends
+/// syslog until node-2 has received some of it and `done` accepts what it did
+/// with it.
+async fn node_2_keeps(
+    why: Why,
+    unforwarded: &'static str,
+    done: impl Fn(&Kept) -> bool,
+) -> Result<Kept> {
     setup::setup_logging();
     let (db, pool) = setup::setup_db().await;
     let syslog_port = free_udp_port();
@@ -382,16 +396,25 @@ async fn node_2_keeps(unforwarded: &'static str, done: impl Fn(&Kept) -> bool) -
         Seed {
             owner_node_id: node_ids[0],
             syslog_port,
-            disable_cluster_forwarding: true,
+            disable_cluster_forwarding: why == Why::ForwardingDisabled,
             unforwarded: Some(unforwarded),
         },
     )
     .await?
     .to_string();
     all_listening(&nodes).await;
-    // node-2 has to get packets: on macOS the first socket bound takes them all
-    nodes[0].restart().await;
-    all_listening(&nodes[..1]).await;
+    match why {
+        // node-2 has to get packets: on macOS the first socket bound takes
+        // them all
+        Why::ForwardingDisabled => {
+            nodes[0].restart().await;
+            all_listening(&nodes[..1]).await;
+        }
+        // The host is sticky, so it stays with node-1, and node-2 is left with
+        // the socket. What node-2 hands a stream that is about to break is
+        // lost with it: the rows sent once it knows node-1 is gone are kept.
+        Why::OwnerDown => nodes[0].patrolli.stop().await,
+    }
 
     let token = format!("e2e-token-{}", Uuid::now_v7().simple());
     let syslog_msg = format!("<134>1 2026-05-18T00:00:00Z e2e-host e2e-app 1 ID47 - {token}");
@@ -422,17 +445,18 @@ async fn node_2_keeps(unforwarded: &'static str, done: impl Fn(&Kept) -> bool) -
         Ok(kept)
     })
     .await;
-    // node-1 never took a row from node-2
-    assert_eq!(
-        nodes[0]
-            .metric_sum("patrolli_forwarder_server_records_sent")
-            .await?,
-        0.0,
-        "nothing is forwarded with disable_cluster_forwarding"
-    );
-    for node in &mut nodes {
-        node.patrolli.stop().await;
+    if why == Why::ForwardingDisabled {
+        // node-1 never took a row from node-2
+        assert_eq!(
+            nodes[0]
+                .metric_sum("patrolli_forwarder_server_records_sent")
+                .await?,
+            0.0,
+            "nothing is forwarded with disable_cluster_forwarding"
+        );
+        nodes[0].patrolli.stop().await;
     }
+    nodes[1].patrolli.stop().await;
     Ok(kept)
 }
 
@@ -441,7 +465,10 @@ async fn node_2_keeps(unforwarded: &'static str, done: impl Fn(&Kept) -> bool) -
 /// routed through the item's processors carries.
 #[tokio::test]
 async fn unforwarded_process_runs_the_items_processors_on_the_receiving_node() -> Result<()> {
-    let kept = node_2_keeps("process", |kept| !kept.lines.is_empty()).await?;
+    let kept = node_2_keeps(Why::ForwardingDisabled, "process", |kept| {
+        !kept.lines.is_empty()
+    })
+    .await?;
     assert!(
         kept.lines.iter().all(|l| l.contains(ITEM_NAME)),
         "every row of the item went through its processors: {:?}",
@@ -455,7 +482,10 @@ async fn unforwarded_process_runs_the_items_processors_on_the_receiving_node() -
 /// naming only their item.
 #[tokio::test]
 async fn unforwarded_passthrough_reaches_the_sinks_without_inputs() -> Result<()> {
-    let kept = node_2_keeps("passthrough", |kept| !kept.lines.is_empty()).await?;
+    let kept = node_2_keeps(Why::ForwardingDisabled, "passthrough", |kept| {
+        !kept.lines.is_empty()
+    })
+    .await?;
     assert!(
         !kept.lines.iter().any(|l| l.contains(ITEM_NAME)),
         "no row of the item went through its processors: {:?}",
@@ -468,10 +498,35 @@ async fn unforwarded_passthrough_reaches_the_sinks_without_inputs() -> Result<()
 /// The rows reached no sink, and the listener counted them.
 #[tokio::test]
 async fn unforwarded_drop_writes_nothing() -> Result<()> {
-    let kept = node_2_keeps("drop", |kept| kept.dropped > 0.0).await?;
+    let kept = node_2_keeps(Why::ForwardingDisabled, "drop", |kept| kept.dropped > 0.0).await?;
     assert!(
         kept.lines.is_empty(),
         "no row of the item reached a sink: {:?}",
+        kept.lines
+    );
+    Ok(())
+}
+
+/// Forwarding is on and the owner is down: the rows node-2 cannot hand over
+/// run the item's processors on node-2 instead of being lost.
+#[tokio::test]
+async fn unforwarded_process_keeps_the_rows_of_an_owner_that_is_down() -> Result<()> {
+    let kept = node_2_keeps(Why::OwnerDown, "process", |kept| !kept.lines.is_empty()).await?;
+    assert!(
+        kept.lines.iter().all(|l| l.contains(ITEM_NAME)),
+        "every row of the item went through its processors: {:?}",
+        kept.lines
+    );
+    Ok(())
+}
+
+/// The same with `passthrough`: they reach the sink without inputs.
+#[tokio::test]
+async fn unforwarded_passthrough_keeps_the_rows_of_an_owner_that_is_down() -> Result<()> {
+    let kept = node_2_keeps(Why::OwnerDown, "passthrough", |kept| !kept.lines.is_empty()).await?;
+    assert!(
+        !kept.lines.iter().any(|l| l.contains(ITEM_NAME)),
+        "no row of the item went through its processors: {:?}",
         kept.lines
     );
     Ok(())

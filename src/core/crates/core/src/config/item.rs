@@ -453,8 +453,8 @@ pub struct Listener {
 
 /// What a node does with a row of this item when another node monitors the
 /// item's host and the row is not forwarded to that node: the listener has
-/// `disable_cluster_forwarding`, or the hand-over failed (the owner
-/// unreachable, its queue full).
+/// `disable_cluster_forwarding`, or the row could not be handed over (the
+/// owner is unreachable, or this node's forwarder queue took no more).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Display, ToSchema)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]

@@ -665,6 +665,9 @@ async fn send_batch<'a>(args: SendBatch<'a>) {
             if let Some(forwarder) = &args.forwarder {
                 for pl in res.for_forward {
                     let pl_len = pl.len() as u64;
+                    // a clone shares the Arrow buffers: it is what stays here
+                    // when the error does not hand the payload back
+                    let kept = pl.payload.clone();
                     match forwarder.broadcast(pl).await {
                         Ok(()) => {
                             args.internal_metrics
@@ -681,15 +684,14 @@ async fn send_batch<'a>(args: SendBatch<'a>) {
                                 .fetch_add(pl_len, Ordering::Relaxed);
                             process_unforwarded(&args, contents.payload).await;
                         }
-                        // The payload went down with the error.
+                        // The payload went down with the error (a disk
+                        // channel that could not write it).
                         Err(e) => {
                             warn!(error = %e, "error while forwarding item listen message");
                             args.internal_metrics
                                 .total_records_forward_failed
                                 .fetch_add(pl_len, Ordering::Relaxed);
-                            args.internal_metrics
-                                .total_records_errored
-                                .fetch_add(pl_len, Ordering::Relaxed);
+                            process_unforwarded(&args, kept).await;
                         }
                     }
                 }
