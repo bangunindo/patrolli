@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ProcessorForm from '@/components/configuration/processor/Form.vue'
+import AppInputAttributeFilter from '@/components/app/input/AttributeFilter.vue'
 import { useProcessorStore } from '@/stores/processors.store'
 import { FormMode } from '@@/shared/types/app.type'
 import { AutoFormAdapter } from '@/app/services/forms/auto-adapter'
@@ -271,5 +272,169 @@ describe('Processor DynamicZodForm Integration', () => {
 
 		expect(store.updateProcessor).toHaveBeenCalled()
 		expect(submittedPayload.payload.config.config.opl).toBe('logs | where')
+	})
+
+	it('should switch to attribute_lookup in ADD mode without triggering recursive updates', async () => {
+		const pinia = createPinia()
+		setActivePinia(pinia)
+		const store = useProcessorStore()
+		store.processorFormMode = FormMode.ADD
+		store.hideInputItemsAndProcessors = true
+
+		const wrapper = mount(ProcessorForm, {
+			global: {
+				plugins: [pinia],
+				components: {
+					AppInputAttributeFilter
+				},
+				stubs: {
+					...commonStubs,
+					UiIcon: true,
+					UiButton: { template: '<button type="button"><slot/></button>' },
+					UiSwitch: true,
+					UiInput: true,
+					UiCheckbox: true
+				}
+			}
+		})
+
+		await flushPromises()
+		const dynForm = wrapper.findComponent({ name: 'DynamicZodForm' })
+		const union = wrapper.findComponent({ name: 'UnionControl' })
+
+		;(union.vm as any).onBranchChange('attribute_lookup')
+		await flushPromises()
+
+		const emitted = dynForm.emitted('update:modelValue') || []
+		expect(emitted.length).toBeGreaterThan(0)
+		expect(emitted.length).toBeLessThan(10)
+
+		const vm = wrapper.vm as any
+		expect(vm.form.config.type).toBe('attribute_lookup')
+		expect(vm.form.config.config.when).toEqual({
+			match: {
+				key: '',
+				key_is_regex: false,
+				op: '=',
+				table: 'record',
+				value: { string: '' }
+			}
+		})
+	})
+
+	it('should switch to attribute_filter in ADD mode and update match fields immutably without recursive updates', async () => {
+		const pinia = createPinia()
+		setActivePinia(pinia)
+		const store = useProcessorStore()
+		store.processorFormMode = FormMode.ADD
+		store.hideInputItemsAndProcessors = true
+
+		const wrapper = mount(ProcessorForm, {
+			global: {
+				plugins: [pinia],
+				components: {
+					AppInputAttributeFilter
+				},
+				stubs: {
+					...commonStubs,
+					UiIcon: true,
+					UiButton: { template: '<button type="button"><slot/></button>' },
+					UiSwitch: {
+						name: 'UiSwitch',
+						props: ['checked', 'disabled'],
+						emits: ['update:checked'],
+						template:
+							'<input data-testid="attr-switch" type="checkbox" :checked="checked" @change="$emit(\'update:checked\', $event.target.checked)" />'
+					},
+					AppInputText: {
+						name: 'AppInputText',
+						props: ['modelValue', 'label', 'placeholder', 'type', 'disabled'],
+						emits: ['update:modelValue'],
+						template:
+							'<input :data-testid="`attr-text-${label}`" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />'
+					},
+					AppInputSelect: {
+						name: 'AppInputSelect',
+						props: ['modelValue', 'label', 'options', 'disabled'],
+						emits: ['update:modelValue'],
+						template:
+							'<select :data-testid="`attr-select-${label}`" :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="opt in options" :key="opt.value" :value="opt.value">{{ opt.label }}</option></select>'
+					},
+					UiInput: true,
+					UiCheckbox: true
+				}
+			}
+		})
+
+		await flushPromises()
+		const dynForm = wrapper.findComponent({ name: 'DynamicZodForm' })
+		const union = wrapper.findComponent({ name: 'UnionControl' })
+
+		;(union.vm as any).onBranchChange('attribute_filter')
+		await flushPromises()
+
+		const emittedAfterSwitch = dynForm.emitted('update:modelValue') || []
+		expect(emittedAfterSwitch.length).toBeLessThan(10)
+
+		const attrFilter = wrapper.findComponent(AppInputAttributeFilter)
+		expect(attrFilter.exists()).toBe(true)
+
+		await attrFilter.find('[data-testid="attr-text-Key"]').setValue('service.name')
+		await flushPromises()
+		await attrFilter.find('[data-testid="attr-switch"]').setValue(true)
+		await flushPromises()
+		await attrFilter.find('[data-testid="attr-select-Operator"]').setValue('=~')
+		await flushPromises()
+		await attrFilter.find('[data-testid="attr-select-Table"]').setValue('resource')
+		await flushPromises()
+
+		const vm = wrapper.vm as any
+		expect(vm.form.config.config).toEqual({
+			match: {
+				key: 'service.name',
+				key_is_regex: true,
+				op: '=~',
+				table: 'resource',
+				value: { string: '' }
+			}
+		})
+
+		const emitsBeforeAnd = (attrFilter.emitted('update:modelValue') || []).length
+		await attrFilter.find('[data-testid="attr-select-Condition"]').setValue('and')
+		await flushPromises()
+
+		expect((attrFilter.emitted('update:modelValue') || []).length).toBe(emitsBeforeAnd + 1)
+		expect(vm.form.config.config).toEqual({
+			and: [
+				{
+					match: {
+						key: '',
+						key_is_regex: false,
+						op: '=',
+						table: 'record',
+						value: { string: '' }
+					}
+				}
+			]
+		})
+
+		const emitsBeforeOr = (attrFilter.emitted('update:modelValue') || []).length
+		await attrFilter.find('[data-testid="attr-select-Condition"]').setValue('or')
+		await flushPromises()
+
+		expect((attrFilter.emitted('update:modelValue') || []).length).toBe(emitsBeforeOr + 1)
+		expect(vm.form.config.config).toEqual({
+			or: [
+				{
+					match: {
+						key: '',
+						key_is_regex: false,
+						op: '=',
+						table: 'record',
+						value: { string: '' }
+					}
+				}
+			]
+		})
 	})
 })

@@ -99,17 +99,29 @@ watch(
 			emits('update:modelValue', { match: createDefaultMatch() })
 		}
 	},
-	{ immediate: true, deep: true }
+	{ immediate: true }
 )
 
-// Deep watcher to ensure any sub-property change triggers an emit
-watch(
-	() => innerConfig.value,
-	(val) => {
-		emits('update:modelValue', val)
-	},
-	{ deep: true }
-)
+type MatchFieldValueMap = {
+	key: string
+	key_is_regex: boolean
+	op: string
+	table: string
+}
+
+const updateMatchField = <K extends keyof MatchFieldValueMap>(
+	field: K,
+	val: MatchFieldValueMap[K]
+) => {
+	if (!innerConfig.value?.match) return
+	innerConfig.value = {
+		...innerConfig.value,
+		match: {
+			...innerConfig.value.match,
+			[field]: val
+		}
+	}
+}
 
 const formConfigType = computed({
 	get() {
@@ -123,11 +135,11 @@ const formConfigType = computed({
 			innerConfig.value = { match: createDefaultMatch() }
 		} else if (val === 'and') {
 			innerConfig.value = {
-				and: [createDefaultMatch()]
+				and: [{ match: createDefaultMatch() }]
 			}
 		} else if (val === 'or') {
 			innerConfig.value = {
-				or: [createDefaultMatch()]
+				or: [{ match: createDefaultMatch() }]
 			}
 		}
 	}
@@ -328,12 +340,13 @@ const updateChildCondition = (index: number, val: any) => {
 				<FieldGroup :label="props.root ? 'Match Condition' : undefined">
 					<div class="flex flex-col gap-2 mt-3">
 						<AppInputText
-							v-model="innerConfig.match.key"
+							:model-value="innerConfig.match.key"
 							placeholder="e.g. http.status_code, service.name"
 							label="Key"
 							label-class="font-semibold"
 							required
 							:disabled="props.disabled"
+							@update:model-value="updateMatchField('key', $event)"
 						/>
 					</div>
 
@@ -343,8 +356,9 @@ const updateChildCondition = (index: number, val: any) => {
 						</label>
 						<div class="flex items-center gap-2">
 							<UiSwitch
-								v-model:checked="innerConfig.match.key_is_regex"
+								:checked="innerConfig.match.key_is_regex"
 								:disabled="props.disabled"
+								@update:checked="updateMatchField('key_is_regex', $event)"
 							/>
 							<span class="text-sm font-normal text-muted-foreground">
 								{{ innerConfig.match.key_is_regex ? 'Regex' : 'Non Regex' }}
@@ -354,7 +368,7 @@ const updateChildCondition = (index: number, val: any) => {
 
 					<div class="flex flex-col gap-2 mt-3">
 						<AppInputSelect
-							v-model="innerConfig.match.op"
+							:model-value="innerConfig.match.op"
 							variant="outline"
 							placeholder="Select operator"
 							label="Operator"
@@ -362,12 +376,13 @@ const updateChildCondition = (index: number, val: any) => {
 							:options="operators"
 							required
 							:disabled="props.disabled"
+							@update:model-value="updateMatchField('op', $event)"
 						/>
 					</div>
 
 					<div class="flex flex-col gap-2 mt-3">
 						<AppInputSelect
-							v-model="innerConfig.match.table"
+							:model-value="innerConfig.match.table"
 							variant="outline"
 							placeholder="Select table"
 							label="Table"
@@ -375,6 +390,7 @@ const updateChildCondition = (index: number, val: any) => {
 							:options="tables"
 							required
 							:disabled="props.disabled"
+							@update:model-value="updateMatchField('table', $event)"
 						/>
 					</div>
 

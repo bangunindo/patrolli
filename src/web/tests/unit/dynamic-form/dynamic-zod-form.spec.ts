@@ -10,6 +10,9 @@ import { CreateEndpointRequest } from '@@/shared/generated/patrolliAPI.schemas.t
 import { endpointHints } from '@/app/services/forms/ui-hints/endpoint.hints'
 import { convertZodToJsonSchema } from '@/app/services/forms/json-schema-converter'
 import { introspectZodSchema } from '@/app/services/forms/zod-introspector'
+import { resolveHintForPath } from '@/app/services/forms/path-helper'
+import { listenerHints } from '@/app/services/forms/ui-hints/listener.hints'
+import { sinkHints } from '@/app/services/forms/ui-hints/sink.hints'
 import DynamicZodForm from '@/components/app/dynamic-zod-form/DynamicZodForm.vue'
 
 describe('Dynamic Zod Form (TanStack Form + Zod + BTJ UI)', () => {
@@ -823,5 +826,99 @@ describe('Dynamic Zod Form (TanStack Form + Zod + BTJ UI)', () => {
 		await wrapper.vm.$nextTick()
 
 		expect(model.value.tls).toEqual({ insecure: true })
+	})
+
+	it('should not apply root #field:name slot to nested fields with leaf name "name"', async () => {
+		const nestedSchema = z.object({
+			name: z.string(),
+			config: z.union([
+				z.object({
+					type: z.enum(['internal_logs']),
+					config: z.object({
+						include: z.array(
+							z.object({
+								name: z.string(),
+								level: z.enum(['info', 'debug'])
+							})
+						)
+					})
+				})
+			])
+		})
+
+		const wrapper = mount(DynamicZodForm, {
+			props: {
+				schema: nestedSchema,
+				initialData: {
+					name: 'Root Listener',
+					config: {
+						type: 'internal_logs',
+						config: {
+							include: [{ name: 'patrolli::core', level: 'debug' }]
+						}
+					}
+				}
+			},
+			slots: {
+				'field:name': (slotProps: any) =>
+					h('div', { 'data-testid': 'root-name-slot' }, String(slotProps.value))
+			},
+			global: {
+				stubs: {
+					UiIcon: true,
+					UiButton: true,
+					AppInputSelect: true,
+					AppInputText: {
+						props: ['modelValue', 'label', 'placeholder'],
+						template:
+							'<input data-testid="nested-text-input" :value="modelValue" :data-label="label" :placeholder="placeholder" />'
+					}
+				}
+			}
+		})
+
+		await wrapper.vm.$nextTick()
+
+		const rootSlots = wrapper.findAll('[data-testid="root-name-slot"]')
+		expect(rootSlots).toHaveLength(1)
+		expect(rootSlots[0].text()).toBe('Root Listener')
+
+		const nestedInputs = wrapper.findAll('[data-testid="nested-text-input"]')
+		expect(nestedInputs).toHaveLength(1)
+		expect((nestedInputs[0].element as HTMLInputElement).value).toBe('patrolli::core')
+	})
+
+	it('should resolve hints strictly by path, array-index normalization, and union aliases without leaf fallback', () => {
+		const internalLogsRoot = { config: { type: 'internal_logs' } }
+		const includeNameHint = resolveHintForPath(
+			'config.config.include.0.name',
+			listenerHints,
+			internalLogsRoot
+		)
+		expect(includeNameHint?.label).toBe('Module Name')
+		expect(includeNameHint?.placeholder).toBe('e.g. patrolli::pipeline')
+
+		const unrelatedRootLeak = resolveHintForPath(
+			'config.config.unknown_array.0.name',
+			listenerHints,
+			internalLogsRoot
+		)
+		expect(unrelatedRootLeak).toBeUndefined()
+
+		const snmpRoot = { config: { type: 'snmp_trap' } }
+		const snmpUsernameHint = resolveHintForPath(
+			'config.config.v3.security_models.0.config.username',
+			listenerHints,
+			snmpRoot
+		)
+		expect(snmpUsernameHint?.label).toBe('Username / Security Name')
+
+		const sinkDiskRoot = { channel: { type: 'disk' }, config: { type: 'file' } }
+		const diskCompressionHint = resolveHintForPath(
+			'channel.compression',
+			sinkHints,
+			sinkDiskRoot
+		)
+		expect(diskCompressionHint?.label).toBe('Compression Type')
 	})
 })
