@@ -154,6 +154,19 @@ pub fn item_listener_annotate(
     // another node monitors is completed here like one of ours, so it runs the
     // item's processors.
     let local_only = conf.is_some_and(|conf| conf.disable_cluster_forwarding) || disable_forwarding;
+    // A row that already names its item (one whose hand-over to the owner
+    // failed, back here to be processed) is in the same position: the item
+    // cache holds only this node's items, the listener cache every listener's.
+    if local_only {
+        let lis_read = conf_cache.listener.read();
+        for annotate in item_annotates.iter_mut() {
+            if let Some(Annotate::ItemId(id)) = annotate
+                && let Some(data) = lis_read.get_item(id)
+            {
+                *annotate = Some(Annotate::ItemData(data.clone()));
+            }
+        }
+    }
     // completing the annotation
     {
         let item_read = conf_cache.item.read();
@@ -1418,6 +1431,63 @@ mod tests {
                     .unwrap();
                 assert_eq!(has.true_count(), rows, "{}", key.as_str());
             }
+        }
+    }
+
+    /// A row bound for another node whose hand-over failed comes back naming
+    /// only its item. Annotated again with forwarding off, it runs the item's
+    /// processors here, and its resource names the item once.
+    #[test]
+    fn a_row_that_could_not_be_forwarded_runs_the_items_processors() {
+        let other_node = Uuid::now_v7();
+        let our_node = Uuid::now_v7();
+        let env = build_env(
+            ListenerItemMatchStrategy::None,
+            Some(other_node),
+            None,
+            false,
+        );
+        *env.cache.item.write() = Default::default();
+        *env.cache.host.write() = Default::default();
+        *env.cache.endpoint.write() = Default::default();
+
+        let pl = logs_payload(vec![
+            record(vec![kv("k", sval("a"))]),
+            record(vec![kv("k", sval("b"))]),
+        ]);
+        let res = item_listener_annotate(
+            &pl,
+            Some(&env.listener_conf),
+            &env.cache,
+            Some(our_node),
+            false,
+        )
+        .unwrap();
+        assert_eq!(res.for_forward.len(), 1);
+        let handed_back = &res.for_forward[0].payload;
+
+        let res = item_listener_annotate(
+            handed_back,
+            Some(&env.listener_conf),
+            &env.cache,
+            Some(our_node),
+            true,
+        )
+        .unwrap();
+        assert!(res.for_forward.is_empty());
+        assert_eq!(process_len(&res, Some(env.processor_id)), 2);
+        assert_eq!(process_len(&res, None), 0);
+        let ra = res.for_process[0]
+            .payload
+            .data
+            .get(ArrowPayloadType::ResourceAttrs)
+            .unwrap();
+        for key in [
+            payload::ResourceAttrKey::ItemId,
+            payload::ResourceAttrKey::ItemName,
+            payload::ResourceAttrKey::HostId,
+        ] {
+            assert_eq!(count_attr_key_rows(ra, key.as_str()), 1, "{}", key.as_str());
         }
     }
 

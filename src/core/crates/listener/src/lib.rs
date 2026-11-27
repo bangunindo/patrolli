@@ -606,6 +606,26 @@ async fn send_to_processor(
     }
 }
 
+/// Rows bound for another node that could not be handed over: they run their
+/// item's processors here instead, as with `disable_cluster_forwarding`. They
+/// name only their item, so they are annotated again, with forwarding off.
+async fn process_unforwarded<'a>(args: &SendBatch<'a>, pl: payload::Payload) {
+    let for_process =
+        match item_listener_annotate(&pl, Some(args.conf), args.conf_cache, args.node_id, true) {
+            Ok(res) => res.for_process,
+            Err(e) => {
+                warn!(error = %e, "error while annotating item listen message");
+                args.internal_metrics
+                    .total_records_annotate_failed
+                    .fetch_add(pl.num_items() as u64, Ordering::Relaxed);
+                vec![payload::ProcessorPayload::new(None, pl)]
+            }
+        };
+    for pl in for_process {
+        send_to_processor(args.internal_metrics, args.conf_cache, args.channel, pl).await;
+    }
+}
+
 async fn send_batch<'a>(args: SendBatch<'a>) {
     let n = Instant::now();
     let res = item_listener_annotate(
@@ -651,13 +671,7 @@ async fn send_batch<'a>(args: SendBatch<'a>) {
                             args.internal_metrics
                                 .total_records_forward_failed
                                 .fetch_add(pl_len, Ordering::Relaxed);
-                            send_to_processor(
-                                args.internal_metrics,
-                                args.conf_cache,
-                                args.channel,
-                                payload::ProcessorPayload::new(None, contents.payload),
-                            )
-                            .await;
+                            process_unforwarded(&args, contents.payload).await;
                         }
                         // The payload went down with the error.
                         Err(e) => {
@@ -676,13 +690,7 @@ async fn send_batch<'a>(args: SendBatch<'a>) {
                     args.internal_metrics
                         .total_records_forward_failed
                         .fetch_add(pl.len() as u64, Ordering::Relaxed);
-                    send_to_processor(
-                        args.internal_metrics,
-                        args.conf_cache,
-                        args.channel,
-                        payload::ProcessorPayload::new(None, pl.payload),
-                    )
-                    .await;
+                    process_unforwarded(&args, pl.payload).await;
                 }
             };
             for pl in res.for_process {

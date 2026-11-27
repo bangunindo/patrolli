@@ -155,6 +155,13 @@ impl Listener {
         Some(self.listeners.get(listener_id)?.items.values())
     }
 
+    /// A listener item by its id, whichever node monitors its host.
+    pub fn get_item(&self, item_id: &Uuid) -> Option<&ItemData> {
+        let listener = self.listeners.get(self.item_to_listener.get(item_id)?)?;
+        let match_strategy = listener.items_index.get(item_id)?;
+        listener.items.get(&(*match_strategy, *item_id))
+    }
+
     pub fn get_endpoint_ip(&self, endpoint_id: &Uuid) -> Option<&IpAddr> {
         self.endpoint_ip.get(endpoint_id)
     }
