@@ -31,6 +31,12 @@ export const listenerHints: Record<string, UiHint> = {
 			dummy: {
 				messages_per_batch: 100,
 				speed: 5
+			},
+			internal_logs: {
+				buffer_size: 10000,
+				level: 'info',
+				include: [],
+				exclude: []
 			}
 		}
 	},
@@ -574,5 +580,33 @@ export const listenerHints: Record<string, UiHint> = {
 		group: 'TLS Encryption',
 		defaultValue: null,
 		emptyPolicy: 'null'
+	},
+
+	// Internal Logs
+	'config.internal_logs.buffer_size': {
+		label: 'Buffer Size',
+		defaultValue: 10000,
+		placeholder: '10000'
+	},
+	'config.internal_logs.level': {
+		label: 'Log Level',
+		defaultValue: 'info'
+	},
+	'config.internal_logs.include': {
+		label: 'Include Modules',
+		widget: 'array-object'
+	},
+	'config.internal_logs.include.name': {
+		label: 'Module Name',
+		placeholder: 'e.g. patrolli::pipeline'
+	},
+	'config.internal_logs.include.level': {
+		label: 'Log Level',
+		defaultValue: 'info'
+	},
+	'config.internal_logs.exclude': {
+		label: 'Exclude Modules',
+		widget: 'array-string',
+		placeholder: 'e.g. patrolli::noisy_module'
 	}
 }

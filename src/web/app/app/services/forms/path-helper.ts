@@ -117,33 +117,30 @@ export function getActiveDiscriminatorType(rootData: any): string | undefined {
 	return rootData?.config?.module || rootData?.config?.type || rootData?.module || rootData?.type
 }
 
-const hintLeafIndexCache = new WeakMap<
-	Record<string, UiHint>,
-	Map<string, Array<[string, UiHint]>>
->()
-
-function getHintLeafIndex(hints: Record<string, UiHint>): Map<string, Array<[string, UiHint]>> {
-	const rawHints = toRaw(hints)
-	let index = hintLeafIndexCache.get(rawHints)
-	if (!index) {
-		index = new Map()
-		for (const [k, h] of Object.entries(rawHints)) {
-			const lastDot = k.lastIndexOf('.')
-			const leaf = lastDot >= 0 ? k.slice(lastDot + 1) : k
-			let bucket = index.get(leaf)
-			if (!bucket) {
-				bucket = []
-				index.set(leaf, bucket)
-			}
-			bucket.push([k, h])
-		}
-		hintLeafIndexCache.set(rawHints, index)
+function resolveBranchHint(
+	rawHints: Record<string, UiHint>,
+	section: string,
+	branchType: string,
+	parts: string[]
+): UiHint | undefined {
+	if (parts.length === 2 && parts[1] === 'config') {
+		return rawHints[`${section}.${branchType}.config`]
 	}
-	return index
+	if (parts.length > 1 && parts[1] !== branchType) {
+		const rest = parts[1] === 'config' ? parts.slice(2) : parts.slice(1)
+		if (rest.length > 0) {
+			const branchAlias = [section, branchType, ...rest].join('.')
+			if (rawHints[branchAlias]) return rawHints[branchAlias]
+			const branchWithConfig = [section, branchType, 'config', ...rest].join('.')
+			if (rawHints[branchWithConfig]) return rawHints[branchWithConfig]
+		}
+	}
+	return undefined
 }
 
 /**
- * Resolves UiHint for a given path key, checking exact match, alias, suffix match, and branch alias.
+ * Resolves UiHint for a given path key using branch-specific union aliases, exact match,
+ * and numeric array-index normalization without leaf-name fallback.
  */
 export function resolveHintForPath(
 	pathKey: string,
@@ -152,41 +149,36 @@ export function resolveHintForPath(
 ): UiHint | undefined {
 	if (!pathKey) return undefined
 	const rawHints = toRaw(hints)
-	if (rawHints[pathKey]) return rawHints[pathKey]
-
 	const cleanKey = pathKey.replace(/^\.+|\.+$/g, '')
-	if (rawHints[cleanKey]) return rawHints[cleanKey]
+	if (!cleanKey) return undefined
 
-	const parts = cleanKey.split('.')
-	const leaf = parts[parts.length - 1]
+	const rawParts = cleanKey.split('.')
+	const normalizedParts = rawParts.filter((seg) => !/^\d+$/.test(seg))
+	const partVariants =
+		normalizedParts.length !== rawParts.length ? [rawParts, normalizedParts] : [rawParts]
 
-	if (parts[0] === 'config') {
-		const activeType = getActiveDiscriminatorType(rootData)
-		if (activeType && parts.length > 2) {
-			const branchAlias = ['config', activeType, ...parts.slice(2)].join('.')
-			if (rawHints[branchAlias]) return rawHints[branchAlias]
-			const branchWithConfig = ['config', activeType, 'config', ...parts.slice(2)].join('.')
-			if (rawHints[branchWithConfig]) return rawHints[branchWithConfig]
+	const activeType = getActiveDiscriminatorType(rootData)
+
+	for (const parts of partVariants) {
+		if (parts[0] === 'config' && activeType) {
+			const branchHint = resolveBranchHint(rawHints, 'config', activeType, parts)
+			if (branchHint) return branchHint
+		} else if (parts.length > 1) {
+			const rootSection = rootData?.[parts[0]]
+			const sectionType = rootSection?.type || rootSection?.module
+			if (sectionType) {
+				const branchHint = resolveBranchHint(rawHints, parts[0], sectionType, parts)
+				if (branchHint) return branchHint
+			}
 		}
-		if (parts[1] !== 'config') {
+
+		const candidateKey = parts.join('.')
+		if (rawHints[candidateKey]) return rawHints[candidateKey]
+
+		if (parts[0] === 'config' && parts.length > 1 && parts[1] !== 'config') {
 			const configAlias = ['config', 'config', ...parts.slice(1)].join('.')
 			if (rawHints[configAlias]) return rawHints[configAlias]
 		}
-	}
-
-	const candidates = getHintLeafIndex(rawHints).get(leaf)
-	if (!candidates) return undefined
-
-	const activeType = rootData?.config?.type || rootData?.type
-	for (const [k, h] of candidates) {
-		const kParts = k.split('.')
-		if (kParts[0] === 'config' && kParts.length > 2 && activeType) {
-			const branch = kParts[1]
-			if (branch !== 'config' && branch !== activeType) {
-				continue
-			}
-		}
-		return h
 	}
 
 	return undefined

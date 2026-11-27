@@ -8,6 +8,7 @@ import {
 	formatFieldLabel,
 	getValueByPath,
 	pathToString,
+	resolveHintForPath,
 	setValueByPath,
 	stringToPath
 } from '@/app/services/forms/path-helper'
@@ -73,6 +74,66 @@ describe('path-helper', () => {
 		it('should convert camelCase to Title Case', () => {
 			expect(formatFieldLabel('workerCount')).toBe('Worker Count')
 			expect(formatFieldLabel('disableClusterForwarding')).toBe('Disable Cluster Forwarding')
+		})
+	})
+
+	describe('resolveHintForPath', () => {
+		it('should prioritize branch-specific hints over generic config.config hints for direct and array paths', () => {
+			const hints = {
+				'config.config': { hideGroup: true },
+				'config.attribute_filter.config': { widget: 'attribute-filter', hideGroup: true },
+				'config.config.batch_size': { label: 'Generic Batch Size' },
+				'config.open_telemetry.batch_size': { label: 'OTel Batch Size' },
+				'config.config.items.name': { label: 'Generic Item Name' },
+				'config.internal_logs.items.name': { label: 'Module Name' }
+			}
+
+			expect(
+				resolveHintForPath('config.config', hints, { config: { type: 'attribute_filter' } })
+					?.widget
+			).toBe('attribute-filter')
+
+			expect(
+				resolveHintForPath('config.config.batch_size', hints, {
+					config: { type: 'open_telemetry' }
+				})?.label
+			).toBe('OTel Batch Size')
+
+			expect(
+				resolveHintForPath('config.config.batch_size', hints, {
+					config: { type: 'other_type' }
+				})?.label
+			).toBe('Generic Batch Size')
+
+			expect(
+				resolveHintForPath('config.config.items.0.name', hints, {
+					config: { type: 'internal_logs' }
+				})?.label
+			).toBe('Module Name')
+
+			expect(
+				resolveHintForPath('config.config.items.0.name', hints, {
+					config: { type: 'other_type' }
+				})?.label
+			).toBe('Generic Item Name')
+		})
+
+		it('should resolve 2-segment .config hints symmetrically for non-config root union sections', () => {
+			const hints = {
+				'channel.config': { label: 'Generic Channel Config' },
+				'channel.disk.config': { label: 'Disk Channel Config', hideGroup: true }
+			}
+
+			expect(
+				resolveHintForPath('channel.config', hints, { channel: { type: 'disk' } })
+			).toEqual({
+				label: 'Disk Channel Config',
+				hideGroup: true
+			})
+
+			expect(
+				resolveHintForPath('channel.config', hints, { channel: { type: 'memory' } })?.label
+			).toBe('Generic Channel Config')
 		})
 	})
 })

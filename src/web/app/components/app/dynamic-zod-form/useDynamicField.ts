@@ -113,7 +113,7 @@ export function useDynamicField(
 			}
 		}
 
-		return slots[`field:${pathKey}`] || slots[`field:${leafName.value}`] || null
+		return slots[`field:${pathKey}`] || null
 	})
 
 	const slotProps = computed(() => ({

@@ -281,4 +281,79 @@ describe('Listener DynamicZodForm Integration', () => {
 			speed: 10
 		})
 	})
+
+	it('should keep root name isolated from internal_logs include[].name and avoid duplicating AppInputCluster', async () => {
+		const pinia = createPinia()
+		setActivePinia(pinia)
+		const store = useListenerStore()
+		store.listenerFormMode = FormMode.UPDATE
+		store.currentListener = {
+			listener_id: 'listener-internal-logs-1',
+			name: 'Internal Logs Listener',
+			adm_status: 1,
+			worker_count: 1,
+			disable_cluster_forwarding: true,
+			labels: {},
+			cluster_name: 'Test-Cluster',
+			cluster_url: 'http://test-cluster:8080',
+			config: {
+				type: 'internal_logs',
+				config: {
+					buffer_size: 10000,
+					level: 'info',
+					include: [{ name: 'patrolli::pipeline', level: 'debug' }],
+					exclude: ['patrolli::noisy']
+				}
+			}
+		} as any
+
+		let submittedPayload: any = null
+		store.updateListener = vi.fn().mockImplementation((id, payload, clusters) => {
+			submittedPayload = { id, payload, clusters }
+			return Promise.resolve({ success: true })
+		})
+
+		const wrapper = mount(ListenerForm, {
+			global: {
+				plugins: [pinia],
+				stubs: {
+					...commonStubs,
+					AppInputCluster: {
+						template: '<div data-testid="cluster-input" />'
+					},
+					AppInputText: {
+						props: ['modelValue', 'label', 'placeholder'],
+						emits: ['update:modelValue'],
+						template:
+							'<input data-testid="text-input" :data-label="label" :placeholder="placeholder" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />'
+					}
+				}
+			}
+		})
+
+		await flushPromises()
+
+		expect(wrapper.findAll('[data-testid="cluster-input"]')).toHaveLength(1)
+
+		const moduleNameInput = wrapper.find('[data-testid="text-input"][data-label="Module Name"]')
+		expect(moduleNameInput.exists()).toBe(true)
+		expect((moduleNameInput.element as HTMLInputElement).value).toBe('patrolli::pipeline')
+		expect(moduleNameInput.attributes('placeholder')).toBe('e.g. patrolli::pipeline')
+
+		await moduleNameInput.setValue('patrolli::collector')
+		await flushPromises()
+
+		const vm = wrapper.vm as any
+		expect(vm.form.name).toBe('Internal Logs Listener')
+		expect(vm.form.config.config.include[0].name).toBe('patrolli::collector')
+
+		await vm.triggerSubmit()
+		await flushPromises()
+
+		expect(store.updateListener).toHaveBeenCalled()
+		expect(submittedPayload.payload.name).toBe('Internal Logs Listener')
+		expect(submittedPayload.payload.config.config.include).toEqual([
+			{ name: 'patrolli::collector', level: 'debug' }
+		])
+	})
 })
