@@ -342,8 +342,12 @@ impl NodeLock {
         Ok(updated)
     }
 
-    /// `judged_from` is the heartbeat this leader committed on its previous tick
-    /// (this tick's, when it has none). Every peer is judged against it instead
+    /// `judged_from` is the heartbeat this leader committed on its previous tick.
+    /// A process that just started has none, and judges against the heartbeat it
+    /// found on its row, written by whoever held this node id before it: its own
+    /// first heartbeat is younger than those a stall holds up by however long
+    /// the stall already lasts. Only with no row either is it this tick's.
+    /// Every peer is judged against it instead
     /// of the clock: a database stall holds every node's heartbeat up alike, and
     /// the heartbeats it releases still carry the time they were started at.
     /// Against the clock they would all look stale at once. Against a stamp as
@@ -666,7 +670,8 @@ impl NodeLock {
                         true), \
                         COALESCE((SELECT last_heartbeat FROM prev) = $5::timestamptz, false), \
                         beat.last_heartbeat, \
-                        (SELECT op_status FROM prev) \
+                        (SELECT op_status FROM prev), \
+                        (SELECT last_heartbeat FROM prev) \
                     FROM beat",
                     &[
                         &self.cluster.node_id,
@@ -691,6 +696,10 @@ impl NodeLock {
             let prev_status: Option<i16> = row
                 .try_get(3)
                 .context("failed to read the previous status")?;
+            // the heartbeat this one replaces, whoever wrote it
+            let found: Option<DateTime<Utc>> = row
+                .try_get(4)
+                .context("failed to read the replaced heartbeat")?;
             if leader_lock && !self.node_lock.is(NodeStateType::Leader) {
                 tx.execute("UPDATE cluster_nodes SET is_leader = false", &[])
                     .await
@@ -704,7 +713,7 @@ impl NodeLock {
             }
             tx.commit().await.context("failed to commit transaction")?;
             // what the leader tasks below judge the other nodes against
-            let judged_from = self.last_heartbeat.unwrap_or(heartbeat);
+            let judged_from = self.last_heartbeat.or(found).unwrap_or(heartbeat);
             // only once committed: after a commit that failed, the row may or may
             // not carry it, and not matching is the answer that reloads
             self.last_heartbeat = Some(heartbeat);

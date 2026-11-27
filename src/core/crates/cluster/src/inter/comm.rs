@@ -178,6 +178,8 @@ pub struct InterComm {
     internal_metrics: Arc<InternalMetrics>,
     clients: RwLock<FxHashMap<Uuid, InterCommClient>>,
     forward_receiver: Receiver<payload::ForwarderPayload>,
+    /// Where the rows a peer could not be handed go, see [`Self::keep`].
+    processor_sender: SenderChannel<&'static str, payload::ProcessorPayload>,
 }
 
 pub struct CaptureStream {
@@ -226,12 +228,14 @@ impl InterComm {
         node_id: Uuid,
         node_name: String,
         conf_cache: cache::Cache,
+        processor_sender: SenderChannel<&'static str, payload::ProcessorPayload>,
     ) -> Result<Arc<Self>> {
         let bearer = Bearer::new(conf.grpc.bearer.as_deref())?;
         let comm = Arc::new(Self {
             internal_metrics: Arc::new(InternalMetrics::default()),
             clients: RwLock::new(FxHashMap::default()),
             forward_receiver,
+            processor_sender,
             conf,
             node_id,
             node_name,
@@ -240,6 +244,29 @@ impl InterComm {
         });
         tokio::spawn(comm.clone().receiver_bridge());
         Ok(comm)
+    }
+
+    /// Rows their owner could not be handed (no client for it, no live stream
+    /// to it, its client gone) stay on this node, where each row's item
+    /// decides what becomes of them (`unforwarded`): they name their item, so
+    /// they are annotated again with forwarding off, as a listener does with
+    /// `disable_cluster_forwarding`. The caller has already counted them as
+    /// dropped or errored, which is about the hand-over, not about this.
+    async fn keep(&self, pl: payload::Payload) {
+        let res =
+            match item_listener_annotate(&pl, None, &self.conf_cache, Some(self.node_id), true) {
+                Ok(res) => res,
+                Err(e) => {
+                    warn!(error = %format!("{e:#}"), "failed to annotate an unforwarded payload");
+                    return;
+                }
+            };
+        for pl in res.for_process {
+            if let Err(e) = self.processor_sender.broadcast(pl).await {
+                charge_dropped(&e, &self.conf_cache);
+                warn!(error = %e, "failed to process an unforwarded payload");
+            }
+        }
     }
 
     async fn receiver_bridge(self: Arc<Self>) {
@@ -260,7 +287,7 @@ impl InterComm {
                 let client_guard = self.clients.read().await;
                 match client_guard.get(&payload.node_id) {
                     None => {
-                        debug!(peer_node_id = %payload.node_id, "no client for node, dropping payload");
+                        debug!(peer_node_id = %payload.node_id, "no client for node, keeping payload");
                         None
                     }
                     Some(client) => Some((
@@ -277,31 +304,37 @@ impl InterComm {
                 self.internal_metrics
                     .total_records_errored
                     .fetch_add(pl_len, Ordering::Relaxed);
+                self.keep(payload.payload).await;
                 self.internal_metrics
                     .total_time_spent
                     .fetch_add(n_iter.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 continue;
             };
             let n = Instant::now();
-            tokio::select! {
+            // a clone shares the Arrow buffers: it is what stays here when the
+            // send below does not go through
+            let kept = payload.payload.clone();
+            let handed_over = tokio::select! {
                 res = sender.send_async(payload.payload) => {
                     match res {
                         Ok(()) => {
                             self.internal_metrics
                                 .total_records_sent
                                 .fetch_add(pl_len, Ordering::Relaxed);
+                            true
                         }
                         Err(e) => {
                             self.internal_metrics
                                 .total_records_errored
                                 .fetch_add(pl_len, Ordering::Relaxed);
-                            warn!(error = %e, "failed to forward payload")
+                            warn!(error = %e, "failed to forward payload");
+                            false
                         }
                     }
                 }
                 // without a live stream nobody drains the rendezvous channel,
                 // and blocking here would stall forwarding to every other
-                // node: drop until the peer reconnects
+                // node: keep them here until the peer reconnects
                 _ = connected.wait_for(|live| *live == 0) => {
                     self.internal_metrics
                         .total_records_dropped
@@ -311,9 +344,13 @@ impl InterComm {
                         .fetch_add(pl_len, Ordering::Relaxed);
                     debug!(
                         peer_node_id = %payload.node_id,
-                        "dropping payload, no live stream to peer"
+                        "keeping payload, no live stream to peer"
                     );
+                    false
                 }
+            };
+            if !handed_over {
+                self.keep(kept).await;
             }
             self.internal_metrics
                 .send_wait_time
@@ -1052,6 +1089,199 @@ mod tests {
     use tonic::Request;
     use tonic::service::Interceptor;
     use uuid::Uuid;
+
+    /// The bridge with rows it cannot hand to their owner: each row's item
+    /// decides what becomes of them on this node.
+    mod unforwarded {
+        use super::super::{InterComm, InterCommManager};
+        use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+            LogRecord, LogsData, ResourceLogs, ScopeLogs,
+        };
+        use patrolli::chan::PROCESSOR_CHANNEL_NAME;
+        use patrolli::common::HasLength;
+        use patrolli::common::internal_metrics::INTERNAL_METRICS;
+        use patrolli::config::item::ListenerItemUnforwarded;
+        use patrolli::{cache, config, payload};
+        use patrolli_listener::item_listener_annotate;
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+        use uuid::Uuid;
+
+        const ROWS: usize = 2;
+
+        /// Whether the bridge knows the owner at all.
+        #[derive(Clone, Copy, Debug)]
+        enum Owner {
+            /// No client for it.
+            Unknown,
+            /// A client whose stream never came up.
+            Unreachable,
+        }
+
+        /// Runs `ROWS` rows of an item of another node's host through the
+        /// bridge, and returns what reached the processor topic (the processor
+        /// each payload is for, and its rows) with the id of the item's
+        /// processor.
+        async fn bridge(
+            owner: Owner,
+            unforwarded: ListenerItemUnforwarded,
+        ) -> (Vec<(Option<Uuid>, usize)>, Uuid) {
+            let node_id = Uuid::now_v7();
+            let owner_id = Uuid::now_v7();
+            let listener_id = Uuid::now_v7();
+            let processor_id = Uuid::now_v7();
+            let listener = config::listener::Listener::new(
+                listener_id,
+                "listener".into(),
+                1,
+                config::Batch::default(),
+                config::listener::Config::Dummy(config::listener::Dummy {
+                    speed: 1,
+                    messages_per_batch: 1,
+                }),
+                false,
+            );
+            let item = config::item::Item::new(
+                Uuid::now_v7(),
+                "listener-item".into(),
+                None,
+                Uuid::now_v7(),
+                config::item::Schedule::Never,
+                Some(listener_id),
+                Duration::from_secs(1),
+                vec![processor_id],
+                config::item::Config::Listener(config::item::Listener {
+                    match_strategy: config::item::ListenerItemMatchStrategy::None,
+                    expect_every: None,
+                    unforwarded,
+                }),
+            );
+            // as on a node that does not monitor the host: the listener cache
+            // alone knows the item
+            let conf_cache = cache::Cache::new();
+            conf_cache
+                .listener
+                .write()
+                .insert_item(item, Some(owner_id));
+
+            // what the listener queues for the owner
+            let received = payload::Payload::new(
+                encode_logs_otap_batch(&LogsData {
+                    resource_logs: vec![ResourceLogs {
+                        resource: None,
+                        scope_logs: vec![ScopeLogs {
+                            scope: None,
+                            log_records: (0..ROWS)
+                                .map(|i| LogRecord {
+                                    time_unix_nano: i as u64 + 1,
+                                    ..Default::default()
+                                })
+                                .collect(),
+                            schema_url: String::new(),
+                        }],
+                        schema_url: String::new(),
+                    }],
+                })
+                .unwrap(),
+            );
+            let mut for_forward = item_listener_annotate(
+                &received,
+                Some(&listener),
+                &conf_cache,
+                Some(node_id),
+                false,
+            )
+            .unwrap()
+            .for_forward;
+            assert_eq!(for_forward.len(), 1);
+            let queued = for_forward.pop().unwrap();
+            assert_eq!(queued.node_id, owner_id);
+
+            let (admin, processor_sender) = patrolli::chan::new(
+                Duration::from_secs(60),
+                INTERNAL_METRICS.processor_channel.clone(),
+            );
+            let processor_rx = admin
+                .get_receiver(
+                    &PROCESSOR_CHANNEL_NAME,
+                    config::Channel::Memory(config::MemoryChannel {
+                        non_blocking: false,
+                        channel_buffer_size: 8,
+                    }),
+                )
+                .await
+                .unwrap();
+            let (forward_tx, forward_rx) = flume::unbounded();
+            let comm = InterComm::new(
+                forward_rx,
+                config::cluster::InterNode::default(),
+                node_id,
+                "local".to_string(),
+                conf_cache,
+                processor_sender,
+            )
+            .unwrap();
+            if let Owner::Unreachable = owner {
+                // an address nothing listens on
+                let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = closed.local_addr().unwrap().to_string();
+                drop(closed);
+                comm.add(owner_id, addr).await.unwrap();
+            }
+
+            forward_tx.send(queued).unwrap();
+            // the bridge books its time on a payload once it is through with it
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while comm
+                    .internal_metrics
+                    .total_time_spent
+                    .load(Ordering::Relaxed)
+                    == 0
+                {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("the bridge never finished the payload");
+            assert_eq!(
+                comm.internal_metrics
+                    .total_records_sent
+                    .load(Ordering::Relaxed),
+                0,
+                "{owner:?}: nothing reached the owner"
+            );
+            let sent = processor_rx
+                .try_iter()
+                .map(|pl| (pl.processor_id, pl.len()))
+                .collect();
+            (sent, processor_id)
+        }
+
+        #[tokio::test]
+        async fn process_runs_the_items_processors() {
+            for owner in [Owner::Unknown, Owner::Unreachable] {
+                let (sent, processor_id) = bridge(owner, ListenerItemUnforwarded::Process).await;
+                assert_eq!(sent, vec![(Some(processor_id), ROWS)], "{owner:?}");
+            }
+        }
+
+        #[tokio::test]
+        async fn passthrough_skips_the_processors() {
+            for owner in [Owner::Unknown, Owner::Unreachable] {
+                let (sent, _) = bridge(owner, ListenerItemUnforwarded::Passthrough).await;
+                assert_eq!(sent, vec![(None, ROWS)], "{owner:?}");
+            }
+        }
+
+        #[tokio::test]
+        async fn drop_sends_nothing() {
+            for owner in [Owner::Unknown, Owner::Unreachable] {
+                let (sent, _) = bridge(owner, ListenerItemUnforwarded::Drop).await;
+                assert_eq!(sent, vec![], "{owner:?}");
+            }
+        }
+    }
 
     #[test]
     fn bearer_disabled_allows_all() {

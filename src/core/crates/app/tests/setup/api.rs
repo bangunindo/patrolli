@@ -56,6 +56,13 @@ impl Harness {
             Uuid::now_v7(),
             "test-node".to_string(),
             cache::Cache::new(),
+            patrolli::chan::new(
+                Duration::from_secs(3600),
+                patrolli::common::internal_metrics::INTERNAL_METRICS
+                    .processor_channel
+                    .clone(),
+            )
+            .1,
         )
         .expect("failed to create inter comm");
         let state = AppState::new(

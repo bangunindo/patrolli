@@ -137,6 +137,7 @@ mod tests {
         item.config = Config::Listener(Listener {
             match_strategy: ListenerItemMatchStrategy::None,
             expect_every: None,
+            unforwarded: Default::default(),
         });
         item
     }
@@ -200,12 +201,17 @@ mod tests {
         conf.grpc.bearer = bearer.map(str::to_owned);
         let node_id = Uuid::now_v7();
         let cache = cache::Cache::new();
+        let (_admin, processor_sender) = patrolli::chan::new(
+            Duration::from_secs(60),
+            INTERNAL_METRICS.processor_channel.clone(),
+        );
         let comm = InterComm::new(
             forward_receiver,
             conf,
             node_id,
             "local".to_string(),
             cache.clone(),
+            processor_sender,
         )
         .unwrap();
         (comm, node_id, cache)

@@ -63,6 +63,7 @@ pub(super) fn item_for(listener_id: Uuid) -> cache::Cache {
         config::item::Config::Listener(config::item::Listener {
             match_strategy: config::item::ListenerItemMatchStrategy::None,
             expect_every: None,
+            unforwarded: Default::default(),
         }),
     );
     cache.item.write().insert(item.clone());

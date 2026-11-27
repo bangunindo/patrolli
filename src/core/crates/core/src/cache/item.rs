@@ -1936,6 +1936,7 @@ mod tests {
         item.config = Config::Listener(item::Listener {
             match_strategy: item::ListenerItemMatchStrategy::None,
             expect_every: None,
+            unforwarded: Default::default(),
         });
         let id = item.id;
         cache.insert(item);
@@ -2675,6 +2676,7 @@ mod tests {
         item.config = Config::Listener(item::Listener {
             match_strategy: item::ListenerItemMatchStrategy::None,
             expect_every,
+            unforwarded: Default::default(),
         });
         item
     }

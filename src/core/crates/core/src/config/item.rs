@@ -447,6 +447,28 @@ pub struct Listener {
     /// item is never stale, however long it hears nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expect_every: Option<u64>,
+    #[serde(default)]
+    pub unforwarded: ListenerItemUnforwarded,
+}
+
+/// What a node does with a row of this item when another node monitors the
+/// item's host and the row is not forwarded to that node: the listener has
+/// `disable_cluster_forwarding`, or the row could not be handed over (the
+/// owner is unreachable, or this node's forwarder queue took no more).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Display, ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum ListenerItemUnforwarded {
+    /// It runs the item's processors on the node that received it. That node
+    /// holds neither the host nor its endpoints, so the row carries their ids
+    /// without the names, and the item's ingest statistics do not count it.
+    #[default]
+    Process,
+    /// It skips the processors and goes to the sinks that have no `inputs`,
+    /// naming only its item (`patrolli.item.id`).
+    Passthrough,
+    /// It is dropped, and counted in the listener's dropped records.
+    Drop,
 }
 
 impl Listener {
@@ -598,6 +620,29 @@ mod tests {
             ],
         }));
         assert_eq!(conf.oid_count(), 3);
+    }
+
+    #[test]
+    fn unforwarded_defaults_to_process() {
+        let parse = |v| serde_json::from_value::<Listener>(v).unwrap();
+        assert_eq!(
+            parse(serde_json::json!({})).unforwarded,
+            ListenerItemUnforwarded::Process
+        );
+        for (text, want) in [
+            ("process", ListenerItemUnforwarded::Process),
+            ("passthrough", ListenerItemUnforwarded::Passthrough),
+            ("drop", ListenerItemUnforwarded::Drop),
+        ] {
+            let item = parse(serde_json::json!({ "unforwarded": text }));
+            assert_eq!(item.unforwarded, want);
+            assert_eq!(
+                serde_json::to_value(&item).unwrap()["unforwarded"],
+                serde_json::json!(text)
+            );
+        }
+        serde_json::from_value::<Listener>(serde_json::json!({ "unforwarded": "keep" }))
+            .unwrap_err();
     }
 
     #[test]

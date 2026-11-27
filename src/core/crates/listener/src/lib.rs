@@ -606,6 +606,31 @@ async fn send_to_processor(
     }
 }
 
+/// Rows bound for another node that could not be handed over: each row's item
+/// decides (`unforwarded`), as with `disable_cluster_forwarding`. They name
+/// only their item, so they are annotated again, with forwarding off.
+async fn process_unforwarded<'a>(args: &SendBatch<'a>, pl: payload::Payload) {
+    let for_process =
+        match item_listener_annotate(&pl, Some(args.conf), args.conf_cache, args.node_id, true) {
+            Ok(res) => {
+                args.internal_metrics
+                    .total_records_dropped
+                    .fetch_add(res.dropped, Ordering::Relaxed);
+                res.for_process
+            }
+            Err(e) => {
+                warn!(error = %e, "error while annotating item listen message");
+                args.internal_metrics
+                    .total_records_annotate_failed
+                    .fetch_add(pl.num_items() as u64, Ordering::Relaxed);
+                vec![payload::ProcessorPayload::new(None, pl)]
+            }
+        };
+    for pl in for_process {
+        send_to_processor(args.internal_metrics, args.conf_cache, args.channel, pl).await;
+    }
+}
+
 async fn send_batch<'a>(args: SendBatch<'a>) {
     let n = Instant::now();
     let res = item_listener_annotate(
@@ -634,9 +659,15 @@ async fn send_batch<'a>(args: SendBatch<'a>) {
             .await;
         }
         Ok(res) => {
+            args.internal_metrics
+                .total_records_dropped
+                .fetch_add(res.dropped, Ordering::Relaxed);
             if let Some(forwarder) = &args.forwarder {
                 for pl in res.for_forward {
                     let pl_len = pl.len() as u64;
+                    // a clone shares the Arrow buffers: it is what stays here
+                    // when the error does not hand the payload back
+                    let kept = pl.payload.clone();
                     match forwarder.broadcast(pl).await {
                         Ok(()) => {
                             args.internal_metrics
@@ -651,23 +682,16 @@ async fn send_batch<'a>(args: SendBatch<'a>) {
                             args.internal_metrics
                                 .total_records_forward_failed
                                 .fetch_add(pl_len, Ordering::Relaxed);
-                            send_to_processor(
-                                args.internal_metrics,
-                                args.conf_cache,
-                                args.channel,
-                                payload::ProcessorPayload::new(None, contents.payload),
-                            )
-                            .await;
+                            process_unforwarded(&args, contents.payload).await;
                         }
-                        // The payload went down with the error.
+                        // The payload went down with the error (a disk
+                        // channel that could not write it).
                         Err(e) => {
                             warn!(error = %e, "error while forwarding item listen message");
                             args.internal_metrics
                                 .total_records_forward_failed
                                 .fetch_add(pl_len, Ordering::Relaxed);
-                            args.internal_metrics
-                                .total_records_errored
-                                .fetch_add(pl_len, Ordering::Relaxed);
+                            process_unforwarded(&args, kept).await;
                         }
                     }
                 }
@@ -676,13 +700,7 @@ async fn send_batch<'a>(args: SendBatch<'a>) {
                     args.internal_metrics
                         .total_records_forward_failed
                         .fetch_add(pl.len() as u64, Ordering::Relaxed);
-                    send_to_processor(
-                        args.internal_metrics,
-                        args.conf_cache,
-                        args.channel,
-                        payload::ProcessorPayload::new(None, pl.payload),
-                    )
-                    .await;
+                    process_unforwarded(&args, pl.payload).await;
                 }
             };
             for pl in res.for_process {
@@ -870,6 +888,158 @@ mod tests {
             settle().await;
             assert_eq!(starts(&fake), 2);
             worker.close(Deadline::NONE).await;
+        }
+    }
+
+    /// `send_batch` against a forwarder that hands every payload back: what
+    /// becomes of the rows of another node's host is up to their item.
+    mod unforwarded {
+        use super::super::{InternalMetrics, SendBatch, send_batch};
+        use crate::test_util::processor_topic;
+        use arc_swap::ArcSwap;
+        use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+            LogRecord, LogsData, ResourceLogs, ScopeLogs,
+        };
+        use patrolli::common::HasLength;
+        use patrolli::common::internal_metrics;
+        use patrolli::config::item::ListenerItemUnforwarded;
+        use patrolli::{cache, config, payload};
+        use std::sync::Arc;
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+        use uuid::Uuid;
+
+        const ROWS: u64 = 2;
+
+        struct Outcome {
+            /// What reached the processor topic: the processor it is for, and
+            /// its rows.
+            sent: Vec<(Option<Uuid>, usize)>,
+            metrics: InternalMetrics,
+            processor_id: Uuid,
+        }
+
+        /// One batch received by a node that does not monitor the host of the
+        /// listener's only item, with forwarding on and no node to forward to.
+        async fn receive(unforwarded: ListenerItemUnforwarded) -> Outcome {
+            let listener_id = Uuid::now_v7();
+            let processor_id = Uuid::now_v7();
+            let conf = config::listener::Listener::new(
+                listener_id,
+                "listener".into(),
+                1,
+                config::Batch::default(),
+                config::listener::Config::Dummy(config::listener::Dummy {
+                    speed: 1,
+                    messages_per_batch: 1,
+                }),
+                false,
+            );
+            let item = config::item::Item::new(
+                Uuid::now_v7(),
+                "listener-item".into(),
+                None,
+                Uuid::now_v7(),
+                config::item::Schedule::Never,
+                Some(listener_id),
+                Duration::from_secs(1),
+                vec![processor_id],
+                config::item::Config::Listener(config::item::Listener {
+                    match_strategy: config::item::ListenerItemMatchStrategy::None,
+                    expect_every: None,
+                    unforwarded,
+                }),
+            );
+            // as on a node that does not monitor the host: the listener cache
+            // alone knows the item
+            let conf_cache = cache::Cache::new();
+            conf_cache
+                .listener
+                .write()
+                .insert_item(item, Some(Uuid::now_v7()));
+
+            let batch = payload::Payload::new(
+                encode_logs_otap_batch(&LogsData {
+                    resource_logs: vec![ResourceLogs {
+                        resource: None,
+                        scope_logs: vec![ScopeLogs {
+                            scope: None,
+                            log_records: (0..ROWS)
+                                .map(|i| LogRecord {
+                                    time_unix_nano: i + 1,
+                                    ..Default::default()
+                                })
+                                .collect(),
+                            schema_url: String::new(),
+                        }],
+                        schema_url: String::new(),
+                    }],
+                })
+                .unwrap(),
+            );
+
+            let (_admin, channel, processor_rx) = processor_topic(8).await;
+            // a forwarder nobody consumes: `broadcast` hands the payload back
+            let (_forwarder_admin, forwarder) =
+                patrolli::chan::new::<&'static str, payload::ForwarderPayload>(
+                    Duration::from_secs(3600),
+                    Arc::new(ArcSwap::from_pointee((
+                        std::time::Instant::now(),
+                        internal_metrics::Channel::default(),
+                    ))),
+                );
+            let metrics = InternalMetrics::default();
+            send_batch(SendBatch {
+                batch,
+                conf: &conf,
+                conf_cache: &conf_cache,
+                node_id: Some(Uuid::now_v7()),
+                internal_metrics: &metrics,
+                channel: &channel,
+                forwarder: &Some(forwarder),
+            })
+            .await;
+            Outcome {
+                sent: processor_rx
+                    .try_iter()
+                    .map(|pl| (pl.processor_id, pl.len()))
+                    .collect(),
+                metrics,
+                processor_id,
+            }
+        }
+
+        fn count(counter: &std::sync::atomic::AtomicU64) -> u64 {
+            counter.load(Ordering::Relaxed)
+        }
+
+        #[tokio::test]
+        async fn process_runs_the_items_processors() {
+            let out = receive(ListenerItemUnforwarded::Process).await;
+            assert_eq!(out.sent, vec![(Some(out.processor_id), ROWS as usize)]);
+            assert_eq!(count(&out.metrics.total_records_forward_failed), ROWS);
+            assert_eq!(count(&out.metrics.total_records_sent), ROWS);
+            assert_eq!(count(&out.metrics.total_records_dropped), 0);
+        }
+
+        #[tokio::test]
+        async fn passthrough_skips_the_processors() {
+            let out = receive(ListenerItemUnforwarded::Passthrough).await;
+            assert_eq!(out.sent, vec![(None, ROWS as usize)]);
+            assert_eq!(count(&out.metrics.total_records_forward_failed), ROWS);
+            assert_eq!(count(&out.metrics.total_records_sent), ROWS);
+            assert_eq!(count(&out.metrics.total_records_dropped), 0);
+        }
+
+        #[tokio::test]
+        async fn drop_sends_nothing_and_counts_the_rows() {
+            let out = receive(ListenerItemUnforwarded::Drop).await;
+            assert_eq!(out.sent, vec![]);
+            assert_eq!(count(&out.metrics.total_records_forward_failed), ROWS);
+            assert_eq!(count(&out.metrics.total_records_sent), 0);
+            assert_eq!(count(&out.metrics.total_records_dropped), ROWS);
+            assert_eq!(count(&out.metrics.total_records_errored), 0);
         }
     }
 
