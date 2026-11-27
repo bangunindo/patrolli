@@ -291,6 +291,10 @@ impl NodeLock {
         Ok(())
     }
 
+    /// The transfers repeat the subquery's conditions on the outer `UPDATE`: under
+    /// READ COMMITTED a row somebody changed after the subquery picked it is
+    /// rechecked against the outer conditions only, so without them a host just
+    /// pinned to a node (`sticky_monitored_by`) would be handed to another one.
     async fn apply_move(tx: &Transaction<'_>, mv: Move) -> Result<u64> {
         let updated = match mv {
             Move::Block { from, to } => tx
@@ -315,7 +319,8 @@ impl NodeLock {
                     SELECT host_id \
                     FROM hosts \
                     WHERE monitored_by IS NULL \
-                    LIMIT $2)",
+                    LIMIT $2) \
+                    AND monitored_by IS NULL",
                     &[&to, &count],
                 )
                 .await
@@ -333,7 +338,8 @@ impl NodeLock {
                     FROM hosts \
                     WHERE monitored_by = $2 \
                       AND NOT sticky_monitored_by \
-                    LIMIT $3)",
+                    LIMIT $3) \
+                    AND monitored_by = $2 AND NOT sticky_monitored_by",
                     &[&to, &from, &count],
                 )
                 .await
