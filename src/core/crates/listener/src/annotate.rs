@@ -173,13 +173,27 @@ pub fn item_listener_annotate(
     // A row that already names its item (one whose hand-over to the owner
     // failed, back here to be decided on) is in the same position: the item
     // cache holds only this node's items, the listener cache every listener's.
-    if local_only {
+    // Resolved once per item, not per row: on the owner of a forwarded batch
+    // every item is its own and in the item cache, which completes it below,
+    // so nothing is left to look up.
+    if local_only && !existing_item_resource_map.item_to_parent_id.is_empty() {
         let lis_read = conf_cache.listener.read();
-        for annotate in item_annotates.iter_mut() {
-            if let Some(Annotate::ItemId(id)) = annotate
-                && let Some(data) = lis_read.get_item(id)
-            {
-                *annotate = Some(Annotate::ItemData(data.clone()));
+        let item_read = conf_cache.item.read();
+        let resolved: FxHashMap<Uuid, &cache::listener::ItemData> = existing_item_resource_map
+            .item_to_parent_id
+            .keys()
+            .filter_map(|id| Some((*id, lis_read.get_item(id)?)))
+            .filter(|(id, data)| {
+                !monitored_by_us(data.monitored_by, node_id) || item_read.get(id).is_none()
+            })
+            .collect();
+        if !resolved.is_empty() {
+            for annotate in item_annotates.iter_mut() {
+                if let Some(Annotate::ItemId(id)) = annotate
+                    && let Some(data) = resolved.get(id)
+                {
+                    *annotate = Some(Annotate::ItemData((*data).clone()));
+                }
             }
         }
     }
@@ -201,7 +215,7 @@ pub fn item_listener_annotate(
                         stats: item_read.stats(id),
                         item: item.clone(),
                         resource: payload::Resource {
-                            host_id: host.map(|host| host.id).unwrap_or(Uuid::nil()),
+                            host_id: item.host_id,
                             host_name: host.map(|host| host.name.clone()).unwrap_or_default(),
                             host_timezone: host.and_then(|host| host.timezone.clone()),
                             endpoint_id: ep.map(|ep| ep.id),
