@@ -184,6 +184,69 @@ export function resolveHintForPath(
 	return undefined
 }
 
+function deepEqual(a: unknown, b: unknown, seen: WeakMap<object, WeakSet<object>>): boolean {
+	const rawA = a && typeof a === 'object' ? toRaw(a) : a
+	const rawB = b && typeof b === 'object' ? toRaw(b) : b
+
+	if (Object.is(rawA, rawB)) return true
+	if (rawA === null || rawB === null || typeof rawA !== 'object' || typeof rawB !== 'object') {
+		return false
+	}
+
+	if (rawA instanceof Date || rawB instanceof Date) {
+		return (
+			rawA instanceof Date &&
+			rawB instanceof Date &&
+			Object.is(rawA.getTime(), rawB.getTime())
+		)
+	}
+
+	let seenB = seen.get(rawA)
+	if (seenB?.has(rawB)) return true
+	if (!seenB) {
+		seenB = new WeakSet()
+		seen.set(rawA, seenB)
+	}
+	seenB.add(rawB)
+
+	if (Array.isArray(rawA) || Array.isArray(rawB)) {
+		if (!Array.isArray(rawA) || !Array.isArray(rawB) || rawA.length !== rawB.length) {
+			return false
+		}
+		for (let i = 0; i < rawA.length; i++) {
+			if (!deepEqual(rawA[i], rawB[i], seen)) return false
+		}
+		return true
+	}
+
+	const keysA = Object.keys(rawA)
+	const keysB = Object.keys(rawB)
+	if (keysA.length !== keysB.length) return false
+
+	for (const key of keysA) {
+		if (!Object.prototype.hasOwnProperty.call(rawB, key)) return false
+		if (
+			!deepEqual(
+				(rawA as Record<string, unknown>)[key],
+				(rawB as Record<string, unknown>)[key],
+				seen
+			)
+		) {
+			return false
+		}
+	}
+
+	return true
+}
+
+/**
+ * Recursively compares two values for deep equality, unwrapping Vue reactive proxies
+ * and guarding against circular references.
+ */
+export function isDeepEqual(a: unknown, b: unknown): boolean {
+	return deepEqual(a, b, new WeakMap())
+}
+
 /**
  * Safely clones a value (unwrapping Vue reactive proxies) using structuredClone with JSON fallback.
  */

@@ -3,10 +3,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { describe, expect, it } from 'vitest'
+import { reactive } from 'vue'
 import {
 	deleteValueByPath,
 	formatFieldLabel,
 	getValueByPath,
+	isDeepEqual,
 	pathToString,
 	resolveHintForPath,
 	setValueByPath,
@@ -134,6 +136,53 @@ describe('path-helper', () => {
 			expect(
 				resolveHintForPath('channel.config', hints, { channel: { type: 'memory' } })?.label
 			).toBe('Generic Channel Config')
+		})
+	})
+
+	describe('isDeepEqual', () => {
+		it('should compare primitives, NaN, null, undefined, and Date values accurately', () => {
+			expect(isDeepEqual(1, 1)).toBe(true)
+			expect(isDeepEqual('abc', 'abc')).toBe(true)
+			expect(isDeepEqual(NaN, NaN)).toBe(true)
+			expect(isDeepEqual(null, null)).toBe(true)
+			expect(isDeepEqual(undefined, undefined)).toBe(true)
+			expect(isDeepEqual(null, undefined)).toBe(false)
+			expect(isDeepEqual(1, '1')).toBe(false)
+			expect(isDeepEqual(new Date('2026-01-01'), new Date('2026-01-01'))).toBe(true)
+			expect(isDeepEqual(new Date('2026-01-01'), new Date('2026-01-02'))).toBe(false)
+			expect(isDeepEqual(new Date('2026-01-01'), {})).toBe(false)
+		})
+
+		it('should compare nested objects regardless of key order and unwrap Vue reactive proxies', () => {
+			const a = reactive({ name: 'test', config: { b: 2, a: 1 }, tags: ['x', 'y'] })
+			const b = { tags: ['x', 'y'], config: { a: 1, b: 2 }, name: 'test' }
+
+			expect(isDeepEqual(a, b)).toBe(true)
+			expect(isDeepEqual(a, { ...b, tags: ['y', 'x'] })).toBe(false)
+			expect(isDeepEqual(a, { ...b, extra: undefined })).toBe(false)
+			expect(isDeepEqual([1, 2], { 0: 1, 1: 2 })).toBe(false)
+		})
+
+		it('should handle circular references in objects and arrays without stack overflow', () => {
+			const objA: Record<string, any> = { name: 'node' }
+			objA.self = objA
+			const objB: Record<string, any> = { name: 'node' }
+			objB.self = objB
+			const objC: Record<string, any> = { name: 'other' }
+			objC.self = objC
+
+			expect(isDeepEqual(objA, objB)).toBe(true)
+			expect(isDeepEqual(objA, objC)).toBe(false)
+
+			const arrA: any[] = [1]
+			arrA.push(arrA)
+			const arrB: any[] = [1]
+			arrB.push(arrB)
+			const arrC: any[] = [2]
+			arrC.push(arrC)
+
+			expect(isDeepEqual(arrA, arrB)).toBe(true)
+			expect(isDeepEqual(arrA, arrC)).toBe(false)
 		})
 	})
 })

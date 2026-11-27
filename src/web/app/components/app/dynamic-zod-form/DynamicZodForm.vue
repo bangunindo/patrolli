@@ -10,7 +10,12 @@ import type { z } from 'zod'
 import { useForm } from '@tanstack/vue-form'
 import { introspectZodSchema } from '@/app/services/forms/zod-introspector'
 import { AutoFormAdapter } from '@/app/services/forms/auto-adapter'
-import { isFieldVisible, resolveHintForPath, safeClone } from '@/app/services/forms/path-helper'
+import {
+	isDeepEqual,
+	isFieldVisible,
+	resolveHintForPath,
+	safeClone
+} from '@/app/services/forms/path-helper'
 import UiIcon from '@/components/ui/icon/Icon.vue'
 import DynamicFieldRenderer from './DynamicFieldRenderer.vue'
 import GroupLayout from './renderers/GroupLayout.vue'
@@ -130,11 +135,11 @@ watch(
 	{ deep: true }
 )
 
-// flush: 'sync' ensures isInternalSync guards internal syncModelFromForm updates synchronously
+// Skip resetting when the echoed prop value already matches form.state.values
 watch(
 	() => model.value,
 	(newVal) => {
-		if (isInternalSync) return
+		if (isInternalSync || isDeepEqual(newVal, form.state.values)) return
 		form.reset(cloneData(newVal))
 	},
 	{ deep: true, flush: 'sync' }
