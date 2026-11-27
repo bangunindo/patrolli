@@ -470,12 +470,10 @@ monitor:
 # ──────────────────────────────────────────────────────────────────────────────
 # listeners — passive receivers. Each runs its own worker pool and feeds the
 # processor. `disable_cluster_forwarding: true` keeps what a node receives on
-# that node even when another cluster node monitors the host it belongs to: it
-# runs the item's processors there instead of being forwarded to the owner.
-# Such a row carries the host and endpoint ids without their names (only the
-# owner holds them), and the item's ingest statistics do not count it. A row
-# that could not be forwarded (the owner unreachable, its queue full) is
-# processed the same way.
+# that node even when another cluster node monitors the host it belongs to,
+# instead of forwarding it to the owner. What becomes of such a row, and of one
+# that could not be forwarded (the owner unreachable, its queue full), is up to
+# its listener item: see `unforwarded` under items.
 #
 # These sit next to `type`, on the listener itself, never under `config:`:
 #   worker_count   default available_parallelism(); 0 means the same
@@ -1252,6 +1250,17 @@ items:
       # the silence lasts. Leave it out (the default) and the item is never
       # stale, however long it hears nothing.
       expect_every: 300
+      # What a node does with a row of this item when another cluster node
+      # monitors the item's host and the row is not forwarded there: the
+      # listener has disable_cluster_forwarding, or the hand-over failed.
+      #   process (default) — it runs this item's processors on the node that
+      #     received it. It carries the host and endpoint ids without their
+      #     names (only the owner holds them), and the item's ingest
+      #     statistics do not count it.
+      #   passthrough — it skips the processors and goes to the sinks that
+      #     have no `inputs`, naming only its item (patrolli.item.id).
+      #   drop — it is dropped, and counted in the listener's dropped records.
+      unforwarded: process
 
   # ── Listener item for internal logs: every record of the internal_logs
   #    listener above goes to this item's processors.

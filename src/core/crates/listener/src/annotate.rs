@@ -17,6 +17,7 @@ use otel_arrow_dfe_pdata::otap::transform::upsert_attributes::{
 };
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
+use patrolli::config::item::ListenerItemUnforwarded;
 use patrolli::payload::attr::{
     AttrLocation, StrCol, attribute_filter_mask, collect_parent_ids, get_mask_by_id, get_record,
     get_record_attr, struct_id_column,
@@ -43,6 +44,18 @@ pub struct ListenerAnnotate {
     /// Records this node processes locally (owned, unowned, or unmatched).
     /// keyed by the processor id
     pub for_process: Vec<payload::ProcessorPayload>,
+    /// Rows of another node's host that stayed here and were dropped
+    /// (`ListenerItemUnforwarded::Drop`).
+    pub dropped: u64,
+}
+
+/// What `item` wants for a row of its that stays on a node not monitoring its
+/// host.
+fn unforwarded(item: &config::item::Item) -> ListenerItemUnforwarded {
+    match &item.config {
+        config::item::Config::Listener(conf) => conf.unforwarded,
+        _ => ListenerItemUnforwarded::default(),
+    }
 }
 
 #[derive(Clone)]
@@ -79,6 +92,7 @@ pub fn item_listener_annotate(
     if pl.num_rows() == 0 {
         return Ok(ListenerAnnotate {
             for_forward: vec![],
+            dropped: 0,
             for_process: vec![
                 (payload::ProcessorPayload {
                     processor_id: None,
@@ -141,6 +155,7 @@ pub fn item_listener_annotate(
     if item_annotates.iter().all(Option::is_none) {
         return Ok(ListenerAnnotate {
             for_forward: vec![],
+            dropped: 0,
             for_process: vec![
                 (payload::ProcessorPayload {
                     processor_id: None,
@@ -150,12 +165,13 @@ pub fn item_listener_annotate(
         });
     };
     // With forwarding off (the listener's `disable_cluster_forwarding`, or no
-    // forwarder to hand over to), nothing leaves this node: a row whose host
-    // another node monitors is completed here like one of ours, so it runs the
-    // item's processors.
+    // forwarder to hand over to), nothing leaves this node, and the item's
+    // `unforwarded` says what becomes of a row whose host another node
+    // monitors. `Process`: it is completed here like one of ours, so it runs
+    // the item's processors.
     let local_only = conf.is_some_and(|conf| conf.disable_cluster_forwarding) || disable_forwarding;
     // A row that already names its item (one whose hand-over to the owner
-    // failed, back here to be processed) is in the same position: the item
+    // failed, back here to be decided on) is in the same position: the item
     // cache holds only this node's items, the listener cache every listener's.
     if local_only {
         let lis_read = conf_cache.listener.read();
@@ -201,7 +217,9 @@ pub fn item_listener_annotate(
                     })))
                 }
                 Some(Annotate::ItemData(data))
-                    if local_only || monitored_by_us(data.monitored_by, node_id) =>
+                    if monitored_by_us(data.monitored_by, node_id)
+                        || (local_only
+                            && unforwarded(&data.item) == ListenerItemUnforwarded::Process) =>
                 {
                     // The host, endpoint and item caches hold what this node
                     // monitors, so for another node's host they miss: the row
@@ -276,6 +294,7 @@ pub fn item_listener_annotate(
     // The item rides along for the events its stats cause.
     type Tally = (Arc<cache::item::Stats>, Arc<config::item::Item>, u64);
     let mut ingest: FxHashMap<Uuid, Tally> = FxHashMap::default();
+    let mut dropped = 0u64;
     for (i, annotate) in item_annotates.into_iter().enumerate() {
         match annotate {
             Some(Annotate::Complete(res)) => {
@@ -309,10 +328,19 @@ pub fn item_listener_annotate(
                 let (pid, _) =
                     alloc_parent_id(&mut item_to_parent, &mut next_parent_id, data.item.id);
                 row_parent_id[i] = Some(pid);
-                row_dest[i] = data
-                    .monitored_by
-                    .map(Destination::Forward)
-                    .unwrap_or(Destination::Process(smallvec![]));
+                row_dest[i] = match data.monitored_by {
+                    // stays here, and not to be processed: `Process` was
+                    // completed above
+                    Some(_) if local_only => match unforwarded(&data.item) {
+                        ListenerItemUnforwarded::Drop => {
+                            dropped += 1;
+                            Destination::Drop
+                        }
+                        _ => Destination::Process(smallvec![]),
+                    },
+                    Some(node) => Destination::Forward(node),
+                    None => Destination::Process(smallvec![]),
+                };
                 // Carry only patrolli.item.id, once per resource, and only when it
                 // isn't already present at this resource (the owner node fills in
                 // everything else).
@@ -360,6 +388,7 @@ pub fn item_listener_annotate(
     if !any_annotated {
         return Ok(ListenerAnnotate {
             for_forward: vec![],
+            dropped: 0,
             for_process: vec![
                 (payload::ProcessorPayload {
                     processor_id: None,
@@ -407,6 +436,7 @@ pub fn item_listener_annotate(
     let Some(record) = get_record(pl) else {
         return Ok(ListenerAnnotate {
             for_forward: vec![],
+            dropped: 0,
             for_process: vec![
                 (payload::ProcessorPayload {
                     processor_id: None,
@@ -431,18 +461,18 @@ pub fn item_listener_annotate(
     // processor id, plus a `None` bucket) and one payload per remote owner node.
     let mut pool = IdBitmapPool::new();
     if local_only {
-        // Forwarding is off: every matched row was completed above, so none is
-        // bound for another node.
+        // Forwarding is off: no row is bound for another node.
         return Ok(ListenerAnnotate {
             for_forward: vec![],
-            for_process: split_for_process(&data, &row_dest, true, &mut pool)?,
+            dropped,
+            for_process: split_for_process(&data, &row_dest, &mut pool)?,
         });
     }
     let forward_nodes: FxHashSet<Uuid> = row_dest
         .iter()
         .filter_map(|d| match d {
             Destination::Forward(node) => Some(*node),
-            Destination::Process(_) => None,
+            Destination::Process(_) | Destination::Drop => None,
         })
         .collect();
     let n = pl.num_rows();
@@ -460,23 +490,22 @@ pub fn item_listener_annotate(
             payload: payload::Payload::new(sub),
         });
     }
-    let for_process = split_for_process(&data, &row_dest, false, &mut pool)?;
+    let for_process = split_for_process(&data, &row_dest, &mut pool)?;
     Ok(ListenerAnnotate {
         for_forward,
         for_process,
+        dropped,
     })
 }
 
 /// Split the annotated `data` into one payload per processor id. Each `Process` row
 /// is emitted under every processor id it carries, or under `None` when it carries
-/// none. `Forward` rows are dropped here, because they are shipped out via
-/// `for_forward`, unless `include_forward` keeps them under `None`. With
-/// forwarding disabled the annotation leaves no `Forward` row, so that is a
-/// safety net only: a `None` payload reaches the input-less sinks, no processor.
+/// none (a `None` payload reaches the input-less sinks, no processor).
+/// `Forward` rows are left out, because they are shipped out via `for_forward`,
+/// and so are `Drop` rows.
 fn split_for_process(
     data: &OtapArrowRecords,
     row_dest: &[Destination],
-    include_forward: bool,
     pool: &mut IdBitmapPool,
 ) -> Result<Vec<payload::ProcessorPayload>> {
     let n = row_dest.len();
@@ -491,10 +520,7 @@ fn split_for_process(
                     masks.entry(Some(*p)).or_insert_with(|| vec![false; n])[i] = true;
                 }
             }
-            Destination::Forward(_) if include_forward => {
-                masks.entry(None).or_insert_with(|| vec![false; n])[i] = true;
-            }
-            Destination::Forward(_) => {}
+            Destination::Forward(_) | Destination::Drop => {}
         }
     }
     let mut out = Vec::with_capacity(masks.len());
@@ -514,6 +540,9 @@ fn split_for_process(
 enum Destination {
     Process(SmallVec<[Uuid; 4]>),
     Forward(Uuid),
+    /// A row of another node's host that stays here, of an item that wants
+    /// such rows dropped.
+    Drop,
 }
 
 /// Per-key (parent_id, value) rows to upsert into the output `ResourceAttrs`.
@@ -796,9 +825,9 @@ fn seed_existing_item_ids(
 #[cfg(test)]
 mod tests {
     use super::{
-        Annotate, Destination, alloc_parent_id, attr_has_val, item_id_resource_build_map,
-        item_listener_annotate, match_by_ip, monitored_by_us, seed_existing_item_ids,
-        set_resource_ids, split_for_process,
+        Annotate, Destination, ListenerItemUnforwarded, alloc_parent_id, attr_has_val,
+        item_id_resource_build_map, item_listener_annotate, match_by_ip, monitored_by_us,
+        seed_existing_item_ids, set_resource_ids, split_for_process,
     };
     use arrow::array::{Array, AsArray, RecordBatch};
     use arrow::datatypes::UInt16Type;
@@ -957,6 +986,7 @@ mod tests {
             config::item::Config::Listener(config::item::Listener {
                 match_strategy,
                 expect_every: None,
+                unforwarded: Default::default(),
             }),
         );
         cache.item.write().insert(item.clone());
@@ -973,6 +1003,19 @@ mod tests {
             item_id,
             processor_id,
         }
+    }
+
+    /// Sets what the env's item wants for its rows that stay on a node not
+    /// monitoring its host.
+    fn set_unforwarded(env: &TestEnv, unforwarded: ListenerItemUnforwarded) {
+        let mut lis = env.cache.listener.write();
+        let data = lis.get_item(&env.item_id).unwrap().clone();
+        let mut item = (*data.item).clone();
+        let config::item::Config::Listener(conf) = &mut item.config else {
+            panic!("not a listener item");
+        };
+        conf.unforwarded = unforwarded;
+        lis.insert_item(item, data.monitored_by);
     }
 
     /// Total records routed to `for_process` entries matching `processor_id`.
@@ -1108,6 +1151,7 @@ mod tests {
             record(vec![kv("k", sval("a"))]),
             record(vec![kv("k", sval("b"))]),
             record(vec![kv("k", sval("c"))]),
+            record(vec![kv("k", sval("d"))]),
         ]);
         let processor = Uuid::now_v7();
         let node = Uuid::now_v7();
@@ -1115,11 +1159,12 @@ mod tests {
             Destination::Process(smallvec![processor]),
             Destination::Process(smallvec![]),
             Destination::Forward(node),
+            Destination::Drop,
         ];
         let mut pool = IdBitmapPool::new();
 
-        // include_forward = false → the Forward row is dropped.
-        let out = split_for_process(&pl.data, &row_dest, false, &mut pool).unwrap();
+        // the Forward and Drop rows are left out
+        let out = split_for_process(&pl.data, &row_dest, &mut pool).unwrap();
         let by_processor: usize = out
             .iter()
             .filter(|p| p.processor_id == Some(processor))
@@ -1132,15 +1177,6 @@ mod tests {
             .sum();
         assert_eq!(by_processor, 1);
         assert_eq!(by_none, 1); // only the Process([]) row
-
-        // include_forward = true → the Forward row joins the None bucket.
-        let out2 = split_for_process(&pl.data, &row_dest, true, &mut pool).unwrap();
-        let by_none2: usize = out2
-            .iter()
-            .filter(|p| p.processor_id.is_none())
-            .map(|p| p.payload.num_items())
-            .sum();
-        assert_eq!(by_none2, 2); // Process([]) + Forward
     }
 
     // --- item_listener_annotate (integration) ---
@@ -1432,6 +1468,107 @@ mod tests {
                 assert_eq!(has.true_count(), rows, "{}", key.as_str());
             }
         }
+    }
+
+    /// The item's `unforwarded` decides for its rows that stay on a node not
+    /// monitoring its host, whether forwarding is disabled or a hand-over
+    /// failed: without a processor to the input-less sinks, or nowhere.
+    #[test]
+    fn unforwarded_passthrough_and_drop_skip_the_items_processors() {
+        let other_node = Uuid::now_v7();
+        let our_node = Uuid::now_v7();
+        for (unforwarded, passed, dropped) in [
+            (ListenerItemUnforwarded::Passthrough, 2, 0),
+            (ListenerItemUnforwarded::Drop, 0, 2),
+        ] {
+            for forwarding_disabled in [true, false] {
+                let env = build_env(
+                    ListenerItemMatchStrategy::None,
+                    Some(other_node),
+                    None,
+                    forwarding_disabled,
+                );
+                set_unforwarded(&env, unforwarded);
+                let annotate = |pl: &payload::Payload, no_forwarder| {
+                    item_listener_annotate(
+                        pl,
+                        Some(&env.listener_conf),
+                        &env.cache,
+                        Some(our_node),
+                        no_forwarder,
+                    )
+                    .unwrap()
+                };
+                let pl = logs_payload(vec![
+                    record(vec![kv("k", sval("a"))]),
+                    record(vec![kv("k", sval("b"))]),
+                ]);
+                let mut res = annotate(&pl, false);
+                if !forwarding_disabled {
+                    // the hand-over fails, and the rows come back
+                    assert_eq!(res.dropped, 0);
+                    assert_eq!(res.for_process.len(), 0);
+                    assert_eq!(res.for_forward.len(), 1);
+                    res = annotate(&res.for_forward[0].payload, true);
+                }
+                let case = format!("{unforwarded}, forwarding disabled: {forwarding_disabled}");
+                assert!(res.for_forward.is_empty(), "{case}");
+                assert_eq!(process_len(&res, Some(env.processor_id)), 0, "{case}");
+                assert_eq!(process_len(&res, None), passed, "{case}");
+                assert_eq!(res.dropped, dropped, "{case}");
+            }
+        }
+    }
+
+    /// One batch, two items of another node's host that want different things.
+    #[test]
+    fn unforwarded_is_decided_per_item() {
+        let other_node = Uuid::now_v7();
+        let our_node = Uuid::now_v7();
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let env = build_env(
+            ListenerItemMatchStrategy::SourceIps(vec![ip]),
+            Some(other_node),
+            None,
+            true,
+        );
+        // a second item on the same listener takes every other row, and drops
+        let mut second = (*env
+            .cache
+            .listener
+            .read()
+            .get_item(&env.item_id)
+            .unwrap()
+            .item)
+            .clone();
+        second.id = Uuid::now_v7();
+        second.config = config::item::Config::Listener(config::item::Listener {
+            match_strategy: ListenerItemMatchStrategy::None,
+            expect_every: None,
+            unforwarded: ListenerItemUnforwarded::Drop,
+        });
+        env.cache
+            .listener
+            .write()
+            .insert_item(second, Some(other_node));
+
+        let pl = logs_payload(vec![
+            ip_record("10.0.0.1"),
+            ip_record("10.0.0.2"),
+            ip_record("10.0.0.3"),
+        ]);
+        let res = item_listener_annotate(
+            &pl,
+            Some(&env.listener_conf),
+            &env.cache,
+            Some(our_node),
+            false,
+        )
+        .unwrap();
+        assert!(res.for_forward.is_empty());
+        assert_eq!(process_len(&res, Some(env.processor_id)), 1);
+        assert_eq!(process_len(&res, None), 0);
+        assert_eq!(res.dropped, 2);
     }
 
     /// A row bound for another node whose hand-over failed comes back naming

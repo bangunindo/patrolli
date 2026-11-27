@@ -137,6 +137,7 @@ mod tests {
         item.config = Config::Listener(Listener {
             match_strategy: ListenerItemMatchStrategy::None,
             expect_every: None,
+            unforwarded: Default::default(),
         });
         item
     }

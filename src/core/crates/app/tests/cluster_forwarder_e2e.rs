@@ -13,6 +13,10 @@
 // from a fresh source port; macOS hands every one to the socket bound first,
 // so the owner is restarted to be the last to bind, leaving the packets to the
 // other two nodes either way.
+//
+// The `unforwarded_*` tests cover the rows a node keeps instead: a listener
+// with `disable_cluster_forwarding`, and what the item's `unforwarded` makes
+// of a row received by a node that does not monitor the item's host.
 
 mod setup;
 
@@ -107,22 +111,15 @@ global:
     }
 }
 
-#[tokio::test]
-async fn test_forwarder_e2e_three_node_cluster() -> Result<()> {
-    setup::setup_logging();
-    let (db, pool) = setup::setup_db().await;
-    let syslog_port = free_udp_port();
-
-    // ---- Three patrolli nodes ---------------------------------------------
-    // The owner has to be registered before its host is seeded
-    // (`hosts.monitored_by` references `cluster_nodes`), so all of them start
-    // first.
-    let node_ids = [Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7()];
-    let mut nodes: Vec<Node> = (0..3)
-        .map(|i| Node::start(&db.url, node_ids[i], &format!("node-{}", i + 1)))
+/// Starts one node per id and waits until all of them are in `cluster_nodes`.
+async fn start_nodes(db_url: &str, pool: &patrolli::db::Pool, node_ids: &[Uuid]) -> Vec<Node> {
+    let nodes: Vec<Node> = node_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| Node::start(db_url, *id, &format!("node-{}", i + 1)))
         .collect();
-
-    info!("waiting for all 3 patrolli nodes to register in cluster_nodes");
+    info!("waiting for every patrolli node to register in cluster_nodes");
+    let want = node_ids.len() as i64;
     setup::eventually(async || {
         let conn = pool.get().await?;
         let count: i64 = conn
@@ -130,17 +127,48 @@ async fn test_forwarder_e2e_three_node_cluster() -> Result<()> {
             .await
             .context("failed to count cluster_nodes")?
             .get(0);
-        if count < 3 {
-            bail!("{count} of 3 nodes in cluster_nodes");
+        if count < want {
+            bail!("{count} of {want} nodes in cluster_nodes");
         }
         Ok(())
     })
     .await;
+    nodes
+}
 
-    // ---- DB seeding ----------------------------------------------------
-    // node-1 is the owner of the host; sticky_monitored_by prevents the
-    // leader's rebalancer from moving it.
-    let owner_node_id = node_ids[0];
+/// Waits until each of `nodes` has bound the syslog listener.
+async fn all_listening(nodes: &[Node]) {
+    setup::eventually(async || {
+        let waiting: Vec<_> = nodes
+            .iter()
+            .filter(|n| !n.patrolli.stderr_contains("udp listening"))
+            .map(|n| n.name.as_str())
+            .collect();
+        if !waiting.is_empty() {
+            bail!("not listening yet: {}", waiting.join(", "));
+        }
+        Ok(())
+    })
+    .await
+}
+
+const ITEM_NAME: &str = "listener-item";
+
+struct Seed {
+    /// The node the host is pinned to.
+    owner_node_id: Uuid,
+    syslog_port: u16,
+    disable_cluster_forwarding: bool,
+    /// The item's `unforwarded`, with a second sink that has no inputs: where
+    /// `passthrough` rows go. `None` leaves both out.
+    unforwarded: Option<&'static str>,
+}
+
+/// A syslog listener, a host pinned to the owner (`sticky_monitored_by` keeps
+/// the leader's rebalancer from moving it), its listener item matching what
+/// comes from loopback, a `null` processor and a `stdout` sink behind it.
+/// Returns the item's id.
+async fn seed(pool: &patrolli::db::Pool, seed: Seed) -> Result<Uuid> {
     let processor_id = Uuid::now_v7();
     let syslog_listener_id = Uuid::now_v7();
     let sink_id = Uuid::now_v7();
@@ -159,12 +187,17 @@ async fn test_forwarder_e2e_three_node_cluster() -> Result<()> {
     .await
     .context("failed to insert processor")?;
     let syslog_cfg = serde_json::json!({
-        "listener": { "udp": { "address": format!("0.0.0.0:{syslog_port}") } }
+        "listener": { "udp": { "address": format!("0.0.0.0:{}", seed.syslog_port) } }
     });
     tx.execute(
-        "INSERT INTO listeners (listener_id, name, type, adm_status, last_updated, config) \
-         VALUES ($1, 'syslog-1', 'syslog', 1, now(), $2)",
-        &[&syslog_listener_id, &syslog_cfg],
+        "INSERT INTO listeners (listener_id, name, type, adm_status, last_updated, config, \
+         disable_cluster_forwarding) \
+         VALUES ($1, 'syslog-1', 'syslog', 1, now(), $2, $3)",
+        &[
+            &syslog_listener_id,
+            &syslog_cfg,
+            &seed.disable_cluster_forwarding,
+        ],
     )
     .await
     .context("failed to insert syslog listener")?;
@@ -182,10 +215,19 @@ async fn test_forwarder_e2e_three_node_cluster() -> Result<()> {
     )
     .await
     .context("failed to insert sink_inputs")?;
+    if seed.unforwarded.is_some() {
+        tx.execute(
+            "INSERT INTO sinks (sink_id, name, type, adm_status, last_updated, config) \
+             VALUES ($1, 'file-stdout-no-inputs', 'file', 1, now(), $2)",
+            &[&Uuid::now_v7(), &sink_cfg],
+        )
+        .await
+        .context("failed to insert the sink without inputs")?;
+    }
     tx.execute(
         "INSERT INTO hosts (host_id, name, adm_status, last_updated, monitored_by, sticky_monitored_by) \
          VALUES ($1, 'forwarded-host', 1, now(), $2, true)",
-        &[&host_id, &owner_node_id],
+        &[&host_id, &seed.owner_node_id],
     )
     .await
     .context("failed to insert host")?;
@@ -207,19 +249,23 @@ async fn test_forwarder_e2e_three_node_cluster() -> Result<()> {
     )
     .await
     .context("failed to insert host_template")?;
-    let item_cfg = serde_json::json!({
+    let mut item_cfg = serde_json::json!({
         "match_strategy": { "method": "endpoint_source_ip" }
     });
+    if let Some(unforwarded) = seed.unforwarded {
+        item_cfg["unforwarded"] = unforwarded.into();
+    }
     tx.execute(
         "INSERT INTO items (item_id, host_template_id, endpoint_id, listener_id, name, type, \
          adm_status, last_updated, config, schedule, timeout_ms) \
-         VALUES ($1, $2, $3, $4, 'listener-item', 'listener', 1, now(), $5, '* * * * * * *', 10000)",
+         VALUES ($1, $2, $3, $4, $6, 'listener', 1, now(), $5, '* * * * * * *', 10000)",
         &[
             &item_id,
             &host_template_id,
             &endpoint_id,
             &syslog_listener_id,
             &item_cfg,
+            &ITEM_NAME,
         ],
     )
     .await
@@ -231,24 +277,38 @@ async fn test_forwarder_e2e_three_node_cluster() -> Result<()> {
     .await
     .context("failed to insert item_processors")?;
     tx.commit().await?;
-    drop(conn);
+    Ok(item_id)
+}
+
+#[tokio::test]
+async fn test_forwarder_e2e_three_node_cluster() -> Result<()> {
+    setup::setup_logging();
+    let (db, pool) = setup::setup_db().await;
+    let syslog_port = free_udp_port();
+
+    // ---- Three patrolli nodes ---------------------------------------------
+    // The owner has to be registered before its host is seeded
+    // (`hosts.monitored_by` references `cluster_nodes`), so all of them start
+    // first.
+    let node_ids = [Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7()];
+    let mut nodes = start_nodes(&db.url, &pool, &node_ids).await;
+
+    // ---- DB seeding ----------------------------------------------------
+    // node-1 is the owner of the host; sticky_monitored_by prevents the
+    // leader's rebalancer from moving it.
+    seed(
+        &pool,
+        Seed {
+            owner_node_id: node_ids[0],
+            syslog_port,
+            disable_cluster_forwarding: false,
+            unforwarded: None,
+        },
+    )
+    .await?;
 
     // ---- Wait for the syslog listener on every node ---------------------
     info!("waiting for every node to bind the syslog listener");
-    let all_listening = async |nodes: &[Node]| {
-        setup::eventually(async || {
-            let waiting: Vec<_> = nodes
-                .iter()
-                .filter(|n| !n.patrolli.stderr_contains("udp listening"))
-                .map(|n| n.name.as_str())
-                .collect();
-            if !waiting.is_empty() {
-                bail!("not listening yet: {}", waiting.join(", "));
-            }
-            Ok(())
-        })
-        .await
-    };
     all_listening(&nodes).await;
 
     // ---- Make the owner the last to bind -------------------------------
@@ -296,5 +356,123 @@ async fn test_forwarder_e2e_three_node_cluster() -> Result<()> {
     for node in &mut nodes {
         node.patrolli.stop().await;
     }
+    Ok(())
+}
+
+/// What node-2, which does not monitor the host, did with the rows of the
+/// host's item it received, on a listener with `disable_cluster_forwarding`.
+struct Kept {
+    /// The lines its sinks wrote that name the item (`patrolli.item.id`).
+    lines: Vec<String>,
+    /// Its listeners' dropped records.
+    dropped: f64,
+}
+
+/// Two nodes, the host pinned to node-1, forwarding disabled on the listener
+/// and `unforwarded` on its item. Sends syslog until node-2 has received some
+/// of it and `done` accepts what it did with it.
+async fn node_2_keeps(unforwarded: &'static str, done: impl Fn(&Kept) -> bool) -> Result<Kept> {
+    setup::setup_logging();
+    let (db, pool) = setup::setup_db().await;
+    let syslog_port = free_udp_port();
+    let node_ids = [Uuid::now_v7(), Uuid::now_v7()];
+    let mut nodes = start_nodes(&db.url, &pool, &node_ids).await;
+    let item_id = seed(
+        &pool,
+        Seed {
+            owner_node_id: node_ids[0],
+            syslog_port,
+            disable_cluster_forwarding: true,
+            unforwarded: Some(unforwarded),
+        },
+    )
+    .await?
+    .to_string();
+    all_listening(&nodes).await;
+    // node-2 has to get packets: on macOS the first socket bound takes them all
+    nodes[0].restart().await;
+    all_listening(&nodes[..1]).await;
+
+    let token = format!("e2e-token-{}", Uuid::now_v7().simple());
+    let syslog_msg = format!("<134>1 2026-05-18T00:00:00Z e2e-host e2e-app 1 ID47 - {token}");
+    // A row node-2 received before its listener cache had the item matched
+    // nothing, and went to the sink without inputs with no item id: only the
+    // lines naming the item say what `unforwarded` did.
+    let kept = setup::eventually(async || {
+        UdpSocket::bind("127.0.0.1:0")?
+            .send_to(syslog_msg.as_bytes(), ("127.0.0.1", syslog_port))?;
+        let kept = Kept {
+            lines: nodes[1]
+                .patrolli
+                .stdout_lines()
+                .into_iter()
+                .filter(|l| l.contains(&token) && l.contains(&item_id))
+                .collect(),
+            dropped: nodes[1]
+                .metric_sum("patrolli_listener_records_dropped")
+                .await?,
+        };
+        if !done(&kept) {
+            bail!(
+                "node-2 wrote {} lines of the item and dropped {} records",
+                kept.lines.len(),
+                kept.dropped
+            );
+        }
+        Ok(kept)
+    })
+    .await;
+    // node-1 never took a row from node-2
+    assert_eq!(
+        nodes[0]
+            .metric_sum("patrolli_forwarder_server_records_sent")
+            .await?,
+        0.0,
+        "nothing is forwarded with disable_cluster_forwarding"
+    );
+    for node in &mut nodes {
+        node.patrolli.stop().await;
+    }
+    Ok(kept)
+}
+
+/// The rows ran the item's processors on node-2: its sink wrote them with the
+/// resource the annotation completes (the item's name), which only a row
+/// routed through the item's processors carries.
+#[tokio::test]
+async fn unforwarded_process_runs_the_items_processors_on_the_receiving_node() -> Result<()> {
+    let kept = node_2_keeps("process", |kept| !kept.lines.is_empty()).await?;
+    assert!(
+        kept.lines.iter().all(|l| l.contains(ITEM_NAME)),
+        "every row of the item went through its processors: {:?}",
+        kept.lines
+    );
+    assert_eq!(kept.dropped, 0.0);
+    Ok(())
+}
+
+/// The rows skipped the processors and reached the sink without inputs,
+/// naming only their item.
+#[tokio::test]
+async fn unforwarded_passthrough_reaches_the_sinks_without_inputs() -> Result<()> {
+    let kept = node_2_keeps("passthrough", |kept| !kept.lines.is_empty()).await?;
+    assert!(
+        !kept.lines.iter().any(|l| l.contains(ITEM_NAME)),
+        "no row of the item went through its processors: {:?}",
+        kept.lines
+    );
+    assert_eq!(kept.dropped, 0.0);
+    Ok(())
+}
+
+/// The rows reached no sink, and the listener counted them.
+#[tokio::test]
+async fn unforwarded_drop_writes_nothing() -> Result<()> {
+    let kept = node_2_keeps("drop", |kept| kept.dropped > 0.0).await?;
+    assert!(
+        kept.lines.is_empty(),
+        "no row of the item reached a sink: {:?}",
+        kept.lines
+    );
     Ok(())
 }

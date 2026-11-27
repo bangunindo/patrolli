@@ -9406,6 +9406,9 @@
           },
           "match_strategy": {
             "$ref": "#/components/schemas/ListenerItemMatchStrategy"
+          },
+          "unforwarded": {
+            "$ref": "#/components/schemas/ListenerItemUnforwarded"
           }
         },
         "additionalProperties": false
@@ -9628,6 +9631,15 @@
               }
             }
           }
+        ]
+      },
+      "ListenerItemUnforwarded": {
+        "type": "string",
+        "description": "What a node does with a row of this item when another node monitors the\nitem's host and the row is not forwarded to that node: the listener has\n`disable_cluster_forwarding`, or the hand-over failed (the owner\nunreachable, its queue full).",
+        "enum": [
+          "process",
+          "passthrough",
+          "drop"
         ]
       },
       "ListenerKind": {
