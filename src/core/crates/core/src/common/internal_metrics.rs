@@ -11,7 +11,7 @@ pub use crate::cache::lookup_table::immutable::SkipCounts;
 use arc_swap::ArcSwap;
 use rustc_hash::FxHashMap as HashMap;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use utoipa::ToSchema;
@@ -254,9 +254,24 @@ pub struct NodeMetrics {
     pub total_bytes_sent: AtomicU64,
     pub total_bytes_dropped: AtomicU64,
     pub total_bytes_errored: AtomicU64,
+    /// What the link check last found: `LINK_UNKNOWN` until the first probe.
+    pub link: AtomicU8,
 }
 
+const LINK_UNKNOWN: u8 = 0;
+const LINK_DOWN: u8 = 1;
+const LINK_UP: u8 = 2;
+
 impl NodeMetrics {
+    pub fn set_reachable(&self, reachable: bool) {
+        let link = if reachable { LINK_UP } else { LINK_DOWN };
+        self.link.store(link, Ordering::Relaxed);
+    }
+
+    pub fn clear_reachable(&self) {
+        self.link.store(LINK_UNKNOWN, Ordering::Relaxed);
+    }
+
     pub fn get(&self, id: Uuid) -> ForwarderNode {
         ForwarderNode {
             id,
@@ -273,6 +288,10 @@ impl NodeMetrics {
             total_bytes_sent: self.total_bytes_sent.load(Ordering::Relaxed),
             total_bytes_dropped: self.total_bytes_dropped.load(Ordering::Relaxed),
             total_bytes_errored: self.total_bytes_errored.load(Ordering::Relaxed),
+            reachable: match self.link.load(Ordering::Relaxed) {
+                LINK_UNKNOWN => None,
+                link => Some(link == LINK_UP),
+            },
         }
     }
 }
@@ -293,6 +312,8 @@ pub struct ForwarderNode {
     pub total_bytes_sent: u64,
     pub total_bytes_dropped: u64,
     pub total_bytes_errored: u64,
+    /// Whether the last link check reached the peer; `None` before the first.
+    pub reachable: Option<bool>,
 }
 
 #[derive(Default)]

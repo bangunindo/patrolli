@@ -7,9 +7,13 @@ mod comm;
 mod execute_now;
 mod forwarder;
 mod item_stats;
+mod link;
+#[cfg(test)]
+mod test_util;
 
 pub use execute_now::ExecuteNowError;
 pub use item_stats::to_proto as item_stats_to_proto;
+pub use link::LinkProbe;
 
 pub use comm::{
     Bearer, CaptureStream, FORWARDER_CHANNEL_NAME, InterComm, InterCommManager, InterCommServer,

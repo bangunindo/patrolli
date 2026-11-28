@@ -18,6 +18,9 @@
 // listener has `disable_cluster_forwarding` or the owner is down, and what the
 // item's `unforwarded` makes of a row received by a node that does not monitor
 // the item's host.
+//
+// `a_closed_inter_node_port_shows_in_the_peers_links` covers the link check:
+// what each node writes to `cluster_node_links` about dialing its peers.
 
 mod setup;
 
@@ -33,13 +36,27 @@ struct Node {
     name: String,
     config: String,
     prometheus_port: u16,
+    /// Where its inter-node gRPC server listens.
+    inter_port: u16,
     patrolli: Patrolli,
 }
 
 impl Node {
     fn start(db_url: &str, node_id: Uuid, name: &str) -> Self {
+        Self::start_advertising(db_url, node_id, name, None)
+    }
+
+    /// As `start`, telling its peers to dial `advertise_port` rather than the
+    /// port it listens on.
+    fn start_advertising(
+        db_url: &str,
+        node_id: Uuid,
+        name: &str,
+        advertise_port: Option<u16>,
+    ) -> Self {
         let prometheus_port = free_tcp_port();
         let inter_port = free_tcp_port();
+        let advertise_port = advertise_port.unwrap_or(inter_port);
         // Heartbeat / watcher tuned aggressively so the test doesn't wait a full
         // 5-second cycle for cluster_nodes registration and config propagation.
         let config = format!(
@@ -63,10 +80,13 @@ global:
       heartbeat_interval: 1
       heartbeat_timeout: 3
       metadata:
-        advertise_address: "127.0.0.1:{inter_port}"
+        advertise_address: "127.0.0.1:{advertise_port}"
       inter_node:
         grpc:
           address: "127.0.0.1:{inter_port}"
+        link_check:
+          interval: 2
+          timeout: 1
 "#
         );
         let patrolli = Patrolli::start(name, &config, &[("PATROLLI_JWT_SECRET", JWT_SECRET)]);
@@ -74,6 +94,7 @@ global:
             name: name.to_string(),
             config,
             prometheus_port,
+            inter_port,
             patrolli,
         }
     }
@@ -529,5 +550,139 @@ async fn unforwarded_passthrough_keeps_the_rows_of_an_owner_that_is_down() -> Re
         "no row of the item went through its processors: {:?}",
         kept.lines
     );
+    Ok(())
+}
+
+/// One row of `cluster_node_links`.
+#[derive(Debug)]
+struct Link {
+    src: Uuid,
+    dst: Uuid,
+    status: String,
+    dst_address: String,
+    reason: Option<String>,
+    peer_version: Option<String>,
+    state_since: chrono::DateTime<chrono::Utc>,
+}
+
+async fn links(pool: &patrolli::db::Pool) -> Result<Vec<Link>> {
+    let conn = pool.get().await?;
+    let rows = conn
+        .query(
+            "SELECT src_node_id, dst_node_id, status, dst_address, reason, peer_version, \
+                    state_since \
+             FROM cluster_node_links ORDER BY src_node_id, dst_node_id",
+            &[],
+        )
+        .await
+        .context("failed to read cluster_node_links")?;
+    Ok(rows
+        .iter()
+        .map(|row| Link {
+            src: row.get(0),
+            dst: row.get(1),
+            status: row.get(2),
+            dst_address: row.get(3),
+            reason: row.get(4),
+            peer_version: row.get(5),
+            state_since: row.get(6),
+        })
+        .collect())
+}
+
+/// Waits until `cluster_node_links` holds `want` rows with every link to `dst`
+/// at `to_dst` and every other one `ok`, and returns the rows.
+async fn links_settled(
+    pool: &patrolli::db::Pool,
+    want: usize,
+    dst: Uuid,
+    to_dst: &str,
+) -> Vec<Link> {
+    setup::eventually(async || {
+        let links = links(pool).await?;
+        if links.len() != want {
+            bail!("{} of {want} links: {links:?}", links.len());
+        }
+        for link in &links {
+            let expected = if link.dst == dst { to_dst } else { "ok" };
+            if link.status != expected {
+                bail!("expected {expected}: {link:?}");
+            }
+        }
+        Ok(links)
+    })
+    .await
+}
+
+// The production case the link check is for: a node that is up and
+// heartbeating, whose inter-node port no peer can connect to. The closed port
+// here is one node-3 advertises and nothing listens on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_closed_inter_node_port_shows_in_the_peers_links() -> Result<()> {
+    setup::setup_logging();
+    let (db, pool) = setup::setup_db().await;
+    let ids = [Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7()];
+    let closed_port = free_tcp_port();
+    let mut nodes = [
+        Node::start(&db.url, ids[0], "node-1"),
+        Node::start(&db.url, ids[1], "node-2"),
+        Node::start_advertising(&db.url, ids[2], "node-3", Some(closed_port)),
+    ];
+
+    // Every node writes one row per peer. Both rows to node-3 are refused,
+    // while node-3's own rows are ok: it dials out fine.
+    let before = links_settled(&pool, 6, ids[2], "refused").await;
+    let version = env!("CARGO_PKG_VERSION");
+    for link in &before {
+        if link.dst == ids[2] {
+            assert_eq!(link.dst_address, format!("127.0.0.1:{closed_port}"));
+            assert!(link.reason.is_some(), "{link:?}");
+            assert_eq!(link.peer_version, None, "{link:?}");
+        } else {
+            assert_eq!(link.reason, None, "{link:?}");
+            assert_eq!(link.peer_version.as_deref(), Some(version), "{link:?}");
+        }
+    }
+    // and on the Prometheus endpoint: node-1 reaches one of its two peers
+    setup::eventually(async || {
+        let reachable = nodes[0]
+            .metric_sum("patrolli_forwarder_peer_reachable{")
+            .await?;
+        if reachable != 1.0 {
+            bail!("node-1 reaches {reachable} peers");
+        }
+        Ok(())
+    })
+    .await;
+    assert!(nodes[0].patrolli.stderr_contains("peer link failed"));
+
+    // node-3 comes back advertising the port it listens on: the links to it
+    // turn ok, on the new address, and say since when.
+    let open = format!("127.0.0.1:{}", nodes[2].inter_port);
+    nodes[2].config = nodes[2].config.replace(
+        &format!("advertise_address: \"127.0.0.1:{closed_port}\""),
+        &format!("advertise_address: \"{open}\""),
+    );
+    nodes[2].restart().await;
+    let after = links_settled(&pool, 6, ids[2], "ok").await;
+    for (was, link) in before.iter().zip(&after) {
+        assert_eq!((was.src, was.dst), (link.src, link.dst));
+        if link.dst == ids[2] {
+            assert_eq!(link.dst_address, open);
+            assert_eq!(link.reason, None, "{link:?}");
+            assert!(link.state_since > was.state_since, "{was:?} {link:?}");
+        } else if link.src != ids[2] {
+            // a link nothing happened to was not written again
+            assert_eq!(link.state_since, was.state_since, "{was:?} {link:?}");
+        }
+    }
+
+    // node-3 stops for good: once the leader expires it, its links go with
+    // it, those from it and those to it.
+    nodes[2].patrolli.stop().await;
+    let left = links_settled(&pool, 2, ids[2], "gone").await;
+    for link in &left {
+        assert!(link.src != ids[2] && link.dst != ids[2], "{link:?}");
+    }
     Ok(())
 }

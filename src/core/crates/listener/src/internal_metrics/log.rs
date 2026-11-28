@@ -1212,7 +1212,7 @@ fn _get_processor_metric_throughput(
 }
 
 fn _forwarder_node_map(node: &ForwarderNode) -> Vec<(ZStringOwned, ValueOwned)> {
-    let node_map: Vec<(ZStringOwned, ValueOwned)> = vec![
+    let mut node_map: Vec<(ZStringOwned, ValueOwned)> = vec![
         kv("id", node.id.to_string().into()),
         kv(
             "total_connections",
@@ -1264,6 +1264,10 @@ fn _forwarder_node_map(node: &ForwarderNode) -> Vec<(ZStringOwned, ValueOwned)> 
             ValueOwned::Int64(node.total_bytes_errored as i64),
         ),
     ];
+    // absent until the link check has probed the peer
+    if let Some(reachable) = node.reachable {
+        node_map.push(kv("reachable", ValueOwned::Bool(reachable)));
+    }
     node_map
 }
 

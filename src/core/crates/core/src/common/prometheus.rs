@@ -553,6 +553,40 @@ mod tests {
     }
 
     #[test]
+    fn peer_reachability_is_reported_once_probed() {
+        let metrics = Arc::new(InternalMetrics::default());
+        let (up, down, unprobed) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let peer = |id, reachable| ForwarderNode {
+            id,
+            reachable,
+            ..Default::default()
+        };
+        metrics.forwarder.store(Arc::new((
+            Instant::now(),
+            Forwarder {
+                nodes: vec![
+                    peer(up, Some(true)),
+                    peer(down, Some(false)),
+                    peer(unprobed, None),
+                ],
+                ..Default::default()
+            },
+        )));
+
+        let output = encode_test_metrics(metrics, true);
+        assert!(output.contains("# TYPE patrolli_forwarder_peer_reachable gauge"));
+        assert!(output.contains(&format!(
+            "patrolli_forwarder_peer_reachable{{peer_id=\"{up}\"}} 1"
+        )));
+        assert!(output.contains(&format!(
+            "patrolli_forwarder_peer_reachable{{peer_id=\"{down}\"}} 0"
+        )));
+        assert!(!output.contains(&format!(
+            "patrolli_forwarder_peer_reachable{{peer_id=\"{unprobed}\"}}"
+        )));
+    }
+
+    #[test]
     fn bgp_listener_families_carry_their_own_labels() {
         use crate::common::internal_metrics::{BgpListener, Listener};
         let metrics = Arc::new(InternalMetrics::default());

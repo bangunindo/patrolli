@@ -5,6 +5,7 @@
 pub mod balancer;
 pub mod config_watcher;
 pub mod inter;
+pub mod link_monitor;
 pub mod node_lock;
 
 use crate::inter::InterCommManager as _;
@@ -616,6 +617,16 @@ impl Cluster {
             };
             watcher.run().await;
         });
+        let link_monitor = link_monitor::LinkMonitor {
+            node_id: self.cluster.node_id,
+            db_pool: self.db_pool.clone(),
+            node_lock: self.node_lock.clone(),
+            inter_comm: self.inter_comm.clone(),
+            interval: self.cluster.inter_node.link_check.interval,
+            timeout: self.cluster.inter_node.link_check.timeout,
+            token: token.clone(),
+        };
+        watchers.spawn(link_monitor.run());
         let token_clone = token.clone();
         let db_pool = self.db_pool.clone();
         let cluster_config = self.cluster.clone();

@@ -166,6 +166,18 @@ monitor::WorkerGroup   (snmp, snmp_walk, prometheus_scrape,         │
   node is deleted only once it owns no hosts. Sticky hosts are invisible to the balancer and never
   moved: a dead node still owning one keeps its `cluster_nodes` row (inactive, logs purged every
   tick) until it or its standby returns.
+- `cluster::link_monitor` records whether this node can reach each peer's inter-node gRPC port,
+  in `cluster_node_links` (one row per directed link, written by the source): a node whose
+  port is closed still heartbeats, so only its peers can say it. Every
+  `inter_node.link_check.interval` a main node probes every peer with `Hello`
+  (`InterComm::probe_links`), each over a connection made for that probe, never the peer's
+  shared `Channel`, which can outlive a firewall change. The probe classifies the failure
+  (`db::schema::LinkStatus`; `ok` and `version_skew` mean the link works) and sets the
+  `forwarder.peer.reachable` gauge. The monitor reads its rows each round and writes only
+  those that differ, so a row is only as fresh as its source's heartbeat, and
+  `state_since` moves only with the status. Rows go by cascade with either node. A task of
+  its own, never part of the heartbeat: a probe of a dropped port waits its whole timeout.
+  Standbys neither probe nor are probed.
 - `cluster::config_watcher` polls the database (`watcher_interval`) and diffs it into the caches and
   worker groups, adding/removing listeners, monitors and sinks in place. It aborts with
   `NodeLockLost` if the node's lock goes away mid-transaction.

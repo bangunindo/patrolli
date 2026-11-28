@@ -278,6 +278,14 @@ global:
   #           type: memory
   #           non_blocking: false
   #           channel_buffer_size: 0
+  #       # How this node checks that it can reach each peer's inter-node port.
+  #       # Every `interval` it dials each peer anew (never over a connection it
+  #       # already holds, which can outlive a firewall change) and writes what
+  #       # it found to `cluster_node_links`, when that changed. A closed port
+  #       # then shows as every row to that node failing. Main nodes only.
+  #       link_check:
+  #         interval: 15             # seconds between rounds
+  #         timeout: 5               # seconds per probe, below interval
 
 # ──────────────────────────────────────────────────────────────────────────────
 # monitor — worker pool that picks snmp / snmp_walk / prometheus_scrape /
