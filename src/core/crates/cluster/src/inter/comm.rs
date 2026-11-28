@@ -44,11 +44,8 @@ use tonic::service::Interceptor;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{Instrument, debug, info, info_span, warn};
+use tracing::{Instrument, debug, info_span, warn};
 use uuid::Uuid;
-
-#[expect(dead_code, reason = "hello handshake omitted for now (61d7c5f4)")]
-const HELLO_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Topic name of the inter-node forward channel (listeners broadcast
 /// `ForwarderPayload`s here; the [`InterComm`] receiver bridge drains it).
@@ -105,7 +102,10 @@ impl Interceptor for Bearer {
     }
 }
 
-async fn build_channel(dst: &str, tls: Option<&config::Tls>) -> Result<Channel> {
+/// How a peer is dialed. The forwarder, item stats, execute now and capture
+/// share one lazily connected [`Channel`] built from it; the link check
+/// connects it anew for every probe.
+fn build_endpoint(dst: &str, tls: Option<&config::Tls>) -> Result<Endpoint> {
     let scheme = if tls.is_some() { "https" } else { "http" };
     let mut endpoint = Endpoint::from_shared(format!("{scheme}://{dst}"))?
         .tcp_nodelay(true)
@@ -121,8 +121,7 @@ async fn build_channel(dst: &str, tls: Option<&config::Tls>) -> Result<Channel> 
             }
         };
     }
-    let channel = endpoint.connect_lazy();
-    Ok(channel)
+    Ok(endpoint)
 }
 
 #[async_trait]
@@ -170,13 +169,12 @@ impl InternalMetrics {
 
 pub struct InterComm {
     conf: config::cluster::InterNode,
-    node_id: Uuid,
-    #[expect(dead_code, reason = "hello handshake omitted for now (61d7c5f4)")]
-    node_name: String,
+    pub(super) node_id: Uuid,
+    pub(super) node_name: String,
     conf_cache: cache::Cache,
     bearer: Bearer,
     internal_metrics: Arc<InternalMetrics>,
-    clients: RwLock<FxHashMap<Uuid, InterCommClient>>,
+    pub(super) clients: RwLock<FxHashMap<Uuid, InterCommClient>>,
     forward_receiver: Receiver<payload::ForwarderPayload>,
     /// Where the rows a peer could not be handed go, see [`Self::keep`].
     processor_sender: SenderChannel<&'static str, payload::ProcessorPayload>,
@@ -359,41 +357,6 @@ impl InterComm {
                 .total_time_spent
                 .fetch_add(n_iter.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
-    }
-
-    #[expect(dead_code, reason = "hello handshake omitted for now (61d7c5f4)")]
-    async fn hello(&self, transport: &Channel, expect_node_id: Uuid, dst: &str) -> Result<()> {
-        let mut client = InterClusterServiceClient::new(transport.clone());
-        let identity = NodeIdentity {
-            node_id: self.node_id.as_bytes().to_vec().into(),
-            node_name: self.node_name.clone(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        };
-        let mut request = Request::new(identity);
-        self.bearer.apply(&mut request);
-        let peer = tokio::time::timeout(HELLO_TIMEOUT, client.hello(request))
-            .await
-            .map_err(|_| anyhow::anyhow!("hello to {dst} timed out"))?
-            .map_err(|e| anyhow::anyhow!("hello to {dst} failed: {e}"))?
-            .into_inner();
-
-        let peer_id = Uuid::from_slice(peer.node_id.as_ref())
-            .map_err(|e| anyhow::anyhow!("peer {dst} returned an invalid node_id: {e}"))?;
-        if peer_id != expect_node_id {
-            anyhow::bail!(
-                "peer {dst} identified as node {peer_id} ({}), expected node {expect_node_id}",
-                peer.node_name
-            );
-        }
-        if peer.version != env!("CARGO_PKG_VERSION") {
-            anyhow::bail!(
-                "peer {dst} runs version {}, expected {}",
-                peer.version,
-                env!("CARGO_PKG_VERSION")
-            );
-        }
-        info!(peer_node_id = %peer_id, peer_node = %peer.node_name, dst, "verified peer node");
-        Ok(())
     }
 
     /// Item stats from every node in the cluster, one element per node.
@@ -668,6 +631,8 @@ impl InterCommManager for InterComm {
         }
         let mut joins = JoinSet::new();
         for (_, client) in clients {
+            // nobody probes a closed peer: its last answer is no longer one
+            client.metrics.clear_reachable();
             joins.spawn(async move {
                 client.forwarder.close().await;
             });
@@ -687,7 +652,8 @@ impl InterCommManager for InterComm {
             if clients.get(&node_id).map(|c| c.dst == dst).unwrap_or(false) {
                 return Ok(());
             }
-            let transport = build_channel(&dst, self.conf.grpc.tls.as_ref()).await?;
+            let endpoint = build_endpoint(&dst, self.conf.grpc.tls.as_ref())?;
+            let transport = endpoint.connect_lazy();
             let token = CancellationToken::new();
             let (forward_sender, forward_receiver) = flume::bounded(0);
             let metrics = self
@@ -712,6 +678,7 @@ impl InterCommManager for InterComm {
                 metrics,
                 node_id,
                 dst,
+                endpoint,
                 transport,
                 bearer: self.bearer.clone(),
                 forwarder,
@@ -745,18 +712,20 @@ impl InterCommManager for InterComm {
     }
 }
 
-struct InterCommClient {
+pub(super) struct InterCommClient {
     forward_sender: Sender<payload::Payload>,
     /// Mirrors the forwarder's live-stream count; the receiver bridge selects
     /// on this to drop instead of block while the peer is disconnected.
     connected: watch::Receiver<usize>,
     /// Per-node counters, shared with the `ForwarderClient` and registered in
     /// the aggregate's `nodes` map for snapshots.
-    metrics: Arc<NodeMetrics>,
-    node_id: Uuid,
-    dst: String,
+    pub(super) metrics: Arc<NodeMetrics>,
+    pub(super) node_id: Uuid,
+    pub(super) dst: String,
+    /// What `transport` was built from, for the link check's own connections.
+    pub(super) endpoint: Endpoint,
     transport: Channel,
-    bearer: Bearer,
+    pub(super) bearer: Bearer,
 
     forwarder: Arc<super::forwarder::ForwarderClient>,
 }
@@ -876,24 +845,17 @@ impl InterCommServer {
 impl InterClusterService for InterCommServer {
     async fn hello(
         &self,
-        request: Request<NodeIdentity>,
+        _request: Request<NodeIdentity>,
     ) -> Result<Response<NodeIdentity>, Status> {
-        let version = env!("CARGO_PKG_VERSION");
+        // Answered whatever the caller runs: a node mid rolling upgrade is
+        // reachable, and the caller (the link check) reports the skew itself
+        // from the version it reads here.
         // TODO: rethink of how to deal with cross-version compatibility
-        if version != request.get_ref().version {
-            warn!(
-                peer_version = %request.get_ref().version,
-                version,
-                "peer version mismatch"
-            );
-            Err(Status::failed_precondition("version mismatch"))
-        } else {
-            Ok(Response::new(NodeIdentity {
-                version: version.to_string(),
-                node_id: self.node_id.as_bytes().to_vec().into(),
-                node_name: self.node_name.clone(),
-            }))
-        }
+        Ok(Response::new(NodeIdentity {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            node_id: self.node_id.as_bytes().to_vec().into(),
+            node_name: self.node_name.clone(),
+        }))
     }
 
     type ForwardPayloadsStream = Pin<Box<dyn Stream<Item = Result<ForwardAck, Status>> + Send>>;

@@ -96,12 +96,70 @@ pub struct InterNode {
     pub forwarder: Forwarder,
     #[serde(default = "default_grpc")]
     pub grpc: Grpc,
+    #[serde(default)]
+    pub link_check: LinkCheck,
 }
 
 impl InterNode {
     pub fn validate(&mut self) -> Result<()> {
         self.forwarder.validate()?;
         self.grpc.validate()?;
+        self.link_check.validate()?;
+        Ok(())
+    }
+}
+
+/// How a main node checks that it can reach each peer's inter-node gRPC port
+/// (`cluster_node_links`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkCheck {
+    /// Between two rounds, one probe per peer.
+    #[serde(
+        with = "crate::common::serde::duration_seconds",
+        default = "default_link_check_interval"
+    )]
+    pub interval: Duration,
+    /// For one probe, connect and answer together.
+    #[serde(
+        with = "crate::common::serde::duration_seconds",
+        default = "default_link_check_timeout"
+    )]
+    pub timeout: Duration,
+}
+
+fn default_link_check_interval() -> Duration {
+    Duration::from_secs(15)
+}
+
+fn default_link_check_timeout() -> Duration {
+    Duration::from_secs(5)
+}
+
+impl Default for LinkCheck {
+    fn default() -> Self {
+        Self {
+            interval: default_link_check_interval(),
+            timeout: default_link_check_timeout(),
+        }
+    }
+}
+
+impl LinkCheck {
+    pub fn validate(&self) -> Result<()> {
+        // a zero timeout fails every probe before it starts
+        anyhow::ensure!(
+            !self.timeout.is_zero(),
+            "cluster.inter_node.link_check.timeout must be at least 1 second"
+        );
+        // a round has to end before the next one starts
+        anyhow::ensure!(
+            self.timeout < self.interval,
+            "cluster.inter_node.link_check.timeout ({}s) must be less than \
+             cluster.inter_node.link_check.interval ({}s)",
+            self.timeout.as_secs(),
+            self.interval.as_secs()
+        );
         Ok(())
     }
 }
@@ -129,6 +187,7 @@ fn default_internode() -> InterNode {
     InterNode {
         grpc: default_grpc(),
         forwarder: default_forwarder(),
+        link_check: LinkCheck::default(),
     }
 }
 
@@ -527,6 +586,42 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn a_link_check_timeout_has_to_fit_in_the_interval() {
+        let link_check = |interval, timeout| LinkCheck {
+            interval: Duration::from_secs(interval),
+            timeout: Duration::from_secs(timeout),
+        };
+        LinkCheck::default().validate().unwrap();
+        assert_eq!(LinkCheck::default().interval, Duration::from_secs(15));
+        assert_eq!(LinkCheck::default().timeout, Duration::from_secs(5));
+        link_check(2, 1).validate().unwrap();
+
+        for (interval, timeout) in [(5, 5), (5, 6)] {
+            let err = link_check(interval, timeout)
+                .validate()
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                err,
+                format!(
+                    "cluster.inter_node.link_check.timeout ({timeout}s) must be less than \
+                     cluster.inter_node.link_check.interval ({interval}s)"
+                )
+            );
+        }
+        let err = link_check(5, 0).validate().unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "cluster.inter_node.link_check.timeout must be at least 1 second"
+        );
+
+        // through the cluster config, where a node reads it
+        let mut config = cluster(5, 60);
+        config.inter_node.link_check = link_check(1, 1);
+        assert!(config.validate().is_err());
     }
 
     #[test]

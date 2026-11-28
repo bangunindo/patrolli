@@ -89,6 +89,86 @@ impl FromStr for ClusterLogResource {
 }
 
 #[derive(Iden)]
+pub enum ClusterNodeLinks {
+    Table,
+    SrcNodeId,
+    DstNodeId,
+    DstAddress,
+    Status,
+    Reason,
+    PeerVersion,
+    StateSince,
+}
+
+/// What a node found when it dialed a peer on the inter-node gRPC port
+/// (`cluster_node_links.status`). Each failure names a different fix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LinkStatus {
+    Ok,
+    /// The peer answered, on another version: the link itself works.
+    VersionSkew,
+    /// No answer in time: a firewall that drops, or a host that is gone.
+    Timeout,
+    /// The host answered that nothing listens there.
+    Refused,
+    /// The connection could not be made for another reason (no route, reset,
+    /// an address that does not resolve).
+    Unreachable,
+    Tls,
+    /// The peer rejected the bearer token.
+    Unauthenticated,
+    /// Another node answered at the peer's advertise address.
+    WrongIdentity,
+    Error,
+}
+
+impl LinkStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LinkStatus::Ok => "ok",
+            LinkStatus::VersionSkew => "version_skew",
+            LinkStatus::Timeout => "timeout",
+            LinkStatus::Refused => "refused",
+            LinkStatus::Unreachable => "unreachable",
+            LinkStatus::Tls => "tls",
+            LinkStatus::Unauthenticated => "unauthenticated",
+            LinkStatus::WrongIdentity => "wrong_identity",
+            LinkStatus::Error => "error",
+        }
+    }
+
+    /// Whether the peer can be talked to.
+    pub fn is_reachable(&self) -> bool {
+        matches!(self, LinkStatus::Ok | LinkStatus::VersionSkew)
+    }
+}
+
+impl Display for LinkStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl FromStr for LinkStatus {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self, Self::Err> {
+        match s {
+            "ok" => Ok(LinkStatus::Ok),
+            "version_skew" => Ok(LinkStatus::VersionSkew),
+            "timeout" => Ok(LinkStatus::Timeout),
+            "refused" => Ok(LinkStatus::Refused),
+            "unreachable" => Ok(LinkStatus::Unreachable),
+            "tls" => Ok(LinkStatus::Tls),
+            "unauthenticated" => Ok(LinkStatus::Unauthenticated),
+            "wrong_identity" => Ok(LinkStatus::WrongIdentity),
+            "error" => Ok(LinkStatus::Error),
+            _ => Err(anyhow::anyhow!("invalid LinkStatus value")),
+        }
+    }
+}
+
+#[derive(Iden)]
 pub enum Hosts {
     Table,
     HostId,

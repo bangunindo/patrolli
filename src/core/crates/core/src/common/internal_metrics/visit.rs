@@ -1961,6 +1961,18 @@ fn walk_forwarder_peers<V: Visitor>(v: &mut V, peers: &[ForwarderNode]) -> Resul
         &samples,
         |peer| peer.total_connections as u64,
     )?;
+    // only the peers the link check has probed: no answer yet is not a 0
+    family_u64(
+        v,
+        "forwarder.peer.reachable",
+        "Whether the last link check reached the peer's inter-node gRPC port (1) or not (0).",
+        Unit::None,
+        Kind::Gauge,
+        samples
+            .iter()
+            .filter_map(|sample| Some((sample.labels.clone(), sample.item.reachable? as u64)))
+            .collect(),
+    )?;
     duration_fields!(
         v,
         &samples,
